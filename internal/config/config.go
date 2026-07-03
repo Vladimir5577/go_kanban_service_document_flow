@@ -1,0 +1,86 @@
+package config
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
+)
+
+type Config struct {
+	Env              string
+	Port             string
+	JWTPublicKeyPath string
+	MercureJWTSecret string
+	RabbitMQDSN      string
+
+	// DB configuration
+	DBHost     string
+	DBPort     int
+	DBUser     string
+	DBPassword string
+	DBName     string
+}
+
+func Load() *Config {
+	// Пытаемся загрузить локальный .env файл, если он есть
+	if err := godotenv.Load(); err != nil {
+		slog.Warn("Предупреждение: .env файл не найден, используются системные переменные окружения")
+	}
+
+	return &Config{
+		Env:              getEnv("ENV", "local"),
+		Port:             getEnv("SERVER_PORT", "8080"),
+		JWTPublicKeyPath: getEnv("JWT_PUBLIC_KEY_PATH", "config/jwt/public.pem"),
+		MercureJWTSecret: getEnv("MERCURE_JWT_SECRET", ""),
+		RabbitMQDSN:      getEnv("RABBITMQ_TRANSPORT_DSN", "amqp://guest:guest@rabbitmq:5672/"),
+
+		DBHost:     getEnv("DB_HOST", "localhost"),
+		DBPort:     getEnvAsInt("DB_PORT", 5432),
+		DBUser:     getEnv("DB_USER", ""),
+		DBPassword: getEnv("DB_PASSWORD", ""),
+		DBName:     getEnv("DB_NAME", ""),
+	}
+}
+
+func ConnectDB(conf *Config) (*pgxpool.Pool, error) {
+	connStr := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		conf.DBHost,
+		conf.DBPort,
+		conf.DBUser,
+		conf.DBPassword,
+		conf.DBName,
+	)
+
+	pool, err := pgxpool.New(context.Background(), connStr)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		return nil, err
+	}
+
+	return pool, nil
+}
+
+func getEnv(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return fallback
+}
+
+func getEnvAsInt(key string, fallback int) int {
+	valueStr := getEnv(key, "")
+	if value, err := strconv.Atoi(valueStr); err == nil {
+		return value
+	}
+	return fallback
+}

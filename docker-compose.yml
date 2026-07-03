@@ -1,0 +1,53 @@
+services:
+  kanban_db:
+    image: postgres:16.4
+    container_name: kanban_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-root}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: ${DB_NAME:-kanban_db}
+      PGDATA: /data/postgres
+    volumes:
+      - ./../postgres_data:/data/postgres
+    ports:
+      # Пробрасываем порт 5433 на хост, так как 5432 может быть занят бэкендом (Symfony)
+      - "${DB_PORT:-5433}:5432"
+    networks:
+      - kanban-net
+
+  kanban_service:
+    build:
+      context: .
+      dockerfile: ./docker_env/go/Dockerfile
+    container_name: kanban_service
+    restart: unless-stopped
+    depends_on:
+      - kanban_db
+    env_file:
+      - .env
+    volumes:
+      # Прокидываем текущую папку с бинарником main
+      - ./:/app
+      # Прокидываем публичный ключ JWT из папки Symfony
+      - ./../symfony_documents_flow/config/jwt/public.pem:/config/jwt/public.pem:ro
+    environment:
+      # Переопределяем путь к ключу внутри контейнера
+      - JWT_PUBLIC_KEY_PATH=/config/jwt/public.pem
+      # Переопределяем хост БД для докера
+      - DB_HOST=kanban_db
+      # Внутри Docker-сети Postgres всегда слушает на 5432 (5433 - это только проброс на хост)
+      - DB_PORT=5432
+    ports:
+      - "${SERVER_PORT:-8085}:8085"
+    networks:
+      - kanban-net
+      - project-net
+
+networks:
+  kanban-net:
+    name: kanban-net
+    driver: bridge
+
+  project-net:
+    external: true
