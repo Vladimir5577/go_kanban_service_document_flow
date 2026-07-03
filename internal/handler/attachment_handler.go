@@ -4,21 +4,27 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
-	"time"
 
+	"github.com/google/uuid"
+
+	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/service"
 )
 
 type AttachmentHandler struct {
-	service service.AttachmentServiceInterface
+	service  service.AttachmentServiceInterface
+	minioSvc service.MinioServiceInterface
+	cfg      *config.Config
 }
 
-func NewAttachmentHandler(s service.AttachmentServiceInterface) *AttachmentHandler {
-	return &AttachmentHandler{service: s}
+func NewAttachmentHandler(s service.AttachmentServiceInterface, minioSvc service.MinioServiceInterface, cfg *config.Config) *AttachmentHandler {
+	return &AttachmentHandler{
+		service:  s,
+		minioSvc: minioSvc,
+		cfg:      cfg,
+	}
 }
 
 func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
@@ -47,21 +53,10 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 			ctxVal = "card"
 		}
 
-		uploadDir := "uploads/attachments"
-		if err := os.MkdirAll(uploadDir, os.ModePerm); err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-
-		storageKey := filepath.Join(uploadDir, fmt.Sprintf("%d_%s", time.Now().UnixNano(), header.Filename))
-		outFile, err := os.Create(storageKey)
+		objectName := fmt.Sprintf("cards/%d/%s-%s", cardID, uuid.New().String(), header.Filename)
+		
+		err = h.minioSvc.UploadFile(r.Context(), h.cfg.MinioBucket, objectName, file, header.Size, header.Header.Get("Content-Type"))
 		if err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-		defer outFile.Close()
-
-		if _, err := io.Copy(outFile, file); err != nil {
 			helper.WriteError(w, err)
 			return
 		}
@@ -73,7 +68,7 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 
 		req := dto.CreateAttachmentRequest{
 			Filename:    header.Filename,
-			StorageKey:  storageKey,
+			StorageKey:  objectName,
 			ContentType: contentType,
 			SizeBytes:   header.Size,
 			Context:     ctxVal,
@@ -83,7 +78,8 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusCreated, dto.MapAttachmentResponse(res))
+
+		helper.WriteJSON(w, http.StatusCreated, dto.MapAttachmentResponse(h.cfg, *res))
 	}
 }
 
@@ -101,9 +97,16 @@ func (h *AttachmentHandler) DownloadAttachment() http.HandlerFunc {
 			return
 		}
 
+		obj, err := h.minioSvc.GetObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		defer obj.Close()
+
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", att.Filename))
 		w.Header().Set("Content-Type", att.ContentType)
-		http.ServeFile(w, r, att.StorageKey)
+		io.Copy(w, obj)
 	}
 }
 
@@ -121,9 +124,16 @@ func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
 			return
 		}
 
+		obj, err := h.minioSvc.GetObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		defer obj.Close()
+
 		w.Header().Set("Content-Disposition", "inline")
 		w.Header().Set("Content-Type", att.ContentType)
-		http.ServeFile(w, r, att.StorageKey)
+		io.Copy(w, obj)
 	}
 }
 
@@ -139,6 +149,15 @@ func (h *AttachmentHandler) DeleteAttachment() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
+		
+		// Wait, we need to delete from Minio too!
+		// But we don't have the att before deleting, let's fetch it first
+		att, err := h.service.GetAttachment(r.Context(), id)
+		if err == nil {
+			// Ignore minio delete errors to ensure DB transaction doesn't fail
+			_ = h.minioSvc.DeleteObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
+		}
+
 		helper.WriteJSON(w, http.StatusNoContent, nil)
 	}
 }

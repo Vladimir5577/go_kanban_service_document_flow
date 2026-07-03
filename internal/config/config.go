@@ -24,6 +24,16 @@ type Config struct {
 	DBUser     string
 	DBPassword string
 	DBName     string
+
+	// MinIO configuration
+	MinioEndpoint        string
+	MinioAccessKeyID     string
+	MinioSecretAccessKey string
+	MinioUseSSL          bool
+	MinioBucket          string
+
+	// Imgproxy configuration
+	ImgproxyBaseUrl string
 }
 
 func Load() *Config {
@@ -44,7 +54,23 @@ func Load() *Config {
 		DBUser:     getEnv("DB_USER", ""),
 		DBPassword: getEnv("DB_PASSWORD", ""),
 		DBName:     getEnv("DB_NAME", ""),
+
+		MinioEndpoint:        getEnv("MINIO_ENDPOINT", "localhost:9000"),
+		MinioAccessKeyID:     getEnv("MINIO_ACCESS_KEY", "minioadmin"),
+		MinioSecretAccessKey: getEnv("MINIO_SECRET_KEY", "minioadmin"),
+		MinioUseSSL:          getEnvAsBool("MINIO_USE_SSL", false),
+		MinioBucket:          getEnv("MINIO_BUCKET_NAME", "kanban"),
+
+		ImgproxyBaseUrl: getEnv("IMGPROXY_BASE_URL", "http://localhost:8082"),
 	}
+}
+
+func getEnvAsBool(key string, fallback bool) bool {
+	valueStr := getEnv(key, "")
+	if value, err := strconv.ParseBool(valueStr); err == nil {
+		return value
+	}
+	return fallback
 }
 
 func ConnectDB(conf *Config) (*pgxpool.Pool, error) {

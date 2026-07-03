@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"go_kanban_service/internal/apperr"
+	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository"
@@ -28,6 +29,7 @@ type CardService struct {
 	attachmentRepo repository.AttachmentRepositoryInterface
 	labelRepo      repository.LabelRepositoryInterface
 	userRepo       repository.UserRepositoryInterface
+	cfg            *config.Config
 }
 
 func NewCardService(
@@ -38,6 +40,7 @@ func NewCardService(
 	attachmentRepo repository.AttachmentRepositoryInterface,
 	labelRepo repository.LabelRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
+	cfg *config.Config,
 ) *CardService {
 	return &CardService{
 		repo:           repo,
@@ -47,6 +50,7 @@ func NewCardService(
 		attachmentRepo: attachmentRepo,
 		labelRepo:      labelRepo,
 		userRepo:       userRepo,
+		cfg:            cfg,
 	}
 }
 
@@ -166,15 +170,15 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	}
 	resp.Comments = dto.MapCommentsResponse(comments)
 	
-	resp.Attachments = dto.MapAttachmentsResponse(allAttachments)
-	for _, att := range resp.Attachments {
+	resp.Attachments = dto.MapAttachmentsResponse(s.cfg, allAttachments)
+	for i, att := range resp.Attachments {
 		if att.AuthorID != nil {
 			if u, ok := userMap[*att.AuthorID]; ok {
 				name := u.Firstname
 				if u.Lastname != "" {
 					name += " " + u.Lastname
 				}
-				att.AuthorName = &name
+				resp.Attachments[i].AuthorName = &name
 			}
 		}
 	}

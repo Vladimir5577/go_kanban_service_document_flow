@@ -46,6 +46,17 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		return nil, fmt.Errorf("failed to init auth middleware: %w", err)
 	}
 
+	minioSvc, err := service.NewMinioService(
+		cfg.MinioEndpoint,
+		cfg.MinioAccessKeyID,
+		cfg.MinioSecretAccessKey,
+		cfg.MinioUseSSL,
+		cfg.MinioBucket,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init minio service: %w", err)
+	}
+
 	projectRepo := repository.NewProjectRepository(db)
 	projectMemberRepo := repository.NewProjectMemberRepository(db)
 	
@@ -66,12 +77,12 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	labelRepo := repository.NewLabelRepository(db)
 	
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc)
-	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc)
+	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
 	boardRepo := repository.NewBoardRepository(db)
 
 	cardRepo := repository.NewCardRepository(db)
-	cardSvc := service.NewCardService(cardRepo, permSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo)
+	cardSvc := service.NewCardService(cardRepo, permSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnRepo := repository.NewColumnRepository(db)

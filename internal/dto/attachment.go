@@ -2,8 +2,10 @@ package dto
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/model"
 )
 
@@ -29,11 +31,18 @@ type AttachmentResponse struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
-func MapAttachmentResponse(a *model.Attachment) *AttachmentResponse {
-	if a == nil {
-		return nil
+func MapAttachmentResponse(cfg *config.Config, a model.Attachment) *AttachmentResponse {
+	var previewUrl string
+	if strings.HasPrefix(a.ContentType, "image/") && cfg.ImgproxyBaseUrl != "" {
+		// e.g. http://localhost:8082/unsafe/rs:fit:400:400/plain/s3://kanban/cards/...
+		previewUrl = fmt.Sprintf("%s/unsafe/rs:fit:400:400/plain/s3://%s/%s",
+			strings.TrimRight(cfg.ImgproxyBaseUrl, "/"),
+			cfg.MinioBucket,
+			a.StorageKey)
+	} else {
+		previewUrl = fmt.Sprintf("/spa/api/cards/%d/attachments/%d/preview", a.CardID, a.ID)
 	}
-	previewUrl := fmt.Sprintf("/spa/api/cards/%d/attachments/%d/preview", a.CardID, a.ID)
+
 	return &AttachmentResponse{
 		ID:          a.ID,
 		Filename:    a.Filename,
@@ -48,10 +57,13 @@ func MapAttachmentResponse(a *model.Attachment) *AttachmentResponse {
 	}
 }
 
-func MapAttachmentsResponse(attachments []model.Attachment) []*AttachmentResponse {
-	resp := make([]*AttachmentResponse, 0, len(attachments))
-	for i := range attachments {
-		resp = append(resp, MapAttachmentResponse(&attachments[i]))
+func MapAttachmentsResponse(cfg *config.Config, attachments []model.Attachment) []*AttachmentResponse {
+	if attachments == nil {
+		return []*AttachmentResponse{}
 	}
-	return resp
+	res := make([]*AttachmentResponse, 0, len(attachments))
+	for _, a := range attachments {
+		res = append(res, MapAttachmentResponse(cfg, a))
+	}
+	return res
 }
