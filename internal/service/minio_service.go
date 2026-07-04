@@ -36,7 +36,8 @@ func NewMinioService(endpoint, accessKeyID, secretAccessKey string, useSSL bool,
 		if errBucketExists == nil && exists {
 			slog.Info("MinIO bucket already exists", "bucket", bucketName)
 		} else {
-			return nil, fmt.Errorf("failed to check/create minio bucket: %w", err)
+			slog.Warn("Failed to check/create MinIO bucket. MinIO features will be unavailable until MinIO is up", "error", err)
+			// Мы убираем return nil, err, чтобы приложение могло запуститься даже без MinIO
 		}
 	} else {
 		slog.Info("Successfully created MinIO bucket", "bucket", bucketName)

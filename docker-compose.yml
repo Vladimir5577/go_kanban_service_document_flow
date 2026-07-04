@@ -38,8 +38,9 @@ services:
       - DB_HOST=kanban_db
       # Внутри Docker-сети Postgres всегда слушает на 5432 (5433 - это только проброс на хост)
       - DB_PORT=5432
-    ports:
-      - "${SERVER_PORT:-8085}:8085"
+    # Не надо пробрасывать наружу. Порт пробросит сам nginx
+    # ports:
+    #   - "${SERVER_PORT:-8085}:8085"
     networks:
       - kanban-net
       - project-net
