@@ -17,7 +17,7 @@ type CardServiceInterface interface {
 	UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error
-	MoveCard(ctx context.Context, id int64, columnID int64, position int) (*model.Card, error)
+	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
 	ArchiveCard(ctx context.Context, id int64) error
 }
 
@@ -307,7 +307,7 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 	return s.repo.UpdateCardAssignees(ctx, id, userIDs)
 }
 
-func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position int) (*model.Card, error) {
+func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
 	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
 	if err != nil {
 		return nil, err

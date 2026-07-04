@@ -17,7 +17,7 @@ type CardRepositoryInterface interface {
 	UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
-	MoveCard(ctx context.Context, id int64, columnID int64, position int) (*model.Card, error)
+	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
 	ArchiveCard(ctx context.Context, id int64) error
 }
 
@@ -267,7 +267,7 @@ func (r *CardRepository) UpdateCardAssignees(ctx context.Context, cardID int64, 
 	return nil
 }
 
-func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, positionIndex int) (*model.Card, error) {
+func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
 	// 1. Fetch card to check existence
 	card, err := r.GetCard(ctx, id)
 	if err != nil {
@@ -280,47 +280,19 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 		return nil, err
 	}
 
-	// 3. Remove the moved card if it was already in this column
-	var activeCards []model.Card
+	// 3. Check for collision
+	const epsilon = 0.0001
+	needsRebalance := false
 	for _, c := range cards {
-		if c.ID != id {
-			activeCards = append(activeCards, c)
+		if c.ID != id && (c.Position-position > -epsilon && c.Position-position < epsilon) {
+			needsRebalance = true
+			break
 		}
 	}
 
-	// 4. Bound positionIndex
-	if positionIndex < 0 {
-		positionIndex = 0
-	}
-	if positionIndex > len(activeCards) {
-		positionIndex = len(activeCards)
-	}
-
-	// 5. Calculate new float position
-	var newPos float64
-	if len(activeCards) == 0 {
-		newPos = 65536.0
-	} else if positionIndex == 0 {
-		newPos = activeCards[0].Position / 2.0
-	} else if positionIndex == len(activeCards) {
-		newPos = activeCards[len(activeCards)-1].Position + 65536.0
-	} else {
-		newPos = (activeCards[positionIndex-1].Position + activeCards[positionIndex].Position) / 2.0
-	}
-
-	// 6. Check for collision
-	const epsilon = 0.0001
-	needsRebalance := false
-	if positionIndex > 0 && (newPos-activeCards[positionIndex-1].Position) < epsilon {
-		needsRebalance = true
-	}
-	if positionIndex < len(activeCards) && (activeCards[positionIndex].Position-newPos) < epsilon {
-		needsRebalance = true
-	}
-
-	// 7. Update card
+	// 4. Update card
 	card.ColumnID = columnID
-	card.Position = newPos
+	card.Position = position
 
 	updatedCard, err := r.UpdateCard(ctx, card)
 	if err != nil {

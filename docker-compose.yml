@@ -9,7 +9,7 @@ services:
       POSTGRES_DB: ${DB_NAME:-kanban_db}
       PGDATA: /data/postgres
     volumes:
-      - ./../postgres_data:/data/postgres
+      - ./../postgres_data_kanban:/data/postgres
     ports:
       # Пробрасываем порт 5433 на хост, так как 5432 может быть занят бэкендом (Symfony)
       - "${DB_PORT:-5433}:5432"

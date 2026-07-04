@@ -134,8 +134,8 @@ func (h *CardHandler) MoveCard() http.HandlerFunc {
 		}
 
 		var payload struct {
-			ColumnID int64 `json:"column_id"`
-			Position int   `json:"position"`
+			ColumnID int64   `json:"column_id"`
+			Position float64 `json:"position"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))

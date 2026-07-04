@@ -9,7 +9,7 @@ services:
       - 8088:3000
     # Монтируем volume базы, чтобы dbgate мог работать с данными при необходимости
     volumes:
-      - ./../postgres_data:/data/postgres
+      - ./../postgres_data_kanban:/data/postgres
     environment:
       CONNECTIONS: con1,con2,con3,con4
 
