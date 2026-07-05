@@ -22,13 +22,19 @@ func NewLabelHandler(s service.LabelServiceInterface) *LabelHandler {
 
 func (h *LabelHandler) GetLabels() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		boardID, err := helper.IDParam(r, "boardId")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
-		res, err := h.service.GetLabels(r.Context(), boardID)
+		res, err := h.service.GetLabels(r.Context(), projectID, boardID)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -39,6 +45,12 @@ func (h *LabelHandler) GetLabels() http.HandlerFunc {
 
 func (h *LabelHandler) CreateLabel() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		boardID, err := helper.IDParam(r, "boardId")
 		if err != nil {
 			helper.WriteError(w, err)
@@ -55,7 +67,7 @@ func (h *LabelHandler) CreateLabel() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.CreateLabel(r.Context(), boardID, req)
+		res, err := h.service.CreateLabel(r.Context(), projectID, boardID, req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -66,13 +78,25 @@ func (h *LabelHandler) CreateLabel() http.HandlerFunc {
 
 func (h *LabelHandler) DeleteLabel() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		boardID, err := helper.IDParam(r, "boardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		labelID, err := helper.IDParam(r, "labelId")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
-		if err := h.service.DeleteLabel(r.Context(), labelID); err != nil {
+		if err := h.service.DeleteLabel(r.Context(), projectID, boardID, labelID); err != nil {
 			helper.WriteError(w, err)
 			return
 		}
@@ -82,6 +106,18 @@ func (h *LabelHandler) DeleteLabel() http.HandlerFunc {
 
 func (h *LabelHandler) ToggleLabel() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		boardID, err := helper.IDParam(r, "boardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		cardID, err := helper.IDParam(r, "cardId")
 		if err != nil {
 			helper.WriteError(w, err)
@@ -94,10 +130,14 @@ func (h *LabelHandler) ToggleLabel() http.HandlerFunc {
 			return
 		}
 
-		if err := h.service.ToggleLabel(r.Context(), cardID, labelID); err != nil {
+		action, err := h.service.ToggleLabel(r.Context(), projectID, boardID, cardID, labelID)
+		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, map[string]string{"status": "toggled"})
+		helper.WriteJSON(w, http.StatusOK, map[string]any{
+			"action":  action,
+			"labelId": labelID,
+		})
 	}
 }

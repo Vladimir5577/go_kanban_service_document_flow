@@ -1,6 +1,10 @@
 package dto
 
-import "go_kanban_service/internal/model"
+import (
+	"encoding/json"
+
+	"go_kanban_service/internal/model"
+)
 
 type CreateSubtaskRequest struct {
 	Title    string   `json:"title" validate:"required,max=255"`
@@ -9,9 +13,30 @@ type CreateSubtaskRequest struct {
 }
 
 type UpdateSubtaskRequest struct {
-	Title    *string  `json:"title,omitempty" validate:"omitempty,max=255"`
-	Status   *string  `json:"status,omitempty"`
-	Position *float64 `json:"position,omitempty"`
+	Title       *string  `json:"title,omitempty" validate:"omitempty,max=255"`
+	Status      *string  `json:"status,omitempty"`
+	IsCompleted *bool    `json:"isCompleted,omitempty"`
+	Position    *float64 `json:"position,omitempty"`
+	UserID      *int64   `json:"user_id,omitempty"`
+	HasUserID   bool     `json:"-"`
+}
+
+func (r *UpdateSubtaskRequest) UnmarshalJSON(data []byte) error {
+	type alias UpdateSubtaskRequest
+	payload := struct {
+		*alias
+		UserIDCamel *int64 `json:"userId"`
+	}{
+		alias: (*alias)(r),
+	}
+
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	if r.UserID == nil && payload.UserIDCamel != nil {
+		r.UserID = payload.UserIDCamel
+	}
+	return nil
 }
 
 type SubtaskResponse struct {

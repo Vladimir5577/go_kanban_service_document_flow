@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
@@ -12,19 +15,34 @@ import (
 type SubtaskServiceInterface interface {
 	GetSubtasks(ctx context.Context, cardID int64) ([]model.Subtask, error)
 	CreateSubtask(ctx context.Context, cardID int64, req dto.CreateSubtaskRequest) (*model.Subtask, error)
-	UpdateSubtask(ctx context.Context, subtaskID int64, req dto.UpdateSubtaskRequest) (*model.Subtask, error)
-	DeleteSubtask(ctx context.Context, subtaskID int64) error
+	UpdateSubtask(ctx context.Context, cardID int64, subtaskID int64, req dto.UpdateSubtaskRequest) (*model.Subtask, error)
+	DeleteSubtask(ctx context.Context, cardID int64, subtaskID int64) error
 }
 
 type SubtaskService struct {
-	repo    repository.SubtaskRepositoryInterface
-	permSvc *PermissionService
+	repo              repository.SubtaskRepositoryInterface
+	permSvc           *PermissionService
+	activityRepo      repository.ActivityRepositoryInterface
+	userRepo          repository.UserRepositoryInterface
+	projectRepo       repository.ProjectRepositoryInterface
+	projectMemberRepo repository.ProjectMemberRepositoryInterface
 }
 
-func NewSubtaskService(repo repository.SubtaskRepositoryInterface, permSvc *PermissionService) *SubtaskService {
+func NewSubtaskService(
+	repo repository.SubtaskRepositoryInterface,
+	permSvc *PermissionService,
+	activityRepo repository.ActivityRepositoryInterface,
+	userRepo repository.UserRepositoryInterface,
+	projectRepo repository.ProjectRepositoryInterface,
+	projectMemberRepo repository.ProjectMemberRepositoryInterface,
+) *SubtaskService {
 	return &SubtaskService{
-		repo:    repo,
-		permSvc: permSvc,
+		repo:              repo,
+		permSvc:           permSvc,
+		activityRepo:      activityRepo,
+		userRepo:          userRepo,
+		projectRepo:       projectRepo,
+		projectMemberRepo: projectMemberRepo,
 	}
 }
 
@@ -63,11 +81,15 @@ func (s *SubtaskService) CreateSubtask(ctx context.Context, cardID int64, req dt
 	if req.Position != nil {
 		st.Position = *req.Position
 	}
-	return s.repo.CreateSubtask(ctx, cardID, st)
+	st, err = s.repo.CreateSubtask(ctx, cardID, st)
+	if err == nil {
+		s.logActivity(ctx, cardID, "subtask_added", nil, &req.Title)
+	}
+	return st, err
 }
 
-func (s *SubtaskService) UpdateSubtask(ctx context.Context, subtaskID int64, req dto.UpdateSubtaskRequest) (*model.Subtask, error) {
-	projectID, err := s.permSvc.GetProjectIDBySubtask(ctx, subtaskID)
+func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtaskID int64, req dto.UpdateSubtaskRequest) (*model.Subtask, error) {
+	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
 	if err != nil {
 		return nil, err
 	}
@@ -75,21 +97,73 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, subtaskID int64, req
 		return nil, err
 	}
 
-	st := &model.Subtask{ID: subtaskID}
+	st, err := s.repo.GetSubtask(ctx, subtaskID)
+	if err != nil {
+		return nil, err
+	}
+	if st.CardID != cardID {
+		return nil, apperr.ErrNotFound
+	}
+
+	var oldIsCompleted bool
+	if st.Status == "done" {
+		oldIsCompleted = true
+	}
+	oldUserID := st.UserID
+
 	if req.Title != nil {
 		st.Title = *req.Title
 	}
 	if req.Status != nil {
 		st.Status = *req.Status
 	}
+	if req.IsCompleted != nil {
+		if *req.IsCompleted {
+			st.Status = "done"
+		} else {
+			st.Status = "todo"
+		}
+	}
 	if req.Position != nil {
 		st.Position = *req.Position
 	}
-	return s.repo.UpdateSubtask(ctx, subtaskID, st)
+	if req.HasUserID {
+		if err := s.ensureSubtaskAssignee(ctx, projectID, req.UserID); err != nil {
+			return nil, err
+		}
+		st.UserID = req.UserID
+	}
+	updatedSt, err := s.repo.UpdateSubtask(ctx, subtaskID, st)
+	if err == nil && updatedSt != nil {
+		var newIsCompleted bool
+		if updatedSt.Status == "done" {
+			newIsCompleted = true
+		}
+
+		if oldIsCompleted != newIsCompleted {
+			if newIsCompleted {
+				s.logActivity(ctx, updatedSt.CardID, "subtask_completed", nil, &updatedSt.Title)
+			} else {
+				s.logActivity(ctx, updatedSt.CardID, "subtask_reopened", nil, &updatedSt.Title)
+			}
+		}
+
+		if req.HasUserID && !sameOptionalID(oldUserID, updatedSt.UserID) {
+			if oldUserID != nil {
+				oldValue := s.subtaskAssigneeActivityValue(ctx, *oldUserID, updatedSt.Title)
+				s.logActivity(ctx, updatedSt.CardID, "subtask_unassigned", &oldValue, nil)
+			}
+			if updatedSt.UserID != nil {
+				newValue := s.subtaskAssigneeActivityValue(ctx, *updatedSt.UserID, updatedSt.Title)
+				s.logActivity(ctx, updatedSt.CardID, "subtask_assigned", nil, &newValue)
+			}
+		}
+	}
+	return updatedSt, err
 }
 
-func (s *SubtaskService) DeleteSubtask(ctx context.Context, subtaskID int64) error {
-	projectID, err := s.permSvc.GetProjectIDBySubtask(ctx, subtaskID)
+func (s *SubtaskService) DeleteSubtask(ctx context.Context, cardID int64, subtaskID int64) error {
+	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
 	if err != nil {
 		return err
 	}
@@ -97,5 +171,80 @@ func (s *SubtaskService) DeleteSubtask(ctx context.Context, subtaskID int64) err
 		return err
 	}
 
-	return s.repo.DeleteSubtask(ctx, subtaskID)
+	st, err := s.repo.GetSubtask(ctx, subtaskID)
+	if err != nil {
+		return err
+	}
+	if st.CardID != cardID {
+		return apperr.ErrNotFound
+	}
+
+	err = s.repo.DeleteSubtask(ctx, subtaskID)
+	if err == nil {
+		s.logActivity(ctx, st.CardID, "subtask_removed", &st.Title, nil)
+	}
+	return err
+}
+
+func (s *SubtaskService) ensureSubtaskAssignee(ctx context.Context, projectID int64, userID *int64) error {
+	if userID == nil {
+		return nil
+	}
+
+	users, err := s.userRepo.GetUsersByIDs(ctx, []int64{*userID})
+	if err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		return apperr.ErrNotFound
+	}
+
+	project, err := s.projectRepo.GetProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if project.OwnerID == *userID {
+		return nil
+	}
+
+	if _, err := s.projectMemberRepo.GetProjectMember(ctx, projectID, *userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return s.projectMemberRepo.AddMember(ctx, projectID, model.ProjectUser{
+				KanbanProjectID: projectID,
+				UserID:          *userID,
+				Role:            string(RoleViewer),
+			})
+		}
+		return err
+	}
+
+	return nil
+}
+
+func (s *SubtaskService) logActivity(ctx context.Context, cardID int64, action string, oldValue, newValue *string) {
+	_ = s.activityRepo.LogActivity(ctx, cardID, currentUserID(ctx), action, oldValue, newValue)
+}
+
+func (s *SubtaskService) subtaskAssigneeActivityValue(ctx context.Context, userID int64, subtaskTitle string) string {
+	name := ""
+	if users, err := s.userRepo.GetUsersByIDs(ctx, []int64{userID}); err == nil && len(users) > 0 {
+		name = users[0].Firstname
+		if users[0].Lastname != "" {
+			if name != "" {
+				name += " "
+			}
+			name += users[0].Lastname
+		}
+	}
+	if name == "" {
+		name = "Пользователь"
+	}
+	return name + " (подзадача: " + subtaskTitle + ")"
+}
+
+func sameOptionalID(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }

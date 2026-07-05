@@ -4,12 +4,12 @@ import "go_kanban_service/internal/model"
 
 type CreateLabelRequest struct {
 	Name  string `json:"name" validate:"required,max=50"`
-	Color string `json:"color" validate:"required,max=20"`
+	Color string `json:"color" validate:"omitempty,max=30"`
 }
 
 type UpdateLabelRequest struct {
 	Name  *string `json:"name,omitempty" validate:"omitempty,max=50"`
-	Color *string `json:"color,omitempty" validate:"omitempty,max=20"`
+	Color *string `json:"color,omitempty" validate:"omitempty,max=30"`
 }
 
 type LabelResponse struct {

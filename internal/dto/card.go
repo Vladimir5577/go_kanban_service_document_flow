@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"encoding/json"
 	"time"
 
 	"go_kanban_service/internal/model"
@@ -19,16 +20,71 @@ type CreateCardRequest struct {
 }
 
 type UpdateCardRequest struct {
-	Title       *string    `json:"title,omitempty" validate:"omitempty,max=500"`
-	ColumnID    *int64     `json:"column_id,omitempty"`
-	Description *string    `json:"description,omitempty"`
-	Position    *float64   `json:"position,omitempty"`
-	DueDate     *time.Time `json:"dueDate,omitempty"`
-	Priority    *string    `json:"priority,omitempty"`
-	IsArchived  *bool      `json:"is_archived,omitempty"`
-	BorderColor *string    `json:"borderColor,omitempty"`
-	AssigneeIDs []int64    `json:"assignee_ids,omitempty"`
-	LabelIDs    []int64    `json:"label_ids,omitempty"`
+	Title          *string    `json:"title,omitempty" validate:"omitempty,max=500"`
+	Description    *string    `json:"description,omitempty"`
+	DueDate        *time.Time `json:"dueDate,omitempty"`
+	Priority       *string    `json:"priority,omitempty"`
+	BorderColor    *string    `json:"borderColor,omitempty"`
+	HasDescription bool       `json:"-"`
+	HasDueDate     bool       `json:"-"`
+	HasPriority    bool       `json:"-"`
+	HasBorderColor bool       `json:"-"`
+}
+
+func (r *UpdateCardRequest) UnmarshalJSON(data []byte) error {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+
+	if raw, ok := payload["title"]; ok && string(raw) != "null" {
+		var title string
+		if err := json.Unmarshal(raw, &title); err != nil {
+			return err
+		}
+		r.Title = &title
+	}
+	if raw, ok := payload["description"]; ok {
+		r.HasDescription = true
+		if string(raw) != "null" {
+			var description string
+			if err := json.Unmarshal(raw, &description); err != nil {
+				return err
+			}
+			r.Description = &description
+		}
+	}
+	if raw, ok := payload["dueDate"]; ok {
+		r.HasDueDate = true
+		if string(raw) != "null" {
+			var dueDate time.Time
+			if err := json.Unmarshal(raw, &dueDate); err != nil {
+				return err
+			}
+			r.DueDate = &dueDate
+		}
+	}
+	if raw, ok := payload["priority"]; ok {
+		r.HasPriority = true
+		if string(raw) != "null" {
+			var priority string
+			if err := json.Unmarshal(raw, &priority); err != nil {
+				return err
+			}
+			r.Priority = &priority
+		}
+	}
+	if raw, ok := payload["borderColor"]; ok {
+		r.HasBorderColor = true
+		if string(raw) != "null" {
+			var borderColor string
+			if err := json.Unmarshal(raw, &borderColor); err != nil {
+				return err
+			}
+			r.BorderColor = &borderColor
+		}
+	}
+	return nil
 }
 
 type CardAssigneeResponse struct {
@@ -38,29 +94,29 @@ type CardAssigneeResponse struct {
 }
 
 type CardResponse struct {
-	ID            int64      `json:"id"`
-	Title         string     `json:"title"`
-	Description   *string    `json:"description,omitempty"`
-	Position      float64    `json:"position"`
-	DueDate       *time.Time `json:"dueDate,omitempty"`
-	Priority      *string    `json:"priority,omitempty"`
-	IsArchived    bool       `json:"isArchived"`
-	ArchivedAt    *time.Time `json:"archivedAt,omitempty"`
-	ArchivedByID  *int64     `json:"archivedById,omitempty"`
-	CompletedAt   *time.Time `json:"completedAt,omitempty"`
-	CompletedByID *int64     `json:"completedById,omitempty"`
-	ColumnID      int64      `json:"columnId"`
-	CreatedByID   *int64     `json:"createdById,omitempty"`
-	BorderColor   *string    `json:"borderColor,omitempty"`
-	CreatedAt     time.Time  `json:"createdAt"`
-	UpdatedAt     time.Time  `json:"updatedAt"`
-	AssigneeIDs   []int64    `json:"assigneeIds,omitempty"`
-	LabelIDs      []int64    `json:"labelIds,omitempty"`
-	Labels        []*LabelResponse        `json:"labels"`
-	Assignees     []*CardAssigneeResponse `json:"assignees"`
-	Comments      []*CommentResponse      `json:"comments"`
-	Subtasks      []*SubtaskResponse      `json:"subtasks"`
-	Attachments   []*AttachmentResponse   `json:"attachments"`
+	ID             int64                   `json:"id"`
+	Title          string                  `json:"title"`
+	Description    *string                 `json:"description,omitempty"`
+	Position       float64                 `json:"position"`
+	DueDate        *time.Time              `json:"dueDate,omitempty"`
+	Priority       *string                 `json:"priority,omitempty"`
+	IsArchived     bool                    `json:"isArchived"`
+	ArchivedAt     *time.Time              `json:"archivedAt,omitempty"`
+	ArchivedByID   *int64                  `json:"archivedById,omitempty"`
+	CompletedAt    *time.Time              `json:"completedAt,omitempty"`
+	CompletedByID  *int64                  `json:"completedById,omitempty"`
+	ColumnID       int64                   `json:"columnId"`
+	CreatedByID    *int64                  `json:"createdById,omitempty"`
+	BorderColor    *string                 `json:"borderColor,omitempty"`
+	CreatedAt      time.Time               `json:"createdAt"`
+	UpdatedAt      time.Time               `json:"updatedAt"`
+	AssigneeIDs    []int64                 `json:"assigneeIds,omitempty"`
+	LabelIDs       []int64                 `json:"labelIds,omitempty"`
+	Labels         []*LabelResponse        `json:"labels"`
+	Assignees      []*CardAssigneeResponse `json:"assignees"`
+	Comments       []*CommentResponse      `json:"comments"`
+	Subtasks       []*SubtaskResponse      `json:"subtasks"`
+	Attachments    []*AttachmentResponse   `json:"attachments"`
 	ChecklistTotal int                     `json:"checklistTotal"`
 	ChecklistDone  int                     `json:"checklistDone"`
 	CommentsCount  int                     `json:"commentsCount"`

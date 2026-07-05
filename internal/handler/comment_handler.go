@@ -66,6 +66,12 @@ func (h *CommentHandler) CreateComment() http.HandlerFunc {
 
 func (h *CommentHandler) UpdateComment() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cardID, err := helper.IDParam(r, "cardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		commentID, err := helper.IDParam(r, "commentId")
 		if err != nil {
 			helper.WriteError(w, err)
@@ -82,7 +88,7 @@ func (h *CommentHandler) UpdateComment() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.UpdateComment(r.Context(), commentID, req)
+		res, err := h.service.UpdateComment(r.Context(), cardID, commentID, req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -93,13 +99,19 @@ func (h *CommentHandler) UpdateComment() http.HandlerFunc {
 
 func (h *CommentHandler) DeleteComment() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cardID, err := helper.IDParam(r, "cardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		commentID, err := helper.IDParam(r, "commentId")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
-		if err := h.service.DeleteComment(r.Context(), commentID); err != nil {
+		if err := h.service.DeleteComment(r.Context(), cardID, commentID); err != nil {
 			helper.WriteError(w, err)
 			return
 		}

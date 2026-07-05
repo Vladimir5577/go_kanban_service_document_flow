@@ -228,6 +228,10 @@ WHERE id = $1;
 -- SUBTASKS
 -- ==============================
 
+-- name: GetSubtask :one
+SELECT * FROM kanban_card_subtask
+WHERE id = $1 LIMIT 1;
+
 -- name: GetSubtasksByCard :many
 SELECT * FROM kanban_card_subtask
 WHERE card_id = $1

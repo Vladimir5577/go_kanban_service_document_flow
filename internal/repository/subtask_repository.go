@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"go_kanban_service/internal/model"
@@ -10,6 +11,7 @@ import (
 )
 
 type SubtaskRepositoryInterface interface {
+	GetSubtask(ctx context.Context, id int64) (*model.Subtask, error)
 	GetSubtasks(ctx context.Context, cardID int64) ([]model.Subtask, error)
 	CreateSubtask(ctx context.Context, cardID int64, s *model.Subtask) (*model.Subtask, error)
 	UpdateSubtask(ctx context.Context, subtaskID int64, s *model.Subtask) (*model.Subtask, error)
@@ -35,25 +37,56 @@ func (r *SubtaskRepository) GetSubtasks(ctx context.Context, cardID int64) ([]mo
 
 	var subtasks []model.Subtask
 	for _, s := range dbSubtasks {
-		subtasks = append(subtasks, model.Subtask{
+		st := model.Subtask{
 			ID:       int64(s.ID),
 			Title:    s.Title,
 			Status:   s.Status,
 			Position: s.Position,
 			CardID:   int64(s.CardID),
-		})
+		}
+		if s.UserID.Valid {
+			uid := int64(s.UserID.Int32)
+			st.UserID = &uid
+		}
+		subtasks = append(subtasks, st)
 	}
 	return subtasks, nil
 }
 
+func (r *SubtaskRepository) GetSubtask(ctx context.Context, id int64) (*model.Subtask, error) {
+	queries := dbgen.New(r.Db)
+	dbSubtask, err := queries.GetSubtask(ctx, int32(id))
+	if err != nil {
+		return nil, err
+	}
+	s := &model.Subtask{
+		ID:       int64(dbSubtask.ID),
+		Title:    dbSubtask.Title,
+		Status:   dbSubtask.Status,
+		Position: dbSubtask.Position,
+		CardID:   int64(dbSubtask.CardID),
+	}
+	if dbSubtask.UserID.Valid {
+		uid := int64(dbSubtask.UserID.Int32)
+		s.UserID = &uid
+	}
+	return s, nil
+}
+
 func (r *SubtaskRepository) CreateSubtask(ctx context.Context, cardID int64, s *model.Subtask) (*model.Subtask, error) {
 	queries := dbgen.New(r.Db)
+	
+	var userID pgtype.Int4
+	if s.UserID != nil {
+		userID = pgtype.Int4{Int32: int32(*s.UserID), Valid: true}
+	}
+
 	res, err := queries.CreateSubtask(ctx, dbgen.CreateSubtaskParams{
 		Title:    s.Title,
 		Status:   s.Status,
 		Position: s.Position,
 		CardID:   int32(cardID),
-		// TODO: add UserID mapping when it's added to model
+		UserID:   userID,
 	})
 	if err != nil {
 		return nil, err
@@ -65,12 +98,18 @@ func (r *SubtaskRepository) CreateSubtask(ctx context.Context, cardID int64, s *
 
 func (r *SubtaskRepository) UpdateSubtask(ctx context.Context, subtaskID int64, s *model.Subtask) (*model.Subtask, error) {
 	queries := dbgen.New(r.Db)
+
+	var userID pgtype.Int4
+	if s.UserID != nil {
+		userID = pgtype.Int4{Int32: int32(*s.UserID), Valid: true}
+	}
+
 	_, err := queries.UpdateSubtask(ctx, dbgen.UpdateSubtaskParams{
 		Title:    s.Title,
 		Status:   s.Status,
 		Position: s.Position,
+		UserID:   userID,
 		ID:       int32(subtaskID),
-		// TODO: add UserID mapping when it's added to model
 	})
 	if err != nil {
 		return nil, err

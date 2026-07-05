@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -313,5 +314,21 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 }
 
 func (r *CardRepository) ArchiveCard(ctx context.Context, id int64) error {
-	return nil
+	card, err := r.GetCard(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	if card.IsArchived {
+		card.IsArchived = false
+		card.ArchivedAt = nil
+		card.ArchivedByID = nil
+	} else {
+		card.IsArchived = true
+		now := time.Now()
+		card.ArchivedAt = &now
+	}
+
+	_, err = r.UpdateCard(ctx, card)
+	return err
 }

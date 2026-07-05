@@ -7,11 +7,11 @@ import (
 )
 
 type CreateCommentRequest struct {
-	Body string `json:"body" validate:"required,max=2000"`
+	Body string `json:"body" validate:"required"`
 }
 
 type UpdateCommentRequest struct {
-	Body *string `json:"body,omitempty" validate:"omitempty,max=2000"`
+	Body *string `json:"body" validate:"required"`
 }
 
 type CommentResponse struct {

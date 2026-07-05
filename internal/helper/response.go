@@ -38,6 +38,9 @@ func WriteError(w http.ResponseWriter, err error) {
 		case apperr.CodeForbidden:
 			status = http.StatusForbidden
 			message = "forbidden"
+		case apperr.CodeUnauthorized:
+			status = http.StatusUnauthorized
+			message = "unauthorized"
 		case apperr.CodeConflict:
 			status = http.StatusConflict
 			message = "conflict"
@@ -56,6 +59,10 @@ func WriteError(w http.ResponseWriter, err error) {
 			status = http.StatusForbidden
 			message = "forbidden"
 			code = string(apperr.CodeForbidden)
+		case errors.Is(err, apperr.ErrUnauthorized):
+			status = http.StatusUnauthorized
+			message = "unauthorized"
+			code = string(apperr.CodeUnauthorized)
 		case errors.Is(err, apperr.ErrConflict):
 			status = http.StatusConflict
 			message = "conflict"

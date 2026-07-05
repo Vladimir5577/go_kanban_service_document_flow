@@ -508,23 +508,37 @@ func (q *Queries) DeleteSubtask(ctx context.Context, id int32) error {
 
 const getActivitiesByCard = `-- name: GetActivitiesByCard :many
 
-SELECT id, card_id, user_id, type, old_value, new_value, created_at FROM kanban_card_activity
-WHERE card_id = $1
-ORDER BY created_at DESC
+SELECT a.id, a.card_id, a.user_id, a.type, a.old_value, a.new_value, a.created_at, u.firstname, u.lastname
+FROM kanban_card_activity a
+LEFT JOIN users u ON a.user_id = u.id
+WHERE a.card_id = $1
+ORDER BY a.created_at DESC
 `
+
+type GetActivitiesByCardRow struct {
+	ID        int32            `json:"id"`
+	CardID    int32            `json:"card_id"`
+	UserID    pgtype.Int4      `json:"user_id"`
+	Type      string           `json:"type"`
+	OldValue  pgtype.Text      `json:"old_value"`
+	NewValue  pgtype.Text      `json:"new_value"`
+	CreatedAt pgtype.Timestamp `json:"created_at"`
+	Firstname pgtype.Text      `json:"firstname"`
+	Lastname  pgtype.Text      `json:"lastname"`
+}
 
 // ==============================
 // ACTIVITY
 // ==============================
-func (q *Queries) GetActivitiesByCard(ctx context.Context, cardID int32) ([]KanbanCardActivity, error) {
+func (q *Queries) GetActivitiesByCard(ctx context.Context, cardID int32) ([]GetActivitiesByCardRow, error) {
 	rows, err := q.db.Query(ctx, getActivitiesByCard, cardID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []KanbanCardActivity{}
+	items := []GetActivitiesByCardRow{}
 	for rows.Next() {
-		var i KanbanCardActivity
+		var i GetActivitiesByCardRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.CardID,
@@ -533,6 +547,8 @@ func (q *Queries) GetActivitiesByCard(ctx context.Context, cardID int32) ([]Kanb
 			&i.OldValue,
 			&i.NewValue,
 			&i.CreatedAt,
+			&i.Firstname,
+			&i.Lastname,
 		); err != nil {
 			return nil, err
 		}
@@ -1173,6 +1189,26 @@ func (q *Queries) GetProjectMembers(ctx context.Context, kanbanProjectID int32) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const getSubtask = `-- name: GetSubtask :one
+
+SELECT id, title, status, position, card_id, user_id FROM kanban_card_subtask
+WHERE id = $1 LIMIT 1
+`
+
+func (q *Queries) GetSubtask(ctx context.Context, id int32) (KanbanCardSubtask, error) {
+	row := q.db.QueryRow(ctx, getSubtask, id)
+	var i KanbanCardSubtask
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Status,
+		&i.Position,
+		&i.CardID,
+		&i.UserID,
+	)
+	return i, err
 }
 
 const getSubtasksByCard = `-- name: GetSubtasksByCard :many

@@ -58,14 +58,29 @@ func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjec
 		OwnerID:     user.ID,
 		CreatedByID: &user.ID,
 	}
-	return s.repo.CreateProject(ctx, p)
+	created, err := s.repo.CreateProject(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+
+	err = s.memberRepo.ReplaceMembers(ctx, created.ID, []model.ProjectUser{
+		{
+			KanbanProjectID: created.ID,
+			UserID:          user.ID,
+			Role:            string(RoleAdmin),
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return created, nil
 }
 
 func (s *ProjectService) GetProject(ctx context.Context, id int64) (*dto.ProjectResponse, error) {
 	if err := s.permSvc.RequireRole(ctx, id, RoleViewer); err != nil {
 		return nil, err
 	}
-	
+
 	p, err := s.repo.GetProject(ctx, id)
 	if err != nil {
 		return nil, err
@@ -80,6 +95,7 @@ func (s *ProjectService) GetProject(ctx context.Context, id int64) (*dto.Project
 	if err != nil {
 		return nil, err
 	}
+	members = ensureOwnerMember(members, p.OwnerID, id)
 
 	// Собрать всех пользователей, которых нужно загрузить
 	var userIDs []int64
@@ -100,7 +116,7 @@ func (s *ProjectService) GetProject(ctx context.Context, id int64) (*dto.Project
 	}
 
 	resp := dto.MapProjectResponse(p)
-	
+
 	// Владелец
 	if owner, ok := userMap[p.OwnerID]; ok {
 		resp.Owner = &dto.UserResponse{
@@ -171,4 +187,18 @@ func (s *ProjectService) DeleteProject(ctx context.Context, id int64) error {
 		return err
 	}
 	return s.repo.DeleteProject(ctx, id)
+}
+
+func ensureOwnerMember(members []model.ProjectUser, ownerID int64, projectID int64) []model.ProjectUser {
+	for i := range members {
+		if members[i].UserID == ownerID {
+			members[i].Role = string(RoleAdmin)
+			return members
+		}
+	}
+	return append(members, model.ProjectUser{
+		KanbanProjectID: projectID,
+		UserID:          ownerID,
+		Role:            string(RoleAdmin),
+	})
 }

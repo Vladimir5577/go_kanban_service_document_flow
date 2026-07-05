@@ -28,3 +28,30 @@ type Card struct {
 	AssigneeIDs []int64 `json:"assignee_ids,omitempty"`
 	LabelIDs    []int64 `json:"label_ids,omitempty"`
 }
+
+type BoardArchiveFilters struct {
+	Title       string
+	Description string
+	DateFrom    string
+	DateTo      string
+	Page        int
+	Limit       int
+}
+
+type ArchivedCard struct {
+	ID          int64
+	Title       string
+	Description *string
+	ColumnTitle string
+	BorderColor *string
+	ArchivedAt  *time.Time
+	ArchivedBy  *User
+}
+
+type BoardArchivePage struct {
+	Cards         []ArchivedCard
+	Page          int
+	Limit         int
+	Total         int64
+	ArchivedCount int64
+}

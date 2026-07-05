@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/helper"
+	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/service"
 	"go_kanban_service/internal/validator"
 )
@@ -49,13 +51,19 @@ func (h *BoardHandler) CreateBoard() http.HandlerFunc {
 
 func (h *BoardHandler) GetBoard() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		boardID, err := helper.IDParam(r, "boardId")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
-		res, err := h.service.GetBoard(r.Context(), boardID)
+		res, err := h.service.GetBoard(r.Context(), projectID, boardID)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -66,6 +74,12 @@ func (h *BoardHandler) GetBoard() http.HandlerFunc {
 
 func (h *BoardHandler) UpdateBoard() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		boardID, err := helper.IDParam(r, "boardId")
 		if err != nil {
 			helper.WriteError(w, err)
@@ -82,7 +96,7 @@ func (h *BoardHandler) UpdateBoard() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.UpdateBoard(r.Context(), boardID, req)
+		res, err := h.service.UpdateBoard(r.Context(), projectID, boardID, req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -93,33 +107,63 @@ func (h *BoardHandler) UpdateBoard() http.HandlerFunc {
 
 func (h *BoardHandler) DeleteBoard() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		boardID, err := helper.IDParam(r, "boardId")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
-		if err := h.service.DeleteBoard(r.Context(), boardID); err != nil {
+		res, err := h.service.DeleteBoard(r.Context(), projectID, boardID)
+		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusNoContent, nil)
+		helper.WriteJSON(w, http.StatusOK, res)
 	}
 }
 
 func (h *BoardHandler) GetBoardArchive() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
 		boardID, err := helper.IDParam(r, "boardId")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
-		res, err := h.service.GetBoardArchive(r.Context(), boardID)
+		query := r.URL.Query()
+		filters := model.BoardArchiveFilters{
+			Title:       query.Get("title"),
+			Description: query.Get("description"),
+			DateFrom:    query.Get("dateFrom"),
+			DateTo:      query.Get("dateTo"),
+			Page:        parsePositiveInt(query.Get("page"), 1),
+			Limit:       10,
+		}
+
+		res, err := h.service.GetBoardArchive(r.Context(), projectID, boardID, filters)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.MapCardsResponse(res))
+		helper.WriteJSON(w, http.StatusOK, res)
 	}
+}
+
+func parsePositiveInt(value string, fallback int) int {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return fallback
+	}
+	return parsed
 }

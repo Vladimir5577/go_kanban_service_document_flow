@@ -83,6 +83,7 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 			r.Put("/{id}/assignees", h.Card.UpdateAssignees())
 			r.Post("/{id}/move", h.Card.MoveCard())
 			r.Patch("/{id}/archive", h.Card.ArchiveCard())
+			r.Patch("/{id}/complete", h.Card.CompleteCard())
 
 			// SUBTASKS
 			r.Route("/{cardId}/subtasks", func(r chi.Router) {

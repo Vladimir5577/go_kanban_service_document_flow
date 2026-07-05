@@ -83,7 +83,6 @@ func (s *PermissionService) RequireRole(ctx context.Context, projectID int64, mi
 		return apperr.ErrForbidden
 	}
 
-
 	if userLevel < requiredLevel {
 		return apperr.ErrForbidden
 	}

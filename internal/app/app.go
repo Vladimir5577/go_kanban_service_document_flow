@@ -59,13 +59,12 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 
 	projectRepo := repository.NewProjectRepository(db)
 	projectMemberRepo := repository.NewProjectMemberRepository(db)
-	
+
 	permSvc := service.NewPermissionService(db, projectRepo, projectMemberRepo)
 
 	userRepo := repository.NewUserRepository(db)
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
-
 
 	activityRepo := repository.NewActivityRepository(db)
 	activitySvc := service.NewActivityService(activityRepo, permSvc)
@@ -75,40 +74,40 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	subtaskRepo := repository.NewSubtaskRepository(db)
 	commentRepo := repository.NewCommentRepository(db)
 	labelRepo := repository.NewLabelRepository(db)
-	
-	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc)
+
+	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, activityRepo)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
 	boardRepo := repository.NewBoardRepository(db)
+	columnRepo := repository.NewColumnRepository(db)
 
 	cardRepo := repository.NewCardRepository(db)
-	cardSvc := service.NewCardService(cardRepo, permSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, cfg)
+	cardSvc := service.NewCardService(cardRepo, permSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, projectRepo, projectMemberRepo, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
-	columnRepo := repository.NewColumnRepository(db)
-	columnSvc := service.NewColumnService(columnRepo, permSvc)
+	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
 	columnHandler := handler.NewColumnHandler(columnSvc)
 
 	commentSvc := service.NewCommentService(commentRepo, permSvc, userRepo)
 	commentHandler := handler.NewCommentHandler(commentSvc)
 
-	labelSvc := service.NewLabelService(labelRepo, permSvc)
+	labelSvc := service.NewLabelService(labelRepo, permSvc, activityRepo, boardRepo, cardRepo, columnRepo)
 	labelHandler := handler.NewLabelHandler(labelSvc)
 
 	projectFolderRepo := repository.NewProjectFolderRepository(db)
 	projectFolderSvc := service.NewProjectFolderService(projectFolderRepo, permSvc)
 	projectFolderHandler := handler.NewProjectFolderHandler(projectFolderSvc)
 
-	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, permSvc)
+	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc)
 	projectMemberHandler := handler.NewProjectMemberHandler(projectMemberSvc)
 
-	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc)
+	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, activityRepo, userRepo, projectRepo, projectMemberRepo)
 	subtaskHandler := handler.NewSubtaskHandler(subtaskSvc)
 
 	projectSvc := service.NewProjectService(projectRepo, boardRepo, projectMemberRepo, userRepo, permSvc)
 	projectHandler := handler.NewProjectHandler(projectSvc)
 
-	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, subtaskRepo, commentRepo, permSvc)
+	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, subtaskRepo, commentRepo, attachmentRepo, permSvc)
 	boardHandler := handler.NewBoardHandler(boardSvc)
 
 	h := Handlers{

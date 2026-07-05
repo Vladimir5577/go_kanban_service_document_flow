@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"strings"
+	"unicode/utf8"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
@@ -10,12 +12,17 @@ import (
 	"go_kanban_service/internal/repository"
 )
 
+const (
+	maxCommentBodyLength = 10000
+	maxCommentsPerCard   = 300
+)
+
 type CommentServiceInterface interface {
 	GetComments(ctx context.Context, cardID int64) ([]model.Comment, error)
 	GetComment(ctx context.Context, commentID int64) (*model.Comment, error)
 	CreateComment(ctx context.Context, cardID int64, req dto.CreateCommentRequest) (*model.Comment, error)
-	UpdateComment(ctx context.Context, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error)
-	DeleteComment(ctx context.Context, commentID int64) error
+	UpdateComment(ctx context.Context, cardID int64, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error)
+	DeleteComment(ctx context.Context, cardID int64, commentID int64) error
 }
 
 type CommentService struct {
@@ -60,7 +67,7 @@ func (s *CommentService) GetComment(ctx context.Context, commentID int64) (*mode
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
-	s.populateAuthorNames(ctx, []model.Comment{*c})
+	s.populateAuthorName(ctx, c)
 	return c, nil
 }
 
@@ -69,22 +76,30 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 	if err != nil {
 		return nil, err
 	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil { // Viewer can comment? Wait, Symfony allows Viewer to comment if we just require viewer. Let's assume Viewer or Editor is enough to comment. Actually, usually viewers can't comment, let's require Editor. Wait, what is the role to comment? Let's use Editor.
+	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
 
 	user, ok := middleware.GetUser(ctx)
 	if !ok {
-		return nil, apperr.ErrForbidden
+		return nil, apperr.ErrUnauthorized
+	}
+
+	body, err := normalizeCommentBody(req.Body)
+	if err != nil {
+		return nil, err
 	}
 
 	comments, err := s.repo.GetComments(ctx, cardID)
-	if err == nil && len(comments) >= 300 {
-		return nil, apperr.New(apperr.CodeValidation, "maximum number of comments (300) per card reached")
+	if err == nil && len(comments) >= maxCommentsPerCard {
+		return nil, apperr.New(apperr.CodeConflict, "maximum number of comments (300) per card reached")
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	c := &model.Comment{
-		Body:     req.Body,
+		Body:     body,
 		CardID:   cardID,
 		AuthorID: user.ID,
 	}
@@ -92,58 +107,100 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 	if err != nil {
 		return nil, err
 	}
-	s.populateAuthorNames(ctx, []model.Comment{*created})
+	s.populateAuthorName(ctx, created)
 	return created, nil
 }
 
-func (s *CommentService) UpdateComment(ctx context.Context, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error) {
+func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error) {
+	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
+		return nil, err
+	}
+
 	c, err := s.repo.GetComment(ctx, commentID)
 	if err != nil {
 		return nil, err
 	}
+	if c.CardID != cardID {
+		return nil, apperr.ErrNotFound
+	}
 
 	user, ok := middleware.GetUser(ctx)
 	if !ok {
-		return nil, apperr.ErrForbidden
+		return nil, apperr.ErrUnauthorized
 	}
 	if c.AuthorID != user.ID {
 		return nil, apperr.ErrForbidden
 	}
 
-	if req.Body != nil {
-		c.Body = *req.Body
+	if req.Body == nil {
+		return nil, apperr.New(apperr.CodeValidation, "comment body required")
 	}
+	body, err := normalizeCommentBody(*req.Body)
+	if err != nil {
+		return nil, err
+	}
+	c.Body = body
+
 	updated, err := s.repo.UpdateComment(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	s.populateAuthorNames(ctx, []model.Comment{*updated})
+	s.populateAuthorName(ctx, updated)
 	return updated, nil
 }
 
-func (s *CommentService) DeleteComment(ctx context.Context, commentID int64) error {
+func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commentID int64) error {
+	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
+	if err != nil {
+		return err
+	}
+	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
+		return err
+	}
+
 	c, err := s.repo.GetComment(ctx, commentID)
 	if err != nil {
 		return err
 	}
+	if c.CardID != cardID {
+		return apperr.ErrNotFound
+	}
 
 	user, ok := middleware.GetUser(ctx)
 	if !ok {
-		return apperr.ErrForbidden
+		return apperr.ErrUnauthorized
 	}
-	
-	// Author can delete, or Admin can delete
 	if c.AuthorID != user.ID {
-		projectID, err := s.permSvc.GetProjectIDByCard(ctx, c.CardID)
-		if err != nil {
-			return err
-		}
-		if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
-			return apperr.ErrForbidden
-		}
+		return apperr.ErrForbidden
 	}
 
 	return s.repo.DeleteComment(ctx, commentID)
+}
+
+func normalizeCommentBody(body string) (string, error) {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return "", apperr.New(apperr.CodeValidation, "comment body required")
+	}
+	if utf8.RuneCountInString(body) > maxCommentBodyLength {
+		return "", apperr.New(apperr.CodeValidation, "comment body too long")
+	}
+	return body, nil
+}
+
+func (s *CommentService) populateAuthorName(ctx context.Context, comment *model.Comment) {
+	if comment == nil {
+		return
+	}
+	users, err := s.userRepo.GetUsersByIDs(ctx, []int64{comment.AuthorID})
+	if err != nil || len(users) == 0 {
+		return
+	}
+	comment.AuthorName = commentAuthorName(&users[0])
 }
 
 func (s *CommentService) populateAuthorNames(ctx context.Context, comments []model.Comment) {
@@ -164,11 +221,11 @@ func (s *CommentService) populateAuthorNames(ctx context.Context, comments []mod
 	}
 	for i := range comments {
 		if u, ok := userMap[comments[i].AuthorID]; ok {
-			name := u.Firstname
-			if u.Lastname != "" {
-				name += " " + u.Lastname
-			}
-			comments[i].AuthorName = name
+			comments[i].AuthorName = commentAuthorName(u)
 		}
 	}
+}
+
+func commentAuthorName(u *model.User) string {
+	return strings.TrimSpace(u.Lastname + " " + u.Firstname)
 }

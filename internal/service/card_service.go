@@ -2,10 +2,16 @@ package service
 
 import (
 	"context"
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
+	"go_kanban_service/internal/middleware"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository"
 )
@@ -19,17 +25,22 @@ type CardServiceInterface interface {
 	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error
 	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
 	ArchiveCard(ctx context.Context, id int64) error
+	CompleteCard(ctx context.Context, id int64) (*model.Card, error)
 }
 
 type CardService struct {
-	repo           repository.CardRepositoryInterface
-	permSvc        *PermissionService
-	subtaskRepo    repository.SubtaskRepositoryInterface
-	commentRepo    repository.CommentRepositoryInterface
-	attachmentRepo repository.AttachmentRepositoryInterface
-	labelRepo      repository.LabelRepositoryInterface
-	userRepo       repository.UserRepositoryInterface
-	cfg            *config.Config
+	repo              repository.CardRepositoryInterface
+	permSvc           *PermissionService
+	subtaskRepo       repository.SubtaskRepositoryInterface
+	commentRepo       repository.CommentRepositoryInterface
+	attachmentRepo    repository.AttachmentRepositoryInterface
+	labelRepo         repository.LabelRepositoryInterface
+	userRepo          repository.UserRepositoryInterface
+	activityRepo      repository.ActivityRepositoryInterface
+	columnRepo        repository.ColumnRepositoryInterface
+	projectRepo       repository.ProjectRepositoryInterface
+	projectMemberRepo repository.ProjectMemberRepositoryInterface
+	cfg               *config.Config
 }
 
 func NewCardService(
@@ -40,17 +51,25 @@ func NewCardService(
 	attachmentRepo repository.AttachmentRepositoryInterface,
 	labelRepo repository.LabelRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
+	activityRepo repository.ActivityRepositoryInterface,
+	columnRepo repository.ColumnRepositoryInterface,
+	projectRepo repository.ProjectRepositoryInterface,
+	projectMemberRepo repository.ProjectMemberRepositoryInterface,
 	cfg *config.Config,
 ) *CardService {
 	return &CardService{
-		repo:           repo,
-		permSvc:        permSvc,
-		subtaskRepo:    subtaskRepo,
-		commentRepo:    commentRepo,
-		attachmentRepo: attachmentRepo,
-		labelRepo:      labelRepo,
-		userRepo:       userRepo,
-		cfg:            cfg,
+		repo:              repo,
+		permSvc:           permSvc,
+		subtaskRepo:       subtaskRepo,
+		commentRepo:       commentRepo,
+		attachmentRepo:    attachmentRepo,
+		labelRepo:         labelRepo,
+		userRepo:          userRepo,
+		activityRepo:      activityRepo,
+		columnRepo:        columnRepo,
+		projectRepo:       projectRepo,
+		projectMemberRepo: projectMemberRepo,
+		cfg:               cfg,
 	}
 }
 
@@ -82,6 +101,9 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 		AssigneeIDs: req.AssigneeIDs,
 		LabelIDs:    req.LabelIDs,
 	}
+	if authorID := currentUserID(ctx); authorID != nil {
+		c.CreatedByID = authorID
+	}
 	if req.Position != nil {
 		c.Position = *req.Position
 	} else {
@@ -92,7 +114,11 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 			c.Position = 65536.0
 		}
 	}
-	return s.repo.CreateCard(ctx, req.ColumnID, c)
+	created, err := s.repo.CreateCard(ctx, req.ColumnID, c)
+	if err == nil && created != nil {
+		s.logActivity(ctx, created.ID, "created", nil, nil)
+	}
+	return created, err
 }
 
 func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error) {
@@ -107,9 +133,9 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	if err != nil {
 		return nil, err
 	}
-	
+
 	resp := dto.MapCardResponse(card)
-	
+
 	// Fetch Subtasks
 	subtasks, _ := s.subtaskRepo.GetSubtasks(ctx, id)
 	resp.Subtasks = dto.MapSubtasksResponse(subtasks)
@@ -119,11 +145,10 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 			resp.ChecklistDone++
 		}
 	}
-	
+
 	// Fetch Comments
 	comments, _ := s.commentRepo.GetComments(ctx, id)
-	resp.CommentsCount = len(comments)
-	
+
 	var userIDs []int64
 	for i := range comments {
 		userIDs = append(userIDs, comments[i].AuthorID)
@@ -136,7 +161,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 			userIDs = append(userIDs, *resp.Subtasks[i].UserID)
 		}
 	}
-	
+
 	var allAttachments []model.Attachment
 	if atts, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "card"); err == nil {
 		allAttachments = append(allAttachments, atts...)
@@ -144,21 +169,24 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	if atts, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "description"); err == nil {
 		allAttachments = append(allAttachments, atts...)
 	}
+	var chatAttachments []model.Attachment
 	if atts, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "chat"); err == nil {
+		chatAttachments = atts
 		allAttachments = append(allAttachments, atts...)
 	}
+	resp.CommentsCount = len(comments) + len(chatAttachments)
 	for i := range allAttachments {
 		if allAttachments[i].AuthorID != nil {
 			userIDs = append(userIDs, *allAttachments[i].AuthorID)
 		}
 	}
-	
+
 	users, _ := s.userRepo.GetUsersByIDs(ctx, userIDs)
 	userMap := make(map[int64]*model.User)
 	for i := range users {
 		userMap[users[i].ID] = &users[i]
 	}
-	
+
 	for i := range comments {
 		if u, ok := userMap[comments[i].AuthorID]; ok {
 			name := u.Firstname
@@ -169,7 +197,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 		}
 	}
 	resp.Comments = dto.MapCommentsResponse(comments)
-	
+
 	resp.Attachments = dto.MapAttachmentsResponse(s.cfg, allAttachments)
 	for i, att := range resp.Attachments {
 		if att.AuthorID != nil {
@@ -182,7 +210,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 			}
 		}
 	}
-	
+
 	for _, st := range resp.Subtasks {
 		if st.UserID != nil {
 			if u, ok := userMap[*st.UserID]; ok {
@@ -194,16 +222,26 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 			}
 		}
 	}
-	
-	// Labels can be hydrated if needed, for now we skip doing extra db queries for them.
-	// The frontend might use LabelIDs.
-	
-	// Let's just fetch all labels for the board. Wait, we don't have boardID easily here. 
-	// We can get it from ProjectID? No. 
-	
-	// Let's skip hydrating labels fully if it's too complex right now, but wait, frontend needs color.
-	// We can use s.repo.GetCardLabels? No, labels are already in card.LabelIDs. 
-	
+
+	col, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
+	if err != nil {
+		return nil, err
+	}
+	labels, err := s.labelRepo.GetLabels(ctx, col.BoardID)
+	if err != nil {
+		return nil, err
+	}
+	labelMap := make(map[int64]*dto.LabelResponse, len(labels))
+	for i := range labels {
+		label := dto.MapLabelResponse(&labels[i])
+		labelMap[label.ID] = label
+	}
+	for _, labelID := range card.LabelIDs {
+		if label, ok := labelMap[labelID]; ok {
+			resp.Labels = append(resp.Labels, label)
+		}
+	}
+
 	for _, uid := range card.AssigneeIDs {
 		if u, ok := userMap[uid]; ok {
 			name := u.Firstname
@@ -217,7 +255,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 			})
 		}
 	}
-	
+
 	return resp, nil
 }
 
@@ -245,40 +283,100 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 	if err != nil {
 		return nil, err
 	}
+
+	var titleChanged, descChanged, dueChanged, priorityChanged, colorChanged bool
+	var oldTitle, newTitle *string
+	var oldDue, newDue *string
+	var oldPriority, newPriority *string
+	var oldColor, newColor *string
+
 	if req.Title != nil {
-		c.Title = *req.Title
-	}
-	if req.ColumnID != nil {
-		c.ColumnID = *req.ColumnID
-	}
-	if req.Description != nil {
-		c.Description = req.Description
-	}
-	if req.Position != nil {
-		c.Position = *req.Position
-	}
-	if req.DueDate != nil {
-		c.DueDate = req.DueDate
-	}
-	if req.Priority != nil {
-		c.Priority = req.Priority
-	}
-	if req.IsArchived != nil {
-		c.IsArchived = *req.IsArchived
-	}
-	if req.BorderColor != nil {
-		c.BorderColor = req.BorderColor
-	}
-	if req.AssigneeIDs != nil {
-		if len(req.AssigneeIDs) > 1 {
-			return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
+		trimmedTitle := strings.TrimSpace(*req.Title)
+		if trimmedTitle != "" && c.Title != trimmedTitle {
+			titleChanged = true
+			tOld := c.Title
+			tNew := trimmedTitle
+			oldTitle, newTitle = &tOld, &tNew
+			c.Title = tNew
 		}
-		c.AssigneeIDs = req.AssigneeIDs
 	}
-	if req.LabelIDs != nil {
-		c.LabelIDs = req.LabelIDs
+
+	if req.HasDescription {
+		oldDescription := c.Description
+		if !sameOptionalString(oldDescription, req.Description) {
+			descChanged = true
+			c.Description = req.Description
+		}
 	}
-	return s.repo.UpdateCard(ctx, c)
+
+	if req.HasDueDate {
+		if !sameOptionalTime(c.DueDate, req.DueDate) {
+			dueChanged = true
+			if c.DueDate != nil {
+				dStr := c.DueDate.Format("02.01.2006 15:04")
+				oldDue = &dStr
+			}
+			if req.DueDate != nil {
+				dStr := req.DueDate.Format("02.01.2006 15:04")
+				newDue = &dStr
+			}
+			c.DueDate = req.DueDate
+		}
+	}
+
+	if req.HasPriority {
+		normalizedPriority := normalizeCardPriority(req.Priority)
+		if !sameOptionalString(c.Priority, normalizedPriority) {
+			priorityChanged = true
+			oldPriorityValue := formatPriority(c.Priority)
+			newPriorityValue := formatPriority(normalizedPriority)
+			oldPriority, newPriority = &oldPriorityValue, &newPriorityValue
+			c.Priority = normalizedPriority
+		}
+	}
+
+	if req.HasBorderColor {
+		normalizedColor := normalizeCardBorderColor(req.BorderColor)
+		if !sameOptionalString(c.BorderColor, normalizedColor) {
+			colorChanged = true
+			oldColorValue := valueOr(c.BorderColor, "без цвета")
+			newColorValue := valueOr(normalizedColor, "без цвета")
+			oldColor, newColor = &oldColorValue, &newColorValue
+			c.BorderColor = normalizedColor
+		}
+	}
+
+	if !titleChanged && !descChanged && !dueChanged && !priorityChanged && !colorChanged {
+		return c, nil
+	}
+
+	updatedCard, err := s.repo.UpdateCard(ctx, c)
+	if err == nil {
+		if titleChanged {
+			s.logActivity(ctx, id, "renamed", oldTitle, newTitle)
+		}
+		if descChanged {
+			s.logActivity(ctx, id, "description_changed", nil, nil)
+		}
+		if priorityChanged {
+			s.logActivity(ctx, id, "priority_changed", oldPriority, newPriority)
+		}
+		if dueChanged {
+			if oldDue == nil {
+				none := "не задан"
+				oldDue = &none
+			}
+			if newDue == nil {
+				none := "не задан"
+				newDue = &none
+			}
+			s.logActivity(ctx, id, "due_date_changed", oldDue, newDue)
+		}
+		if colorChanged {
+			s.logActivity(ctx, id, "color_changed", oldColor, newColor)
+		}
+	}
+	return updatedCard, err
 }
 
 func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
@@ -286,7 +384,7 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
+	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return err
 	}
 	return s.repo.DeleteCard(ctx, id)
@@ -304,7 +402,69 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return err
 	}
-	return s.repo.UpdateCardAssignees(ctx, id, userIDs)
+	if err := s.validateProjectAssignees(ctx, projectID, userIDs); err != nil {
+		return err
+	}
+	var oldValue *string
+	card, _ := s.repo.GetCard(ctx, id)
+	if card != nil && len(card.AssigneeIDs) > 0 {
+		if users, _ := s.userRepo.GetUsersByIDs(ctx, []int64{card.AssigneeIDs[0]}); len(users) > 0 {
+			n := users[0].Firstname + " " + users[0].Lastname
+			oldValue = &n
+		}
+	}
+
+	var newValue *string
+	if len(userIDs) > 0 {
+		if users, _ := s.userRepo.GetUsersByIDs(ctx, []int64{userIDs[0]}); len(users) > 0 {
+			n := users[0].Firstname + " " + users[0].Lastname
+			newValue = &n
+		}
+	}
+
+	err = s.repo.UpdateCardAssignees(ctx, id, userIDs)
+	if err == nil {
+		if oldValue != nil && newValue == nil {
+			s.logActivity(ctx, id, "assignee_removed", oldValue, nil)
+		} else if oldValue == nil && newValue != nil {
+			s.logActivity(ctx, id, "assignee_added", nil, newValue)
+		} else if oldValue != nil && newValue != nil && *oldValue != *newValue {
+			s.logActivity(ctx, id, "assignee_removed", oldValue, nil)
+			s.logActivity(ctx, id, "assignee_added", nil, newValue)
+		}
+	}
+	return err
+}
+
+func (s *CardService) validateProjectAssignees(ctx context.Context, projectID int64, userIDs []int64) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+
+	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
+	if err != nil {
+		return err
+	}
+	if len(users) != len(userIDs) {
+		return apperr.ErrNotFound
+	}
+
+	project, err := s.projectRepo.GetProject(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	for _, userID := range userIDs {
+		if userID == project.OwnerID {
+			continue
+		}
+		if _, err := s.projectMemberRepo.GetProjectMember(ctx, projectID, userID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return apperr.New(apperr.CodeValidation, "user is not project member")
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
@@ -315,7 +475,40 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return nil, err
 	}
-	return s.repo.MoveCard(ctx, id, columnID, position)
+
+	cardBefore, err := s.repo.GetCard(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	sourceColumn, err := s.columnRepo.GetColumn(ctx, cardBefore.ColumnID)
+	if err != nil {
+		return nil, mapNoRowsToNotFound(err)
+	}
+	targetColumn, err := s.columnRepo.GetColumn(ctx, columnID)
+	if err != nil {
+		return nil, mapNoRowsToNotFound(err)
+	}
+	if targetColumn.BoardID != sourceColumn.BoardID {
+		return nil, apperr.ErrNotFound
+	}
+
+	columnChanged := cardBefore.ColumnID != columnID
+
+	var oldValue *string
+	if columnChanged {
+		oldValue = &sourceColumn.Title
+	}
+
+	var newValue *string
+	if columnChanged {
+		newValue = &targetColumn.Title
+	}
+
+	card, err := s.repo.MoveCard(ctx, id, columnID, position)
+	if err == nil && columnChanged {
+		s.logActivity(ctx, id, "moved", oldValue, newValue)
+	}
+	return card, err
 }
 
 func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
@@ -323,8 +516,146 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
+	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return err
 	}
-	return s.repo.ArchiveCard(ctx, id)
+
+	card, err := s.repo.GetCard(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	activityType := "archived"
+	if card.IsArchived {
+		activityType = "restored"
+		card.IsArchived = false
+		card.ArchivedAt = nil
+		card.ArchivedByID = nil
+	} else {
+		card.IsArchived = true
+		now := time.Now()
+		card.ArchivedAt = &now
+		card.ArchivedByID = currentUserID(ctx)
+	}
+
+	_, err = s.repo.UpdateCard(ctx, card)
+	if err == nil {
+		s.logActivity(ctx, id, activityType, nil, nil)
+	}
+	return err
+}
+
+func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, error) {
+	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
+		return nil, err
+	}
+
+	card, err := s.repo.GetCard(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	activityType := "completed"
+	if card.CompletedAt != nil {
+		activityType = "reopened"
+		card.CompletedAt = nil
+		card.CompletedByID = nil
+	} else {
+		now := time.Now()
+		card.CompletedAt = &now
+		card.CompletedByID = currentUserID(ctx)
+	}
+
+	updated, err := s.repo.UpdateCard(ctx, card)
+	if err == nil {
+		s.logActivity(ctx, id, activityType, nil, nil)
+	}
+	return updated, err
+}
+
+func (s *CardService) logActivity(ctx context.Context, cardID int64, action string, oldValue, newValue *string) {
+	_ = s.activityRepo.LogActivity(ctx, cardID, currentUserID(ctx), action, oldValue, newValue)
+}
+
+func currentUserID(ctx context.Context) *int64 {
+	user, ok := middleware.GetUser(ctx)
+	if !ok || user.ID == 0 {
+		return nil
+	}
+	id := user.ID
+	return &id
+}
+
+func stringPtrValue(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+func valueOr(v *string, fallback string) string {
+	if v == nil || *v == "" {
+		return fallback
+	}
+	return *v
+}
+
+func normalizeCardPriority(priority *string) *string {
+	if priority == nil {
+		return nil
+	}
+	value := strings.TrimSpace(*priority)
+	switch value {
+	case "low", "medium", "high":
+		return &value
+	default:
+		return nil
+	}
+}
+
+func normalizeCardBorderColor(color *string) *string {
+	if color == nil {
+		return nil
+	}
+	value := strings.TrimSpace(*color)
+	switch value {
+	case "primary", "success", "warning", "danger", "info", "dark":
+		return &value
+	default:
+		return nil
+	}
+}
+
+func sameOptionalString(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+func sameOptionalTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+func formatPriority(priority *string) string {
+	if priority == nil || *priority == "" {
+		return "не задан"
+	}
+	switch *priority {
+	case "low":
+		return "Низкий"
+	case "medium":
+		return "Средний"
+	case "high":
+		return "Высокий"
+	default:
+		return *priority
+	}
 }

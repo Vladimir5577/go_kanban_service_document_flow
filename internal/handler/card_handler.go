@@ -121,7 +121,16 @@ func (h *CardHandler) UpdateAssignees() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+
+		cardDetail, err := h.service.GetCardDetail(r.Context(), id)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		helper.WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"assignees": cardDetail.Assignees,
+		})
 	}
 }
 
@@ -163,6 +172,32 @@ func (h *CardHandler) ArchiveCard() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, map[string]string{"status": "archived"})
+
+		cardDetail, err := h.service.GetCardDetail(r.Context(), id)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"id":         id,
+			"isArchived": cardDetail.IsArchived,
+		})
+	}
+}
+
+func (h *CardHandler) CompleteCard() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		res, err := h.service.CompleteCard(r.Context(), id)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusOK, dto.MapCardResponse(res))
 	}
 }

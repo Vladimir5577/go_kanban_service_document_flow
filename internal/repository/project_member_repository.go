@@ -13,6 +13,7 @@ import (
 type ProjectMemberRepositoryInterface interface {
 	GetMembers(ctx context.Context, projectID int64) ([]model.ProjectUser, error)
 	GetProjectMember(ctx context.Context, projectID, userID int64) (*model.ProjectUser, error)
+	AddMember(ctx context.Context, projectID int64, member model.ProjectUser) error
 	ReplaceMembers(ctx context.Context, projectID int64, members []model.ProjectUser) error
 	UpdateMemberRole(ctx context.Context, projectID int64, userID int64, role string) error
 	RemoveMember(ctx context.Context, projectID int64, userID int64) error
@@ -77,10 +78,30 @@ func (r *ProjectMemberRepository) GetProjectMember(ctx context.Context, projectI
 	}, nil
 }
 
-func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID int64, members []model.ProjectUser) error {
+func (r *ProjectMemberRepository) AddMember(ctx context.Context, projectID int64, member model.ProjectUser) error {
 	queries := dbgen.New(r.Db)
+	params := dbgen.AddProjectMemberParams{
+		KanbanProjectID: int32(projectID),
+		UserID:          int32(member.UserID),
+		Role:            member.Role,
+		Position:        member.Position,
+	}
+	if member.FolderID != nil {
+		params.FolderID = pgtype.Int4{Int32: int32(*member.FolderID), Valid: true}
+	}
+	return queries.AddProjectMember(ctx, params)
+}
 
-	// В идеале использовать транзакции (tx), но пока оставим через r.Db
+func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID int64, members []model.ProjectUser) error {
+	tx, err := r.Db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	queries := dbgen.New(tx)
 	if err := queries.ReplaceProjectMembers(ctx, int32(projectID)); err != nil {
 		return err
 	}
@@ -90,6 +111,7 @@ func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID 
 			KanbanProjectID: int32(projectID),
 			UserID:          int32(m.UserID),
 			Role:            m.Role,
+			Position:        m.Position,
 		}
 		if m.FolderID != nil {
 			params.FolderID = pgtype.Int4{Int32: int32(*m.FolderID), Valid: true}
@@ -99,17 +121,59 @@ func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID 
 			return err
 		}
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func (r *ProjectMemberRepository) UpdateMemberRole(ctx context.Context, projectID int64, userID int64, role string) error {
-	return nil
+	queries := dbgen.New(r.Db)
+	return queries.UpdateProjectMemberRole(ctx, dbgen.UpdateProjectMemberRoleParams{
+		KanbanProjectID: int32(projectID),
+		UserID:          int32(userID),
+		Role:            role,
+	})
 }
 
 func (r *ProjectMemberRepository) RemoveMember(ctx context.Context, projectID int64, userID int64) error {
-	queries := dbgen.New(r.Db)
-	return queries.RemoveProjectMember(ctx, dbgen.RemoveProjectMemberParams{
+	tx, err := r.Db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM kanban_card_assignee ca
+		USING kanban_card c
+		JOIN kanban_column col ON c.column_id = col.id
+		JOIN kanban_board b ON col.board_id = b.id
+		WHERE ca.card_id = c.id
+			AND ca.user_id = $2
+			AND b.kanban_project_id = $1
+	`, projectID, userID); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE kanban_card_subtask st
+		SET user_id = NULL
+		FROM kanban_card c
+		JOIN kanban_column col ON c.column_id = col.id
+		JOIN kanban_board b ON col.board_id = b.id
+		WHERE st.card_id = c.id
+			AND st.user_id = $2
+			AND b.kanban_project_id = $1
+	`, projectID, userID); err != nil {
+		return err
+	}
+
+	queries := dbgen.New(tx)
+	if err := queries.RemoveProjectMember(ctx, dbgen.RemoveProjectMemberParams{
 		KanbanProjectID: int32(projectID),
 		UserID:          int32(userID),
-	})
+	}); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
 }

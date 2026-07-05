@@ -22,6 +22,12 @@ func NewColumnHandler(s service.ColumnServiceInterface) *ColumnHandler {
 
 func (h *ColumnHandler) CreateColumn() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		boardID, err := helper.IDParam(r, "boardId")
 		if err != nil {
 			helper.WriteError(w, err)
@@ -38,7 +44,7 @@ func (h *ColumnHandler) CreateColumn() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.CreateColumn(r.Context(), boardID, req)
+		res, err := h.service.CreateColumn(r.Context(), projectID, boardID, req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -49,6 +55,18 @@ func (h *ColumnHandler) CreateColumn() http.HandlerFunc {
 
 func (h *ColumnHandler) UpdateColumn() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		boardID, err := helper.IDParam(r, "boardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		columnID, err := helper.IDParam(r, "columnId")
 		if err != nil {
 			helper.WriteError(w, err)
@@ -65,7 +83,7 @@ func (h *ColumnHandler) UpdateColumn() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.UpdateColumn(r.Context(), columnID, req)
+		res, err := h.service.UpdateColumn(r.Context(), projectID, boardID, columnID, req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -76,13 +94,25 @@ func (h *ColumnHandler) UpdateColumn() http.HandlerFunc {
 
 func (h *ColumnHandler) DeleteColumn() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		boardID, err := helper.IDParam(r, "boardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		columnID, err := helper.IDParam(r, "columnId")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
-		if err := h.service.DeleteColumn(r.Context(), columnID); err != nil {
+		if err := h.service.DeleteColumn(r.Context(), projectID, boardID, columnID); err != nil {
 			helper.WriteError(w, err)
 			return
 		}

@@ -47,11 +47,6 @@ func NewAuthMiddleware(publicKeyPath string) (*AuthMiddleware, error) {
 // Handler проверяет JWT-токен и кладет Claims в контекст запроса
 func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/preview") || strings.HasSuffix(r.URL.Path, "/download") {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
 			http.Error(w, `{"error": "Unauthorized: missing Authorization header"}`, http.StatusUnauthorized)

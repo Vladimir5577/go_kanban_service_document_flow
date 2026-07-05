@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 
 	"go_kanban_service/internal/apperr"
@@ -66,23 +67,44 @@ func (h *SubtaskHandler) CreateSubtask() http.HandlerFunc {
 
 func (h *SubtaskHandler) UpdateSubtask() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cardID, err := helper.IDParam(r, "cardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		subtaskID, err := helper.IDParam(r, "id")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			helper.WriteError(w, fmt.Errorf("%w: cannot read body", apperr.ErrValidation))
+			return
+		}
+
 		var req dto.UpdateSubtaskRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
 			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
 			return
+		}
+
+		var raw map[string]interface{}
+		_ = json.Unmarshal(bodyBytes, &raw)
+		if _, ok := raw["user_id"]; ok {
+			req.HasUserID = true
+		}
+		if _, ok := raw["userId"]; ok {
+			req.HasUserID = true
 		}
 		if err := validator.Validate.Struct(req); err != nil {
 			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
 			return
 		}
 
-		res, err := h.service.UpdateSubtask(r.Context(), subtaskID, req)
+		res, err := h.service.UpdateSubtask(r.Context(), cardID, subtaskID, req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -93,13 +115,19 @@ func (h *SubtaskHandler) UpdateSubtask() http.HandlerFunc {
 
 func (h *SubtaskHandler) DeleteSubtask() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cardID, err := helper.IDParam(r, "cardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
 		subtaskID, err := helper.IDParam(r, "id")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
-		if err := h.service.DeleteSubtask(r.Context(), subtaskID); err != nil {
+		if err := h.service.DeleteSubtask(r.Context(), cardID, subtaskID); err != nil {
 			helper.WriteError(w, err)
 			return
 		}

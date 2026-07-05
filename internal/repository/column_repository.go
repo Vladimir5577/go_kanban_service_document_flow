@@ -61,6 +61,10 @@ func (r *ColumnRepository) CreateColumn(ctx context.Context, boardID int64, c *m
 	}
 
 	c.ID = int64(res.ID)
+	c.Title = res.Title
+	c.HeaderColor = res.HeaderColor
+	c.Position = res.Position
+	c.BoardID = int64(res.BoardID)
 	return c, nil
 }
 
@@ -82,7 +86,7 @@ func (r *ColumnRepository) GetColumn(ctx context.Context, id int64) (*model.Colu
 
 func (r *ColumnRepository) UpdateColumn(ctx context.Context, c *model.Column) (*model.Column, error) {
 	queries := dbgen.New(r.Db)
-	_, err := queries.UpdateColumn(ctx, dbgen.UpdateColumnParams{
+	res, err := queries.UpdateColumn(ctx, dbgen.UpdateColumnParams{
 		Title:       c.Title,
 		HeaderColor: c.HeaderColor,
 		Position:    c.Position,
@@ -91,6 +95,12 @@ func (r *ColumnRepository) UpdateColumn(ctx context.Context, c *model.Column) (*
 	if err != nil {
 		return nil, err
 	}
+
+	c.ID = int64(res.ID)
+	c.Title = res.Title
+	c.HeaderColor = res.HeaderColor
+	c.Position = res.Position
+	c.BoardID = int64(res.BoardID)
 	return c, nil
 }
 

@@ -27,18 +27,37 @@ func (h *ProjectMemberHandler) ReplaceMembers() http.HandlerFunc {
 			return
 		}
 
-		var reqs []dto.AddProjectMemberRequest
-		if err := json.NewDecoder(r.Body).Decode(&reqs); err != nil {
+		var raw json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
 			return
 		}
 
+		reqs, err := decodeReplaceMembersRequest(raw)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
 		if err := h.service.ReplaceMembers(r.Context(), projectID, reqs); err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 		helper.WriteJSON(w, http.StatusOK, map[string]string{"status": "replaced"})
 	}
+}
+
+func decodeReplaceMembersRequest(raw json.RawMessage) ([]dto.AddProjectMemberRequest, error) {
+	var wrapped dto.ReplaceProjectMembersRequest
+	if err := json.Unmarshal(raw, &wrapped); err == nil && wrapped.Members != nil {
+		return wrapped.Members, nil
+	}
+
+	var reqs []dto.AddProjectMemberRequest
+	if err := json.Unmarshal(raw, &reqs); err == nil {
+		return reqs, nil
+	}
+
+	return nil, apperr.New(apperr.CodeValidation, "members array expected")
 }
 
 func (h *ProjectMemberHandler) UpdateMemberRole() http.HandlerFunc {

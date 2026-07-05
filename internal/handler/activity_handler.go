@@ -29,6 +29,10 @@ func (h *ActivityHandler) GetActivities() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.MapActivitiesResponse(activities))
+		helper.WriteJSON(w, http.StatusOK, map[string]interface{}{
+			"items":      dto.MapActivitiesResponse(activities),
+			"hasMore":    false,
+			"nextOffset": 0,
+		})
 	}
 }

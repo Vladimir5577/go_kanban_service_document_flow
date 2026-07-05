@@ -48,13 +48,9 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 		}
 		defer file.Close()
 
-		ctxVal := r.FormValue("context")
-		if ctxVal == "" {
-			ctxVal = "card"
-		}
-
+		ctxVal := normalizeAttachmentContext(r.FormValue("context"))
 		objectName := fmt.Sprintf("cards/%d/%s-%s", cardID, uuid.New().String(), header.Filename)
-		
+
 		err = h.minioSvc.UploadFile(r.Context(), h.cfg.MinioBucket, objectName, file, header.Size, header.Header.Get("Content-Type"))
 		if err != nil {
 			helper.WriteError(w, err)
@@ -85,13 +81,18 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 
 func (h *AttachmentHandler) DownloadAttachment() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cardID, err := helper.IDParam(r, "cardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
 		id, err := helper.IDParam(r, "id")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		
-		att, err := h.service.GetAttachment(r.Context(), id)
+
+		att, err := h.service.GetAttachment(r.Context(), cardID, id, service.RoleViewer)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -112,13 +113,18 @@ func (h *AttachmentHandler) DownloadAttachment() http.HandlerFunc {
 
 func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cardID, err := helper.IDParam(r, "cardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
 		id, err := helper.IDParam(r, "id")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		
-		att, err := h.service.GetAttachment(r.Context(), id)
+
+		att, err := h.service.GetAttachment(r.Context(), cardID, id, service.RoleViewer)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -139,25 +145,38 @@ func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
 
 func (h *AttachmentHandler) DeleteAttachment() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		cardID, err := helper.IDParam(r, "cardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
 		id, err := helper.IDParam(r, "id")
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
-		if err := h.service.DeleteAttachment(r.Context(), id); err != nil {
+		att, err := h.service.GetAttachment(r.Context(), cardID, id, service.RoleEditor)
+		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		
-		// Wait, we need to delete from Minio too!
-		// But we don't have the att before deleting, let's fetch it first
-		att, err := h.service.GetAttachment(r.Context(), id)
-		if err == nil {
-			// Ignore minio delete errors to ensure DB transaction doesn't fail
-			_ = h.minioSvc.DeleteObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
+
+		_ = h.minioSvc.DeleteObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
+		if err := h.service.DeleteAttachment(r.Context(), att); err != nil {
+			helper.WriteError(w, err)
+			return
 		}
 
 		helper.WriteJSON(w, http.StatusNoContent, nil)
+	}
+}
+
+func normalizeAttachmentContext(value string) string {
+	switch value {
+	case "chat", "info", "description":
+		return value
+	default:
+		return "info"
 	}
 }
