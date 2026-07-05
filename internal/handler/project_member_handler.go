@@ -12,11 +12,12 @@ import (
 )
 
 type ProjectMemberHandler struct {
-	service service.ProjectMemberServiceInterface
+	service    service.ProjectMemberServiceInterface
+	projectSvc service.ProjectServiceInterface
 }
 
-func NewProjectMemberHandler(s service.ProjectMemberServiceInterface) *ProjectMemberHandler {
-	return &ProjectMemberHandler{service: s}
+func NewProjectMemberHandler(s service.ProjectMemberServiceInterface, projectSvc service.ProjectServiceInterface) *ProjectMemberHandler {
+	return &ProjectMemberHandler{service: s, projectSvc: projectSvc}
 }
 
 func (h *ProjectMemberHandler) ReplaceMembers() http.HandlerFunc {
@@ -42,7 +43,14 @@ func (h *ProjectMemberHandler) ReplaceMembers() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, map[string]string{"status": "replaced"})
+
+		project, err := h.projectSvc.GetProject(r.Context(), projectID)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		helper.WriteJSON(w, http.StatusOK, map[string]interface{}{"members": project.Members})
 	}
 }
 
@@ -84,7 +92,21 @@ func (h *ProjectMemberHandler) UpdateMemberRole() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, map[string]string{"status": "updated"})
+
+		project, err := h.projectSvc.GetProject(r.Context(), projectID)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		var updatedMember *dto.MemberResponse
+		for _, m := range project.Members {
+			if m.UserID == userID {
+				updatedMember = m
+				break
+			}
+		}
+
+		helper.WriteJSON(w, http.StatusOK, map[string]interface{}{"member": updatedMember})
 	}
 }
 
@@ -106,6 +128,6 @@ func (h *ProjectMemberHandler) RemoveMember() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusNoContent, nil)
+		helper.WriteJSON(w, http.StatusOK, map[string]interface{}{"success": true})
 	}
 }

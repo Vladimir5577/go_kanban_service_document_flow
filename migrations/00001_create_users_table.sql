@@ -91,7 +91,7 @@ CREATE TABLE kanban_card (
     archived_by_id  INTEGER,
     completed_at    TIMESTAMP(0),
     completed_by_id INTEGER,
-    column_id       INTEGER NOT NULL REFERENCES kanban_column(id) ON DELETE CASCADE,
+    column_id       INTEGER NOT NULL REFERENCES kanban_column(id) ON DELETE RESTRICT,
     created_by_id   INTEGER,
     border_color    VARCHAR(20),
     created_at      TIMESTAMP(0) NOT NULL DEFAULT NOW(),
@@ -165,7 +165,7 @@ CREATE TABLE kanban_attachment (
     storage_key  VARCHAR(500) NOT NULL,
     content_type VARCHAR(100) NOT NULL,
     size_bytes   INTEGER NOT NULL,
-    card_id      INTEGER NOT NULL REFERENCES kanban_card(id) ON DELETE CASCADE,
+    card_id      INTEGER NOT NULL REFERENCES kanban_card(id) ON DELETE RESTRICT,
     context      VARCHAR(20) NOT NULL DEFAULT 'info',
     author_id    INTEGER,
     created_at   TIMESTAMP(0) NOT NULL DEFAULT NOW()

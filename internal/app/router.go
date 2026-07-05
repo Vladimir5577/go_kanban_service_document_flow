@@ -31,6 +31,7 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 
 		// PROJECTS (ProjectController)
 		r.Route("/spa/api/projects", func(r chi.Router) {
+			r.Get("/me", h.Project.GetMyProjects())
 			r.Post("/", h.Project.CreateProject())
 			r.Get("/{id}", h.Project.GetProject())
 			r.Patch("/{id}", h.Project.UpdateProject())

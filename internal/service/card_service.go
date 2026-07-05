@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/config"
@@ -31,6 +32,7 @@ type CardServiceInterface interface {
 type CardService struct {
 	repo              repository.CardRepositoryInterface
 	permSvc           *PermissionService
+	minioSvc          MinioServiceInterface
 	subtaskRepo       repository.SubtaskRepositoryInterface
 	commentRepo       repository.CommentRepositoryInterface
 	attachmentRepo    repository.AttachmentRepositoryInterface
@@ -46,6 +48,7 @@ type CardService struct {
 func NewCardService(
 	repo repository.CardRepositoryInterface,
 	permSvc *PermissionService,
+	minioSvc MinioServiceInterface,
 	subtaskRepo repository.SubtaskRepositoryInterface,
 	commentRepo repository.CommentRepositoryInterface,
 	attachmentRepo repository.AttachmentRepositoryInterface,
@@ -60,6 +63,7 @@ func NewCardService(
 	return &CardService{
 		repo:              repo,
 		permSvc:           permSvc,
+		minioSvc:          minioSvc,
 		subtaskRepo:       subtaskRepo,
 		commentRepo:       commentRepo,
 		attachmentRepo:    attachmentRepo,
@@ -387,7 +391,25 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return err
 	}
-	return s.repo.DeleteCard(ctx, id)
+
+	// Получаем все вложения для удаления файлов из MinIO
+	attachments, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "")
+	if err == nil && len(attachments) > 0 {
+		for _, att := range attachments {
+			_ = s.minioSvc.DeleteObject(ctx, s.cfg.MinioBucket, att.StorageKey)
+			_ = s.attachmentRepo.DeleteAttachment(ctx, att.ID)
+		}
+	}
+
+	err = s.repo.DeleteCard(ctx, id)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return apperr.New(apperr.CodeValidation, "Нельзя удалить задачу, пока в ней есть прикрепленные данные.")
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error {

@@ -31,6 +31,17 @@ func (h *ProjectHandler) GetAllProjects() http.HandlerFunc {
 	}
 }
 
+func (h *ProjectHandler) GetMyProjects() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projects, err := h.service.GetNavProjectsForUser(r.Context())
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusOK, projects)
+	}
+}
+
 func (h *ProjectHandler) CreateProject() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req dto.CreateProjectRequest

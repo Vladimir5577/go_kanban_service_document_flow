@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
@@ -16,6 +19,7 @@ type ProjectServiceInterface interface {
 	GetProject(ctx context.Context, id int64) (*dto.ProjectResponse, error)
 	UpdateProject(ctx context.Context, id int64, req dto.UpdateProjectRequest) (*model.Project, error)
 	DeleteProject(ctx context.Context, id int64) error
+	GetNavProjectsForUser(ctx context.Context) ([]*dto.NavProjectResponse, error)
 }
 
 type ProjectService struct {
@@ -186,7 +190,15 @@ func (s *ProjectService) DeleteProject(ctx context.Context, id int64) error {
 	if err := s.permSvc.RequireRole(ctx, id, RoleAdmin); err != nil {
 		return err
 	}
-	return s.repo.DeleteProject(ctx, id)
+	err := s.repo.DeleteProject(ctx, id)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return apperr.New(apperr.CodeValidation, "Нельзя удалить проект, пока в нем есть доски или участники.")
+		}
+		return err
+	}
+	return nil
 }
 
 func ensureOwnerMember(members []model.ProjectUser, ownerID int64, projectID int64) []model.ProjectUser {
@@ -201,4 +213,22 @@ func ensureOwnerMember(members []model.ProjectUser, ownerID int64, projectID int
 		UserID:          ownerID,
 		Role:            string(RoleAdmin),
 	})
+}
+
+func (s *ProjectService) GetNavProjectsForUser(ctx context.Context) ([]*dto.NavProjectResponse, error) {
+	user, ok := middleware.GetUser(ctx)
+	if !ok {
+		return nil, apperr.ErrForbidden
+	}
+
+	navProjects, err := s.repo.GetNavProjectsForUser(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := make([]*dto.NavProjectResponse, 0, len(navProjects))
+	for _, p := range navProjects {
+		resp = append(resp, dto.MapNavProjectResponse(p, user.ID))
+	}
+	return resp, nil
 }

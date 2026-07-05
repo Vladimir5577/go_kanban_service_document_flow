@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
@@ -263,6 +266,10 @@ func (s *BoardService) DeleteBoard(ctx context.Context, projectID int64, boardID
 		return nil, err
 	}
 	if err := s.repo.DeleteBoard(ctx, boardID); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return nil, apperr.New(apperr.CodeValidation, "Нельзя удалить доску, пока на ней есть задачи (включая архивные).")
+		}
 		return nil, err
 	}
 

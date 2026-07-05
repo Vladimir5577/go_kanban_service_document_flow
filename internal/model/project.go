@@ -13,3 +13,15 @@ type Project struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
 }
+
+// NavProject представляет проект для сайдбара (объединение проекта, прав и позиции).
+type NavProject struct {
+	ID           int64
+	Name         string
+	Description  *string
+	OwnerID      int64
+	Role         string
+	FolderID     *int64
+	Position     float64
+	EntryBoardID *int64
+}

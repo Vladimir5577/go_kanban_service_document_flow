@@ -14,6 +14,7 @@ type ProjectRepositoryInterface interface {
 	GetProject(ctx context.Context, id int64) (*model.Project, error)
 	UpdateProject(ctx context.Context, p *model.Project) (*model.Project, error)
 	DeleteProject(ctx context.Context, id int64) error
+	GetNavProjectsForUser(ctx context.Context, userID int64) ([]model.NavProject, error)
 }
 
 type ProjectRepository struct {
@@ -117,4 +118,47 @@ func (r *ProjectRepository) DeleteProject(ctx context.Context, id int64) error {
 
 	_, err := r.Db.Exec(ctx, query, id)
 	return err
+}
+
+func (r *ProjectRepository) GetNavProjectsForUser(ctx context.Context, userID int64) ([]model.NavProject, error) {
+	query := `
+		SELECT 
+			p.id, 
+			p.name, 
+			p.description, 
+			p.owner_id, 
+			pu.role, 
+			pu.folder_id, 
+			pu.position,
+			(
+				SELECT b.id 
+				FROM kanban_board b 
+				WHERE b.kanban_project_id = p.id AND b.deleted_at IS NULL
+				ORDER BY b.position ASC 
+				LIMIT 1
+			) as entry_board_id
+		FROM kanban_project p
+		JOIN kanban_project_user pu ON p.id = pu.kanban_project_id
+		WHERE pu.user_id = $1 AND p.deleted_at IS NULL
+		ORDER BY pu.position ASC`
+
+	rows, err := r.Db.Query(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var projects []model.NavProject
+	for rows.Next() {
+		var p model.NavProject
+		if err := rows.Scan(
+			&p.ID, &p.Name, &p.Description, &p.OwnerID, &p.Role,
+			&p.FolderID, &p.Position, &p.EntryBoardID,
+		); err != nil {
+			return nil, err
+		}
+		projects = append(projects, p)
+	}
+
+	return projects, rows.Err()
 }

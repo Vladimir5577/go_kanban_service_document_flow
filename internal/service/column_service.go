@@ -2,8 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
@@ -130,7 +133,15 @@ func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, board
 		return apperr.New(apperr.CodeConflict, "cannot delete column with active cards")
 	}
 
-	return s.repo.DeleteColumn(ctx, columnID)
+	err = s.repo.DeleteColumn(ctx, columnID)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return apperr.New(apperr.CodeValidation, "Нельзя удалить колонку, пока в ней есть задачи (включая архивные).")
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *ColumnService) resolveBoard(ctx context.Context, projectID int64, boardID int64) (*model.Board, error) {

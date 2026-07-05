@@ -28,6 +28,31 @@ func NewAttachmentRepository(db *pgxpool.Pool) *AttachmentRepository {
 }
 
 func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID int64, contextStr string) ([]model.Attachment, error) {
+	var attachments []model.Attachment
+
+	if contextStr == "" {
+		rows, err := r.Db.Query(ctx, "SELECT id, filename, storage_key, content_type, size_bytes, context, card_id, author_id, created_at FROM kanban_attachment WHERE card_id = $1 ORDER BY created_at ASC", cardID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var a model.Attachment
+			var authorID *int32
+			err := rows.Scan(&a.ID, &a.Filename, &a.StorageKey, &a.ContentType, &a.SizeBytes, &a.Context, &a.CardID, &authorID, &a.CreatedAt)
+			if err != nil {
+				return nil, err
+			}
+			if authorID != nil {
+				v := int64(*authorID)
+				a.AuthorID = &v
+			}
+			attachments = append(attachments, a)
+		}
+		return attachments, nil
+	}
+
 	queries := dbgen.New(r.Db)
 	dbAtt, err := queries.GetAttachmentsByCard(ctx, dbgen.GetAttachmentsByCardParams{
 		CardID:  int32(cardID),
@@ -37,7 +62,6 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 		return nil, err
 	}
 
-	var attachments []model.Attachment
 	for _, a := range dbAtt {
 		att := model.Attachment{
 			ID:          int64(a.ID),

@@ -82,7 +82,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	columnRepo := repository.NewColumnRepository(db)
 
 	cardRepo := repository.NewCardRepository(db)
-	cardSvc := service.NewCardService(cardRepo, permSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, projectRepo, projectMemberRepo, cfg)
+	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, projectRepo, projectMemberRepo, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
@@ -98,14 +98,14 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	projectFolderSvc := service.NewProjectFolderService(projectFolderRepo, permSvc)
 	projectFolderHandler := handler.NewProjectFolderHandler(projectFolderSvc)
 
+	projectSvc := service.NewProjectService(projectRepo, boardRepo, projectMemberRepo, userRepo, permSvc)
+	projectHandler := handler.NewProjectHandler(projectSvc)
+
 	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc)
-	projectMemberHandler := handler.NewProjectMemberHandler(projectMemberSvc)
+	projectMemberHandler := handler.NewProjectMemberHandler(projectMemberSvc, projectSvc)
 
 	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, activityRepo, userRepo, projectRepo, projectMemberRepo)
 	subtaskHandler := handler.NewSubtaskHandler(subtaskSvc)
-
-	projectSvc := service.NewProjectService(projectRepo, boardRepo, projectMemberRepo, userRepo, permSvc)
-	projectHandler := handler.NewProjectHandler(projectSvc)
 
 	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, subtaskRepo, commentRepo, attachmentRepo, permSvc)
 	boardHandler := handler.NewBoardHandler(boardSvc)
