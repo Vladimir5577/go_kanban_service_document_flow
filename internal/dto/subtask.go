@@ -46,8 +46,8 @@ type SubtaskResponse struct {
 	IsCompleted bool    `json:"isCompleted"`
 	Position    float64 `json:"position"`
 	CardID      int64   `json:"cardId"`
-	UserID      *int64  `json:"userId,omitempty"`
-	UserName    *string `json:"userName,omitempty"`
+	UserID      *int64  `json:"userId"`
+	UserName    *string `json:"userName"`
 }
 
 func MapSubtaskResponse(s *model.Subtask) *SubtaskResponse {

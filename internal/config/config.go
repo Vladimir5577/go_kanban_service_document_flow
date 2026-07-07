@@ -15,8 +15,11 @@ type Config struct {
 	Env              string
 	Port             string
 	JWTPublicKeyPath string
+	MercureURL       string
 	MercureJWTSecret string
 	RabbitMQDSN      string
+	RabbitMQExchange string
+	UserSyncQueue    string
 
 	// DB configuration
 	DBHost     string
@@ -34,6 +37,10 @@ type Config struct {
 
 	// Imgproxy configuration
 	ImgproxyBaseUrl string
+
+	// Symfony internal API for Kanban
+	SymfonyInternalApiUrl string
+	SymfonyInternalApiKey string
 }
 
 func Load() *Config {
@@ -46,8 +53,11 @@ func Load() *Config {
 		Env:              getEnv("ENV", "local"),
 		Port:             getEnv("SERVER_PORT", "8080"),
 		JWTPublicKeyPath: getEnv("JWT_PUBLIC_KEY_PATH", "config/jwt/public.pem"),
+		MercureURL:       getEnv("MERCURE_URL", "http://mercure/.well-known/mercure"),
 		MercureJWTSecret: getEnv("MERCURE_JWT_SECRET", ""),
 		RabbitMQDSN:      getEnv("RABBITMQ_TRANSPORT_DSN", "amqp://guest:guest@rabbitmq:5672/"),
+		RabbitMQExchange: getEnv("RABBITMQ_EVENTS_EXCHANGE", "events"),
+		UserSyncQueue:    getEnv("RABBITMQ_USER_SYNC_QUEUE", "kanban.user_sync"),
 
 		DBHost:     getEnv("DB_HOST", "localhost"),
 		DBPort:     getEnvAsInt("DB_PORT", 5432),
@@ -61,7 +71,9 @@ func Load() *Config {
 		MinioUseSSL:          getEnvAsBool("MINIO_USE_SSL", false),
 		MinioBucket:          getEnv("MINIO_BUCKET_NAME", "kanban"),
 
-		ImgproxyBaseUrl: getEnv("IMGPROXY_BASE_URL", "http://localhost:8082"),
+		ImgproxyBaseUrl:       getEnv("IMGPROXY_BASE_URL", "http://localhost:8082"),
+		SymfonyInternalApiUrl: getEnv("SYMFONY_INTERNAL_API_URL", ""),
+		SymfonyInternalApiKey: getEnv("SYMFONY_INTERNAL_API_KEY", ""),
 	}
 }
 

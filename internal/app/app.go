@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
+	"go_kanban_service/internal/client"
 	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/handler"
+	"go_kanban_service/internal/messaging/usersync"
 	"go_kanban_service/internal/middleware"
 	"go_kanban_service/internal/repository"
 	"go_kanban_service/internal/service"
@@ -21,8 +24,9 @@ import (
 )
 
 type App struct {
-	router *chi.Mux
-	cfg    *config.Config
+	router           *chi.Mux
+	cfg              *config.Config
+	userSyncConsumer *usersync.Consumer
 }
 
 type Handlers struct {
@@ -62,7 +66,9 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 
 	permSvc := service.NewPermissionService(db, projectRepo, projectMemberRepo)
 
-	userRepo := repository.NewUserRepository(db)
+	symfonyClient := client.NewSymfonyClient(cfg)
+
+	userRepo := repository.NewUserRepository(db, symfonyClient)
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
 
@@ -75,23 +81,35 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	commentRepo := repository.NewCommentRepository(db)
 	labelRepo := repository.NewLabelRepository(db)
 
-	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, activityRepo)
-	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
-
 	boardRepo := repository.NewBoardRepository(db)
 	columnRepo := repository.NewColumnRepository(db)
 
 	cardRepo := repository.NewCardRepository(db)
-	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, projectRepo, projectMemberRepo, cfg)
+	realtimePublisher := service.NewKanbanRealtimePublisher(
+		cfg.MercureURL,
+		cfg.MercureJWTSecret,
+		cardRepo,
+		columnRepo,
+		subtaskRepo,
+		commentRepo,
+		attachmentRepo,
+		labelRepo,
+		userRepo,
+	)
+
+	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, activityRepo, realtimePublisher)
+	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
+
+	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, projectRepo, projectMemberRepo, realtimePublisher, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
 	columnHandler := handler.NewColumnHandler(columnSvc)
 
-	commentSvc := service.NewCommentService(commentRepo, permSvc, userRepo)
+	commentSvc := service.NewCommentService(commentRepo, permSvc, userRepo, realtimePublisher)
 	commentHandler := handler.NewCommentHandler(commentSvc)
 
-	labelSvc := service.NewLabelService(labelRepo, permSvc, activityRepo, boardRepo, cardRepo, columnRepo)
+	labelSvc := service.NewLabelService(labelRepo, permSvc, activityRepo, boardRepo, cardRepo, columnRepo, realtimePublisher)
 	labelHandler := handler.NewLabelHandler(labelSvc)
 
 	projectFolderRepo := repository.NewProjectFolderRepository(db)
@@ -104,7 +122,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc)
 	projectMemberHandler := handler.NewProjectMemberHandler(projectMemberSvc, projectSvc)
 
-	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, activityRepo, userRepo, projectRepo, projectMemberRepo)
+	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, activityRepo, userRepo, projectRepo, projectMemberRepo, realtimePublisher)
 	subtaskHandler := handler.NewSubtaskHandler(subtaskSvc)
 
 	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, subtaskRepo, commentRepo, attachmentRepo, permSvc)
@@ -128,13 +146,26 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	r := setupRouter(h, authMw)
 
 	return &App{
-		router: r,
-		cfg:    cfg,
+		router:           r,
+		cfg:              cfg,
+		userSyncConsumer: usersync.NewConsumer(cfg, userRepo),
 	}, nil
 }
 
 func (a *App) Run() error {
 	addr := fmt.Sprintf(":%s", a.cfg.Port)
+	appCtx, stopBackground := context.WithCancel(context.Background())
+	var backgroundWG sync.WaitGroup
+
+	if a.userSyncConsumer != nil {
+		backgroundWG.Add(1)
+		go func() {
+			defer backgroundWG.Done()
+			if err := a.userSyncConsumer.Run(appCtx); err != nil {
+				slog.Error("Ошибка RabbitMQ consumer синхронизации пользователей", "error", err)
+			}
+		}()
+	}
 
 	srv := &http.Server{
 		Addr:         addr,
@@ -158,6 +189,7 @@ func (a *App) Run() error {
 	<-quit
 
 	slog.Info("Получен сигнал завершения, начинаем graceful shutdown...")
+	stopBackground()
 
 	// Даем 5 секунд на завершение текущих запросов
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -165,6 +197,18 @@ func (a *App) Run() error {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		return fmt.Errorf("ошибка при остановке сервера: %w", err)
+	}
+
+	backgroundDone := make(chan struct{})
+	go func() {
+		backgroundWG.Wait()
+		close(backgroundDone)
+	}()
+
+	select {
+	case <-backgroundDone:
+	case <-ctx.Done():
+		slog.Warn("Не все фоновые процессы завершились до таймаута")
 	}
 
 	slog.Info("HTTP-сервер успешно остановлен")

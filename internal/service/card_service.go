@@ -3,10 +3,10 @@ package service
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"go_kanban_service/internal/apperr"
@@ -42,8 +42,11 @@ type CardService struct {
 	columnRepo        repository.ColumnRepositoryInterface
 	projectRepo       repository.ProjectRepositoryInterface
 	projectMemberRepo repository.ProjectMemberRepositoryInterface
+	realtimePublisher *KanbanRealtimePublisher
 	cfg               *config.Config
 }
+
+const maxActiveCardsPerBoard = 300
 
 func NewCardService(
 	repo repository.CardRepositoryInterface,
@@ -58,6 +61,7 @@ func NewCardService(
 	columnRepo repository.ColumnRepositoryInterface,
 	projectRepo repository.ProjectRepositoryInterface,
 	projectMemberRepo repository.ProjectMemberRepositoryInterface,
+	realtimePublisher *KanbanRealtimePublisher,
 	cfg *config.Config,
 ) *CardService {
 	return &CardService{
@@ -73,6 +77,7 @@ func NewCardService(
 		columnRepo:        columnRepo,
 		projectRepo:       projectRepo,
 		projectMemberRepo: projectMemberRepo,
+		realtimePublisher: realtimePublisher,
 		cfg:               cfg,
 	}
 }
@@ -85,10 +90,17 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return nil, err
 	}
+	column, err := s.columnRepo.GetColumn(ctx, req.ColumnID)
+	if err != nil {
+		return nil, mapNoRowsToNotFound(err)
+	}
 
-	cards, err := s.repo.GetCardsByColumn(ctx, req.ColumnID)
-	if err == nil && len(cards) >= 300 {
-		return nil, apperr.New(apperr.CodeValidation, "maximum number of cards (300) in column reached")
+	activeCardsCount, err := s.repo.CountActiveCardsByBoard(ctx, column.BoardID)
+	if err != nil {
+		return nil, err
+	}
+	if activeCardsCount >= maxActiveCardsPerBoard {
+		return nil, apperr.New(apperr.CodeConflict, "maximum number of cards (300) on board reached")
 	}
 
 	if len(req.AssigneeIDs) > 1 {
@@ -121,6 +133,16 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	created, err := s.repo.CreateCard(ctx, req.ColumnID, c)
 	if err == nil && created != nil {
 		s.logActivity(ctx, created.ID, "created", nil, nil)
+		if s.realtimePublisher != nil {
+			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+				return s.realtimePublisher.PublishCardCreated(
+					ctx,
+					column.BoardID,
+					s.realtimePublisher.BuildCreatedCard(created, column),
+					realtimeSenderID(ctx),
+				)
+			})
+		}
 	}
 	return created, err
 }
@@ -141,7 +163,10 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	resp := dto.MapCardResponse(card)
 
 	// Fetch Subtasks
-	subtasks, _ := s.subtaskRepo.GetSubtasks(ctx, id)
+	subtasks, err := s.subtaskRepo.GetSubtasks(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 	resp.Subtasks = dto.MapSubtasksResponse(subtasks)
 	for _, st := range subtasks {
 		resp.ChecklistTotal++
@@ -151,7 +176,10 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	}
 
 	// Fetch Comments
-	comments, _ := s.commentRepo.GetComments(ctx, id)
+	comments, err := s.commentRepo.GetComments(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 
 	var userIDs []int64
 	for i := range comments {
@@ -167,17 +195,24 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	}
 
 	var allAttachments []model.Attachment
-	if atts, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "card"); err == nil {
-		allAttachments = append(allAttachments, atts...)
+	attsCard, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "card")
+	if err != nil {
+		return nil, err
 	}
-	if atts, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "description"); err == nil {
-		allAttachments = append(allAttachments, atts...)
+	allAttachments = append(allAttachments, attsCard...)
+
+	attsDesc, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "description")
+	if err != nil {
+		return nil, err
 	}
-	var chatAttachments []model.Attachment
-	if atts, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "chat"); err == nil {
-		chatAttachments = atts
-		allAttachments = append(allAttachments, atts...)
+	allAttachments = append(allAttachments, attsDesc...)
+
+	chatAttachments, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "chat")
+	if err != nil {
+		return nil, err
 	}
+	allAttachments = append(allAttachments, chatAttachments...)
+
 	resp.CommentsCount = len(comments) + len(chatAttachments)
 	for i := range allAttachments {
 		if allAttachments[i].AuthorID != nil {
@@ -185,7 +220,10 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 		}
 	}
 
-	users, _ := s.userRepo.GetUsersByIDs(ctx, userIDs)
+	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
 	userMap := make(map[int64]*model.User)
 	for i := range users {
 		userMap[users[i].ID] = &users[i]
@@ -379,6 +417,26 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 		if colorChanged {
 			s.logActivity(ctx, id, "color_changed", oldColor, newColor)
 		}
+		if s.realtimePublisher != nil {
+			patch := map[string]any{}
+			if titleChanged {
+				patch["title"] = updatedCard.Title
+			}
+			if priorityChanged {
+				patch["priority"] = updatedCard.Priority
+			}
+			if dueChanged {
+				patch["dueDate"] = formatRealtimeTime(updatedCard.DueDate)
+			}
+			if colorChanged {
+				patch["borderColor"] = updatedCard.BorderColor
+			}
+			if len(patch) > 0 {
+				s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+					return s.realtimePublisher.PublishCardPatch(ctx, updatedCard, patch, realtimeSenderID(ctx))
+				})
+			}
+		}
 	}
 	return updatedCard, err
 }
@@ -390,6 +448,14 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return err
+	}
+	card, err := s.repo.GetCard(ctx, id)
+	if err != nil {
+		return err
+	}
+	column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
+	if err != nil {
+		return mapNoRowsToNotFound(err)
 	}
 
 	// Получаем все вложения для удаления файлов из MinIO
@@ -408,6 +474,11 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 			return apperr.New(apperr.CodeValidation, "Нельзя удалить задачу, пока в ней есть прикрепленные данные.")
 		}
 		return err
+	}
+	if s.realtimePublisher != nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			return s.realtimePublisher.PublishCardDeleted(ctx, column.BoardID, id, realtimeSenderID(ctx))
+		})
 	}
 	return nil
 }
@@ -454,6 +525,15 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 			s.logActivity(ctx, id, "assignee_removed", oldValue, nil)
 			s.logActivity(ctx, id, "assignee_added", nil, newValue)
 		}
+		if s.realtimePublisher != nil {
+			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+				patch, err := s.realtimePublisher.BuildAssignees(ctx, id)
+				if err != nil {
+					return err
+				}
+				return s.realtimePublisher.PublishCardPatchByID(ctx, id, patch, realtimeSenderID(ctx))
+			})
+		}
 	}
 	return err
 }
@@ -480,7 +560,7 @@ func (s *CardService) validateProjectAssignees(ctx context.Context, projectID in
 			continue
 		}
 		if _, err := s.projectMemberRepo.GetProjectMember(ctx, projectID, userID); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, apperr.ErrNotFound) {
 				return apperr.New(apperr.CodeValidation, "user is not project member")
 			}
 			return err
@@ -529,6 +609,21 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 	card, err := s.repo.MoveCard(ctx, id, columnID, position)
 	if err == nil && columnChanged {
 		s.logActivity(ctx, id, "moved", oldValue, newValue)
+	}
+	if err == nil && s.realtimePublisher != nil {
+		patch := map[string]any{
+			"id":        card.ID,
+			"position":  card.Position,
+			"updatedAt": formatRealtimeTimeValue(card.UpdatedAt),
+		}
+		if columnChanged {
+			patch["columnId"] = targetColumn.ID
+			patch["columnTitle"] = targetColumn.Title
+			patch["status"] = strconv.FormatInt(targetColumn.ID, 10)
+		}
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			return s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, patch, realtimeSenderID(ctx))
+		})
 	}
 	return card, err
 }
@@ -595,6 +690,13 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 	updated, err := s.repo.UpdateCard(ctx, card)
 	if err == nil {
 		s.logActivity(ctx, id, activityType, nil, nil)
+		if s.realtimePublisher != nil {
+			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+				return s.realtimePublisher.PublishCardPatch(ctx, updated, map[string]any{
+					"completedAt": formatRealtimeTime(updated.CompletedAt),
+				}, realtimeSenderID(ctx))
+			})
+		}
 	}
 	return updated, err
 }

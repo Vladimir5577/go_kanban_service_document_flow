@@ -101,6 +101,12 @@ SELECT * FROM kanban_card
 WHERE column_id = $1 AND is_archived = FALSE
 ORDER BY position ASC;
 
+-- name: GetCardsByBoard :many
+SELECT c.* FROM kanban_card c
+JOIN kanban_column col ON col.id = c.column_id
+WHERE col.board_id = $1 AND c.is_archived = FALSE
+ORDER BY col.position ASC, c.position ASC;
+
 -- name: CreateCard :one
 INSERT INTO kanban_card (title, description, position, due_date, priority, column_id, created_by_id, border_color)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -140,6 +146,10 @@ WHERE kanban_card.id = ranked.id;
 -- name: GetCardAssignees :many
 SELECT user_id FROM kanban_card_assignee
 WHERE card_id = $1;
+
+-- name: GetCardAssigneesByCardIDs :many
+SELECT card_id, user_id FROM kanban_card_assignee
+WHERE card_id = ANY($1::int[]);
 
 -- name: AddCardAssignee :exec
 INSERT INTO kanban_card_assignee (card_id, user_id)
@@ -185,6 +195,10 @@ WHERE id = $1;
 SELECT kanban_label_id FROM kanban_card_label
 WHERE kanban_card_id = $1;
 
+-- name: GetCardLabelsByCardIDs :many
+SELECT kanban_card_id, kanban_label_id FROM kanban_card_label
+WHERE kanban_card_id = ANY($1::int[]);
+
 -- name: AddCardLabel :exec
 INSERT INTO kanban_card_label (kanban_card_id, kanban_label_id)
 VALUES ($1, $2)
@@ -207,6 +221,12 @@ WHERE id = $1 LIMIT 1;
 SELECT * FROM kanban_card_comment
 WHERE card_id = $1
 ORDER BY created_at ASC;
+
+-- name: GetCommentCountsByCardIDs :many
+SELECT card_id, COUNT(*) AS count
+FROM kanban_card_comment
+WHERE card_id = ANY($1::int[])
+GROUP BY card_id;
 
 -- name: CreateComment :one
 INSERT INTO kanban_card_comment (body, card_id, author_id)
@@ -237,6 +257,14 @@ SELECT * FROM kanban_card_subtask
 WHERE card_id = $1
 ORDER BY position ASC;
 
+-- name: GetSubtaskCountsByCardIDs :many
+SELECT card_id,
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE LOWER(status) = 'done') AS done
+FROM kanban_card_subtask
+WHERE card_id = ANY($1::int[])
+GROUP BY card_id;
+
 -- name: CreateSubtask :one
 INSERT INTO kanban_card_subtask (title, status, position, card_id, user_id)
 VALUES ($1, $2, $3, $4, $5)
@@ -265,6 +293,12 @@ WHERE id = $1 LIMIT 1;
 SELECT * FROM kanban_attachment
 WHERE card_id = $1 AND context = $2
 ORDER BY created_at ASC;
+
+-- name: GetChatAttachmentCountsByCardIDs :many
+SELECT card_id, COUNT(*) AS count
+FROM kanban_attachment
+WHERE card_id = ANY($1::int[]) AND context = 'chat'
+GROUP BY card_id;
 
 -- name: CreateAttachment :one
 INSERT INTO kanban_attachment (filename, storage_key, content_type, size_bytes, context, card_id, author_id)

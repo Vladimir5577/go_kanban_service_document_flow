@@ -50,7 +50,7 @@ func (r *LabelRepository) GetLabel(ctx context.Context, labelID int64) (*model.L
 	queries := dbgen.New(r.Db)
 	l, err := queries.GetLabel(ctx, int32(labelID))
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	return &model.Label{
@@ -69,7 +69,7 @@ func (r *LabelRepository) CreateLabel(ctx context.Context, boardID int64, l *mod
 		BoardID: int32(boardID),
 	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	l.ID = int64(res.ID)

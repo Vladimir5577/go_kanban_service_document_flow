@@ -32,12 +32,13 @@ type LabelServiceInterface interface {
 }
 
 type LabelService struct {
-	repo         repository.LabelRepositoryInterface
-	permSvc      *PermissionService
-	activityRepo repository.ActivityRepositoryInterface
-	boardRepo    repository.BoardRepositoryInterface
-	cardRepo     repository.CardRepositoryInterface
-	columnRepo   repository.ColumnRepositoryInterface
+	repo              repository.LabelRepositoryInterface
+	permSvc           *PermissionService
+	activityRepo      repository.ActivityRepositoryInterface
+	boardRepo         repository.BoardRepositoryInterface
+	cardRepo          repository.CardRepositoryInterface
+	columnRepo        repository.ColumnRepositoryInterface
+	realtimePublisher *KanbanRealtimePublisher
 }
 
 func NewLabelService(
@@ -47,14 +48,16 @@ func NewLabelService(
 	boardRepo repository.BoardRepositoryInterface,
 	cardRepo repository.CardRepositoryInterface,
 	columnRepo repository.ColumnRepositoryInterface,
+	realtimePublisher *KanbanRealtimePublisher,
 ) *LabelService {
 	return &LabelService{
-		repo:         repo,
-		permSvc:      permSvc,
-		activityRepo: activityRepo,
-		boardRepo:    boardRepo,
-		cardRepo:     cardRepo,
-		columnRepo:   columnRepo,
+		repo:              repo,
+		permSvc:           permSvc,
+		activityRepo:      activityRepo,
+		boardRepo:         boardRepo,
+		cardRepo:          cardRepo,
+		columnRepo:        columnRepo,
+		realtimePublisher: realtimePublisher,
 	}
 }
 
@@ -125,10 +128,25 @@ func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID
 
 	if added {
 		s.logActivity(ctx, cardID, "label_added", nil, &label.Name)
+		s.publishLabelsPatch(ctx, cardID)
 		return "attached", nil
 	}
 	s.logActivity(ctx, cardID, "label_removed", &label.Name, nil)
+	s.publishLabelsPatch(ctx, cardID)
 	return "detached", nil
+}
+
+func (s *LabelService) publishLabelsPatch(ctx context.Context, cardID int64) {
+	if s.realtimePublisher == nil {
+		return
+	}
+	s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+		patch, err := s.realtimePublisher.BuildLabels(ctx, cardID)
+		if err != nil {
+			return err
+		}
+		return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
+	})
 }
 
 func (s *LabelService) resolveBoard(ctx context.Context, projectID int64, boardID int64) (*model.Board, error) {

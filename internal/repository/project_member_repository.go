@@ -33,7 +33,7 @@ func (r *ProjectMemberRepository) GetMembers(ctx context.Context, projectID int6
 	queries := dbgen.New(r.Db)
 	dbMembers, err := queries.GetProjectMembers(ctx, int32(projectID))
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	var members []model.ProjectUser

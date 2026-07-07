@@ -12,6 +12,7 @@ import (
 
 type AttachmentRepositoryInterface interface {
 	GetAttachmentsByCard(ctx context.Context, cardID int64, contextStr string) ([]model.Attachment, error)
+	GetChatCountsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64]int, error)
 	GetAttachment(ctx context.Context, id int64) (*model.Attachment, error)
 	CreateAttachment(ctx context.Context, cardID int64, a *model.Attachment) (*model.Attachment, error)
 	DeleteAttachment(ctx context.Context, id int64) error
@@ -50,6 +51,9 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 			}
 			attachments = append(attachments, a)
 		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 		return attachments, nil
 	}
 
@@ -82,13 +86,38 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 	return attachments, nil
 }
 
+func (r *AttachmentRepository) GetChatCountsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64]int, error) {
+	if len(cardIDs) == 0 {
+		return make(map[int64]int), nil
+	}
+
+	cardIDs32 := make([]int32, len(cardIDs))
+	for i, id := range cardIDs {
+		cardIDs32[i] = int32(id)
+	}
+
+	queries := dbgen.New(r.Db)
+	rows, err := queries.GetChatAttachmentCountsByCardIDs(ctx, cardIDs32)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[int64]int)
+	for _, row := range rows {
+		cardID := int64(row.CardID)
+		result[cardID] = int(row.Count)
+	}
+
+	return result, nil
+}
+
 func (r *AttachmentRepository) GetAttachment(ctx context.Context, id int64) (*model.Attachment, error) {
 	queries := dbgen.New(r.Db)
 	a, err := queries.GetAttachment(ctx, int32(id))
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
-	
+
 	att := &model.Attachment{
 		ID:          int64(a.ID),
 		Filename:    a.Filename,
@@ -123,7 +152,7 @@ func (r *AttachmentRepository) CreateAttachment(ctx context.Context, cardID int6
 
 	res, err := queries.CreateAttachment(ctx, params)
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	a.ID = int64(res.ID)

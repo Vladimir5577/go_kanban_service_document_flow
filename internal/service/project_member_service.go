@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
-
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/middleware"
@@ -192,7 +190,7 @@ func (s *ProjectMemberService) requireExistingUsers(ctx context.Context, members
 
 func (s *ProjectMemberService) requireProjectMember(ctx context.Context, projectID int64, userID int64) error {
 	if _, err := s.repo.GetProjectMember(ctx, projectID, userID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, apperr.ErrNotFound) {
 			return apperr.ErrNotFound
 		}
 		return err

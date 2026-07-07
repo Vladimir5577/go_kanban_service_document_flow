@@ -38,6 +38,10 @@ services:
       - DB_HOST=kanban_db
       # Внутри Docker-сети Postgres всегда слушает на 5432 (5433 - это только проброс на хост)
       - DB_PORT=5432
+      # RabbitMQ живёт в общей project-net сети рядом с Symfony
+      - RABBITMQ_TRANSPORT_DSN=amqp://guest:guest@rabbitmq:5672/
+      # Mercure живёт в общей project-net сети рядом с Symfony
+      - MERCURE_URL=http://mercure/.well-known/mercure
     # Не надо пробрасывать наружу. Порт пробросит сам nginx
     # ports:
     #   - "${SERVER_PORT:-8085}:8085"

@@ -12,4 +12,3 @@ $ goose -dir migrations -s create create_users_table sql
     Generate sqlc
 $ ~/go/bin/sqlc generate
 
-// ===========================================`1

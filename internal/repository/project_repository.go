@@ -36,7 +36,7 @@ func (r *ProjectRepository) GetAllProjects(ctx context.Context) ([]model.Project
 
 	rows, err := r.Db.Query(ctx, query)
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 	defer rows.Close()
 
@@ -69,7 +69,7 @@ func (r *ProjectRepository) CreateProject(ctx context.Context, p *model.Project)
 	)
 
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 	return p, nil
 }
@@ -87,7 +87,7 @@ func (r *ProjectRepository) GetProject(ctx context.Context, id int64) (*model.Pr
 	)
 
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 	return &p, nil
 }

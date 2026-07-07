@@ -96,18 +96,18 @@ type CardAssigneeResponse struct {
 type CardResponse struct {
 	ID             int64                   `json:"id"`
 	Title          string                  `json:"title"`
-	Description    *string                 `json:"description,omitempty"`
+	Description    *string                 `json:"description"`
 	Position       float64                 `json:"position"`
-	DueDate        *time.Time              `json:"dueDate,omitempty"`
-	Priority       *string                 `json:"priority,omitempty"`
+	DueDate        *time.Time              `json:"dueDate"`
+	Priority       *string                 `json:"priority"`
 	IsArchived     bool                    `json:"isArchived"`
-	ArchivedAt     *time.Time              `json:"archivedAt,omitempty"`
-	ArchivedByID   *int64                  `json:"archivedById,omitempty"`
-	CompletedAt    *time.Time              `json:"completedAt,omitempty"`
-	CompletedByID  *int64                  `json:"completedById,omitempty"`
+	ArchivedAt     *time.Time              `json:"archivedAt"`
+	ArchivedByID   *int64                  `json:"archivedById"`
+	CompletedAt    *time.Time              `json:"completedAt"`
+	CompletedByID  *int64                  `json:"completedById"`
 	ColumnID       int64                   `json:"columnId"`
-	CreatedByID    *int64                  `json:"createdById,omitempty"`
-	BorderColor    *string                 `json:"borderColor,omitempty"`
+	CreatedByID    *int64                  `json:"createdById"`
+	BorderColor    *string                 `json:"borderColor"`
 	CreatedAt      time.Time               `json:"createdAt"`
 	UpdatedAt      time.Time               `json:"updatedAt"`
 	AssigneeIDs    []int64                 `json:"assigneeIds,omitempty"`

@@ -11,6 +11,7 @@ import (
 
 type CommentRepositoryInterface interface {
 	GetComments(ctx context.Context, cardID int64) ([]model.Comment, error)
+	GetCountsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64]int, error)
 	GetComment(ctx context.Context, id int64) (*model.Comment, error)
 	CreateComment(ctx context.Context, cardID int64, c *model.Comment) (*model.Comment, error)
 	UpdateComment(ctx context.Context, c *model.Comment) (*model.Comment, error)
@@ -51,6 +52,31 @@ func (r *CommentRepository) GetComments(ctx context.Context, cardID int64) ([]mo
 	return comments, nil
 }
 
+func (r *CommentRepository) GetCountsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64]int, error) {
+	if len(cardIDs) == 0 {
+		return make(map[int64]int), nil
+	}
+
+	cardIDs32 := make([]int32, len(cardIDs))
+	for i, id := range cardIDs {
+		cardIDs32[i] = int32(id)
+	}
+
+	queries := dbgen.New(r.Db)
+	rows, err := queries.GetCommentCountsByCardIDs(ctx, cardIDs32)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[int64]int)
+	for _, row := range rows {
+		cardID := int64(row.CardID)
+		result[cardID] = int(row.Count)
+	}
+
+	return result, nil
+}
+
 func (r *CommentRepository) CreateComment(ctx context.Context, cardID int64, c *model.Comment) (*model.Comment, error) {
 	queries := dbgen.New(r.Db)
 
@@ -62,7 +88,7 @@ func (r *CommentRepository) CreateComment(ctx context.Context, cardID int64, c *
 
 	res, err := queries.CreateComment(ctx, params)
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	c.ID = int64(res.ID)
@@ -77,7 +103,7 @@ func (r *CommentRepository) GetComment(ctx context.Context, id int64) (*model.Co
 	queries := dbgen.New(r.Db)
 	c, err := queries.GetComment(ctx, int32(id))
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	comment := &model.Comment{
@@ -100,7 +126,7 @@ func (r *CommentRepository) UpdateComment(ctx context.Context, c *model.Comment)
 		ID:   int32(c.ID),
 	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	if res.UpdatedAt.Valid {

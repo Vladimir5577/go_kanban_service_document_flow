@@ -18,16 +18,23 @@ type AttachmentServiceInterface interface {
 }
 
 type AttachmentService struct {
-	repo         repository.AttachmentRepositoryInterface
-	permSvc      *PermissionService
-	activityRepo repository.ActivityRepositoryInterface
+	repo              repository.AttachmentRepositoryInterface
+	permSvc           *PermissionService
+	activityRepo      repository.ActivityRepositoryInterface
+	realtimePublisher *KanbanRealtimePublisher
 }
 
-func NewAttachmentService(repo repository.AttachmentRepositoryInterface, permSvc *PermissionService, activityRepo repository.ActivityRepositoryInterface) *AttachmentService {
+func NewAttachmentService(
+	repo repository.AttachmentRepositoryInterface,
+	permSvc *PermissionService,
+	activityRepo repository.ActivityRepositoryInterface,
+	realtimePublisher *KanbanRealtimePublisher,
+) *AttachmentService {
 	return &AttachmentService{
-		repo:         repo,
-		permSvc:      permSvc,
-		activityRepo: activityRepo,
+		repo:              repo,
+		permSvc:           permSvc,
+		activityRepo:      activityRepo,
+		realtimePublisher: realtimePublisher,
 	}
 }
 
@@ -94,6 +101,15 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 	if err == nil && created != nil && created.Context != "chat" {
 		s.logActivity(ctx, cardID, "attachment_added", nil, &created.Filename)
 	}
+	if err == nil && created != nil && created.Context == "chat" && s.realtimePublisher != nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, cardID)
+			if err != nil {
+				return err
+			}
+			return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
+		})
+	}
 	return created, err
 }
 
@@ -112,6 +128,15 @@ func (s *AttachmentService) DeleteAttachment(ctx context.Context, attachment *mo
 	err = s.repo.DeleteAttachment(ctx, attachment.ID)
 	if err == nil && attachment.Context != "chat" {
 		s.logActivity(ctx, attachment.CardID, "attachment_removed", &attachment.Filename, nil)
+	}
+	if err == nil && attachment.Context == "chat" && s.realtimePublisher != nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, attachment.CardID)
+			if err != nil {
+				return err
+			}
+			return s.realtimePublisher.PublishCardPatchByID(ctx, attachment.CardID, patch, realtimeSenderID(ctx))
+		})
 	}
 	return err
 }

@@ -26,16 +26,23 @@ type CommentServiceInterface interface {
 }
 
 type CommentService struct {
-	repo     repository.CommentRepositoryInterface
-	permSvc  *PermissionService
-	userRepo repository.UserRepositoryInterface
+	repo              repository.CommentRepositoryInterface
+	permSvc           *PermissionService
+	userRepo          repository.UserRepositoryInterface
+	realtimePublisher *KanbanRealtimePublisher
 }
 
-func NewCommentService(repo repository.CommentRepositoryInterface, permSvc *PermissionService, userRepo repository.UserRepositoryInterface) *CommentService {
+func NewCommentService(
+	repo repository.CommentRepositoryInterface,
+	permSvc *PermissionService,
+	userRepo repository.UserRepositoryInterface,
+	realtimePublisher *KanbanRealtimePublisher,
+) *CommentService {
 	return &CommentService{
-		repo:     repo,
-		permSvc:  permSvc,
-		userRepo: userRepo,
+		repo:              repo,
+		permSvc:           permSvc,
+		userRepo:          userRepo,
+		realtimePublisher: realtimePublisher,
 	}
 }
 
@@ -108,6 +115,15 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 		return nil, err
 	}
 	s.populateAuthorName(ctx, created)
+	if s.realtimePublisher != nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, cardID)
+			if err != nil {
+				return err
+			}
+			return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
+		})
+	}
 	return created, nil
 }
 
@@ -178,7 +194,19 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 		return apperr.ErrForbidden
 	}
 
-	return s.repo.DeleteComment(ctx, commentID)
+	if err := s.repo.DeleteComment(ctx, commentID); err != nil {
+		return err
+	}
+	if s.realtimePublisher != nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, cardID)
+			if err != nil {
+				return err
+			}
+			return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
+		})
+	}
+	return nil
 }
 
 func normalizeCommentBody(body string) (string, error) {

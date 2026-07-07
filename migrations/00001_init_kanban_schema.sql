@@ -30,6 +30,8 @@ CREATE TABLE kanban_project (
     updated_at    TIMESTAMP(0) NOT NULL DEFAULT NOW(),
     deleted_at    TIMESTAMP(0)
 );
+CREATE INDEX idx_kanban_project_owner_id ON kanban_project (owner_id);
+CREATE INDEX idx_kanban_project_created_by_id ON kanban_project (created_by_id);
 
 -- Папки проектов пользователей (группировка проектов в сайдбаре)
 CREATE TABLE kanban_project_user_folder (
@@ -40,6 +42,7 @@ CREATE TABLE kanban_project_user_folder (
     created_at TIMESTAMP(0) NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP(0) NOT NULL DEFAULT NOW()
 );
+CREATE INDEX idx_kanban_project_user_folder_user_id ON kanban_project_user_folder (user_id);
 CREATE INDEX idx_folder_user_position ON kanban_project_user_folder (user_id, position);
 
 -- Участники проекта
@@ -52,8 +55,10 @@ CREATE TABLE kanban_project_user (
     position          DOUBLE PRECISION NOT NULL DEFAULT 0,
     CONSTRAINT uniq_project_user UNIQUE (kanban_project_id, user_id)
 );
+CREATE INDEX idx_project_user_user_id ON kanban_project_user (user_id);
 CREATE INDEX idx_project_user_folder_position ON kanban_project_user (user_id, folder_id, position);
 CREATE INDEX idx_project_user_project_id ON kanban_project_user (kanban_project_id);
+CREATE INDEX idx_project_user_folder_id ON kanban_project_user (folder_id);
 
 -- Доски
 CREATE TABLE kanban_board (
@@ -67,6 +72,7 @@ CREATE TABLE kanban_board (
     deleted_at        TIMESTAMP(0)
 );
 CREATE INDEX idx_kanban_board_project_id ON kanban_board (kanban_project_id);
+CREATE INDEX idx_kanban_board_created_by_id ON kanban_board (created_by_id);
 
 -- Колонки
 CREATE TABLE kanban_column (
@@ -98,6 +104,10 @@ CREATE TABLE kanban_card (
     updated_at      TIMESTAMP(0) NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_kanban_card_column_id ON kanban_card (column_id);
+CREATE INDEX idx_kanban_card_created_by_id ON kanban_card (created_by_id);
+CREATE INDEX idx_kanban_card_archived_by_id ON kanban_card (archived_by_id);
+CREATE INDEX idx_kanban_card_completed_by_id ON kanban_card (completed_by_id);
+CREATE INDEX idx_kanban_card_is_archived_archived_at ON kanban_card (is_archived, archived_at);
 
 -- Метки (привязаны к доске)
 CREATE TABLE kanban_label (
@@ -123,6 +133,8 @@ CREATE TABLE kanban_card_assignee (
     user_id INTEGER NOT NULL,
     PRIMARY KEY (card_id, user_id)
 );
+CREATE INDEX idx_kanban_card_assignee_card_id ON kanban_card_assignee (card_id);
+CREATE INDEX idx_kanban_card_assignee_user_id ON kanban_card_assignee (user_id);
 
 -- Подзадачи (чеклист)
 CREATE TABLE kanban_card_subtask (
@@ -134,6 +146,7 @@ CREATE TABLE kanban_card_subtask (
     user_id  INTEGER
 );
 CREATE INDEX idx_kanban_card_subtask_card_id ON kanban_card_subtask (card_id);
+CREATE INDEX idx_kanban_card_subtask_user_id ON kanban_card_subtask (user_id);
 
 -- Комментарии (чат)
 CREATE TABLE kanban_card_comment (
@@ -145,6 +158,7 @@ CREATE TABLE kanban_card_comment (
     updated_at TIMESTAMP(0)
 );
 CREATE INDEX idx_kanban_card_comment_card_id ON kanban_card_comment (card_id);
+CREATE INDEX idx_kanban_card_comment_author_id ON kanban_card_comment (author_id);
 
 -- История действий
 CREATE TABLE kanban_card_activity (
@@ -156,7 +170,9 @@ CREATE TABLE kanban_card_activity (
     new_value  TEXT,
     created_at TIMESTAMP(0) NOT NULL DEFAULT NOW()
 );
+CREATE INDEX idx_kanban_card_activity_card_id ON kanban_card_activity (card_id);
 CREATE INDEX idx_card_activity_card_created ON kanban_card_activity (card_id, created_at);
+CREATE INDEX idx_kanban_card_activity_user_id ON kanban_card_activity (user_id);
 
 -- Вложения
 CREATE TABLE kanban_attachment (
@@ -171,6 +187,8 @@ CREATE TABLE kanban_attachment (
     created_at   TIMESTAMP(0) NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_kanban_attachment_card_id ON kanban_attachment (card_id);
+CREATE INDEX idx_kanban_attachment_author_id ON kanban_attachment (author_id);
+CREATE INDEX idx_kanban_attachment_card_id_context ON kanban_attachment (card_id, context);
 
 
 -- +goose Down

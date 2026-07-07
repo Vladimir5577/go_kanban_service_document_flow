@@ -9,3 +9,9 @@ type Subtask struct {
 	CardID   int64   `json:"card_id"`
 	UserID   *int64  `json:"user_id,omitempty"`
 }
+
+// ChecklistCount содержит агрегатные данные по чеклисту карточки.
+type ChecklistCount struct {
+	Total int
+	Done  int
+}

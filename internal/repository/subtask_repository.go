@@ -13,6 +13,7 @@ import (
 type SubtaskRepositoryInterface interface {
 	GetSubtask(ctx context.Context, id int64) (*model.Subtask, error)
 	GetSubtasks(ctx context.Context, cardID int64) ([]model.Subtask, error)
+	GetChecklistCountsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64]model.ChecklistCount, error)
 	CreateSubtask(ctx context.Context, cardID int64, s *model.Subtask) (*model.Subtask, error)
 	UpdateSubtask(ctx context.Context, subtaskID int64, s *model.Subtask) (*model.Subtask, error)
 	DeleteSubtask(ctx context.Context, subtaskID int64) error
@@ -53,11 +54,39 @@ func (r *SubtaskRepository) GetSubtasks(ctx context.Context, cardID int64) ([]mo
 	return subtasks, nil
 }
 
+func (r *SubtaskRepository) GetChecklistCountsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64]model.ChecklistCount, error) {
+	if len(cardIDs) == 0 {
+		return make(map[int64]model.ChecklistCount), nil
+	}
+
+	cardIDs32 := make([]int32, len(cardIDs))
+	for i, id := range cardIDs {
+		cardIDs32[i] = int32(id)
+	}
+
+	queries := dbgen.New(r.Db)
+	rows, err := queries.GetSubtaskCountsByCardIDs(ctx, cardIDs32)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[int64]model.ChecklistCount)
+	for _, row := range rows {
+		cardID := int64(row.CardID)
+		result[cardID] = model.ChecklistCount{
+			Total: int(row.Total),
+			Done:  int(row.Done),
+		}
+	}
+
+	return result, nil
+}
+
 func (r *SubtaskRepository) GetSubtask(ctx context.Context, id int64) (*model.Subtask, error) {
 	queries := dbgen.New(r.Db)
 	dbSubtask, err := queries.GetSubtask(ctx, int32(id))
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 	s := &model.Subtask{
 		ID:       int64(dbSubtask.ID),
@@ -75,7 +104,7 @@ func (r *SubtaskRepository) GetSubtask(ctx context.Context, id int64) (*model.Su
 
 func (r *SubtaskRepository) CreateSubtask(ctx context.Context, cardID int64, s *model.Subtask) (*model.Subtask, error) {
 	queries := dbgen.New(r.Db)
-	
+
 	var userID pgtype.Int4
 	if s.UserID != nil {
 		userID = pgtype.Int4{Int32: int32(*s.UserID), Valid: true}
@@ -89,7 +118,7 @@ func (r *SubtaskRepository) CreateSubtask(ctx context.Context, cardID int64, s *
 		UserID:   userID,
 	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	s.ID = int64(res.ID)
@@ -112,7 +141,7 @@ func (r *SubtaskRepository) UpdateSubtask(ctx context.Context, subtaskID int64, 
 		ID:       int32(subtaskID),
 	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 	return s, nil
 }

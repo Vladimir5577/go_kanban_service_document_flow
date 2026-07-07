@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jackc/pgx/v5"
-
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/model"
@@ -26,6 +24,7 @@ type SubtaskService struct {
 	userRepo          repository.UserRepositoryInterface
 	projectRepo       repository.ProjectRepositoryInterface
 	projectMemberRepo repository.ProjectMemberRepositoryInterface
+	realtimePublisher *KanbanRealtimePublisher
 }
 
 func NewSubtaskService(
@@ -35,6 +34,7 @@ func NewSubtaskService(
 	userRepo repository.UserRepositoryInterface,
 	projectRepo repository.ProjectRepositoryInterface,
 	projectMemberRepo repository.ProjectMemberRepositoryInterface,
+	realtimePublisher *KanbanRealtimePublisher,
 ) *SubtaskService {
 	return &SubtaskService{
 		repo:              repo,
@@ -43,6 +43,7 @@ func NewSubtaskService(
 		userRepo:          userRepo,
 		projectRepo:       projectRepo,
 		projectMemberRepo: projectMemberRepo,
+		realtimePublisher: realtimePublisher,
 	}
 }
 
@@ -84,6 +85,15 @@ func (s *SubtaskService) CreateSubtask(ctx context.Context, cardID int64, req dt
 	st, err = s.repo.CreateSubtask(ctx, cardID, st)
 	if err == nil {
 		s.logActivity(ctx, cardID, "subtask_added", nil, &req.Title)
+		if s.realtimePublisher != nil {
+			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+				patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, cardID)
+				if err != nil {
+					return err
+				}
+				return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
+			})
+		}
 	}
 	return st, err
 }
@@ -146,6 +156,15 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 			} else {
 				s.logActivity(ctx, updatedSt.CardID, "subtask_reopened", nil, &updatedSt.Title)
 			}
+			if s.realtimePublisher != nil {
+				s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+					patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, updatedSt.CardID)
+					if err != nil {
+						return err
+					}
+					return s.realtimePublisher.PublishCardPatchByID(ctx, updatedSt.CardID, patch, realtimeSenderID(ctx))
+				})
+			}
 		}
 
 		if req.HasUserID && !sameOptionalID(oldUserID, updatedSt.UserID) {
@@ -182,6 +201,15 @@ func (s *SubtaskService) DeleteSubtask(ctx context.Context, cardID int64, subtas
 	err = s.repo.DeleteSubtask(ctx, subtaskID)
 	if err == nil {
 		s.logActivity(ctx, st.CardID, "subtask_removed", &st.Title, nil)
+		if s.realtimePublisher != nil {
+			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+				patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, st.CardID)
+				if err != nil {
+					return err
+				}
+				return s.realtimePublisher.PublishCardPatchByID(ctx, st.CardID, patch, realtimeSenderID(ctx))
+			})
+		}
 	}
 	return err
 }
@@ -208,7 +236,7 @@ func (s *SubtaskService) ensureSubtaskAssignee(ctx context.Context, projectID in
 	}
 
 	if _, err := s.projectMemberRepo.GetProjectMember(ctx, projectID, *userID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, apperr.ErrNotFound) {
 			return s.projectMemberRepo.AddMember(ctx, projectID, model.ProjectUser{
 				KanbanProjectID: projectID,
 				UserID:          *userID,

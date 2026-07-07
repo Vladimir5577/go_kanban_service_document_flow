@@ -57,7 +57,7 @@ func (r *ColumnRepository) CreateColumn(ctx context.Context, boardID int64, c *m
 		BoardID:     int32(boardID),
 	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	c.ID = int64(res.ID)
@@ -72,7 +72,7 @@ func (r *ColumnRepository) GetColumn(ctx context.Context, id int64) (*model.Colu
 	queries := dbgen.New(r.Db)
 	c, err := queries.GetColumn(ctx, int32(id))
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	return &model.Column{
@@ -93,7 +93,7 @@ func (r *ColumnRepository) UpdateColumn(ctx context.Context, c *model.Column) (*
 		ID:          int32(c.ID),
 	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	c.ID = int64(res.ID)

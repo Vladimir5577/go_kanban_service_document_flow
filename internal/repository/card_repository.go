@@ -15,6 +15,10 @@ type CardRepositoryInterface interface {
 	CreateCard(ctx context.Context, columnID int64, c *model.Card) (*model.Card, error)
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error)
+	GetCardsByBoard(ctx context.Context, boardID int64) ([]model.Card, error)
+	CountActiveCardsByBoard(ctx context.Context, boardID int64) (int, error)
+	GetAssigneesByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
+	GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
 	UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
@@ -32,9 +36,43 @@ func NewCardRepository(db *pgxpool.Pool) *CardRepository {
 	}
 }
 
+func (r *CardRepository) CountActiveCardsByBoard(ctx context.Context, boardID int64) (int, error) {
+	query := `
+		SELECT COUNT(c.id)
+		FROM kanban_card c
+		JOIN kanban_column col ON col.id = c.column_id
+		WHERE col.board_id = $1 AND c.is_archived = FALSE`
+
+	var count int
+	if err := r.Db.QueryRow(ctx, query, boardID).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error) {
 	queries := dbgen.New(r.Db)
 	dbCards, err := queries.GetCardsByColumn(ctx, int32(columnID))
+	if err != nil {
+		return nil, err
+	}
+
+	if len(dbCards) == 0 {
+		return []model.Card{}, nil
+	}
+
+	// Собрать card IDs для bulk-запросов
+	cardIDs := make([]int64, len(dbCards))
+	for i, c := range dbCards {
+		cardIDs[i] = int64(c.ID)
+	}
+
+	// Bulk-запросы assignees и labels для всех карточек
+	assigneesByCard, err := r.GetAssigneesByCardIDs(ctx, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	labelsByCard, err := r.GetLabelIDsByCardIDs(ctx, cardIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -81,25 +119,119 @@ func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) (
 			card.CreatedByID = &v
 		}
 
-		// Получаем assignees
-		assignees, _ := queries.GetCardAssignees(ctx, c.ID)
-		var aIDs []int64
-		for _, a := range assignees {
-			aIDs = append(aIDs, int64(a))
-		}
-		card.AssigneeIDs = aIDs
-
-		// Получаем метки
-		labels, _ := queries.GetCardLabels(ctx, c.ID)
-		var lIDs []int64
-		for _, l := range labels {
-			lIDs = append(lIDs, int64(l))
-		}
-		card.LabelIDs = lIDs
+		// Проставить assignees и labels из bulk-результатов
+		card.AssigneeIDs = assigneesByCard[card.ID]
+		card.LabelIDs = labelsByCard[card.ID]
 
 		cards = append(cards, card)
 	}
 	return cards, nil
+}
+
+func (r *CardRepository) GetCardsByBoard(ctx context.Context, boardID int64) ([]model.Card, error) {
+	queries := dbgen.New(r.Db)
+	dbCards, err := queries.GetCardsByBoard(ctx, int32(boardID))
+	if err != nil {
+		return nil, err
+	}
+
+	var cards []model.Card
+	for _, c := range dbCards {
+		card := model.Card{
+			ID:         int64(c.ID),
+			Title:      c.Title,
+			Position:   c.Position,
+			IsArchived: c.IsArchived,
+			ColumnID:   int64(c.ColumnID),
+			CreatedAt:  c.CreatedAt.Time,
+			UpdatedAt:  c.UpdatedAt.Time,
+		}
+		if c.Description.Valid {
+			card.Description = &c.Description.String
+		}
+		if c.Priority.Valid {
+			card.Priority = &c.Priority.String
+		}
+		if c.BorderColor.Valid {
+			card.BorderColor = &c.BorderColor.String
+		}
+		if c.DueDate.Valid {
+			card.DueDate = &c.DueDate.Time
+		}
+		if c.ArchivedAt.Valid {
+			card.ArchivedAt = &c.ArchivedAt.Time
+		}
+		if c.ArchivedByID.Valid {
+			v := int64(c.ArchivedByID.Int32)
+			card.ArchivedByID = &v
+		}
+		if c.CompletedAt.Valid {
+			card.CompletedAt = &c.CompletedAt.Time
+		}
+		if c.CompletedByID.Valid {
+			v := int64(c.CompletedByID.Int32)
+			card.CompletedByID = &v
+		}
+		if c.CreatedByID.Valid {
+			v := int64(c.CreatedByID.Int32)
+			card.CreatedByID = &v
+		}
+
+		cards = append(cards, card)
+	}
+	return cards, nil
+}
+
+func (r *CardRepository) GetAssigneesByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error) {
+	if len(cardIDs) == 0 {
+		return make(map[int64][]int64), nil
+	}
+
+	cardIDs32 := make([]int32, len(cardIDs))
+	for i, id := range cardIDs {
+		cardIDs32[i] = int32(id)
+	}
+
+	queries := dbgen.New(r.Db)
+	rows, err := queries.GetCardAssigneesByCardIDs(ctx, cardIDs32)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[int64][]int64)
+	for _, row := range rows {
+		cardID := int64(row.CardID)
+		userID := int64(row.UserID)
+		result[cardID] = append(result[cardID], userID)
+	}
+
+	return result, nil
+}
+
+func (r *CardRepository) GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error) {
+	if len(cardIDs) == 0 {
+		return make(map[int64][]int64), nil
+	}
+
+	cardIDs32 := make([]int32, len(cardIDs))
+	for i, id := range cardIDs {
+		cardIDs32[i] = int32(id)
+	}
+
+	queries := dbgen.New(r.Db)
+	rows, err := queries.GetCardLabelsByCardIDs(ctx, cardIDs32)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[int64][]int64)
+	for _, row := range rows {
+		cardID := int64(row.KanbanCardID)
+		labelID := int64(row.KanbanLabelID)
+		result[cardID] = append(result[cardID], labelID)
+	}
+
+	return result, nil
 }
 
 func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *model.Card) (*model.Card, error) {
@@ -128,7 +260,7 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 
 	res, err := queries.CreateCard(ctx, params)
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	c.ID = int64(res.ID)
@@ -141,7 +273,7 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 	queries := dbgen.New(r.Db)
 	c, err := queries.GetCard(ctx, int32(id))
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	card := &model.Card{
@@ -184,19 +316,18 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 		card.CreatedByID = &v
 	}
 
-	assignees, _ := queries.GetCardAssignees(ctx, c.ID)
-	var aIDs []int64
-	for _, a := range assignees {
-		aIDs = append(aIDs, int64(a))
+	// Bulk-запросы для assignees и labels (используем существующие методы)
+	assigneesByCard, err := r.GetAssigneesByCardIDs(ctx, []int64{card.ID})
+	if err != nil {
+		return nil, err
 	}
-	card.AssigneeIDs = aIDs
+	card.AssigneeIDs = assigneesByCard[card.ID]
 
-	labels, _ := queries.GetCardLabels(ctx, c.ID)
-	var lIDs []int64
-	for _, l := range labels {
-		lIDs = append(lIDs, int64(l))
+	labelsByCard, err := r.GetLabelIDsByCardIDs(ctx, []int64{card.ID})
+	if err != nil {
+		return nil, err
 	}
-	card.LabelIDs = lIDs
+	card.LabelIDs = labelsByCard[card.ID]
 
 	return card, nil
 }
@@ -238,7 +369,7 @@ func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.
 
 	res, err := queries.UpdateCard(ctx, params)
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	c.UpdatedAt = res.UpdatedAt.Time

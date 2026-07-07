@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -71,6 +72,9 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 		}
 		res, err := h.service.CreateAttachment(r.Context(), cardID, req)
 		if err != nil {
+			if cleanupErr := h.minioSvc.DeleteObject(r.Context(), h.cfg.MinioBucket, objectName); cleanupErr != nil {
+				slog.WarnContext(r.Context(), "failed to cleanup uploaded attachment after database error", "storage_key", objectName, "error", cleanupErr)
+			}
 			helper.WriteError(w, err)
 			return
 		}

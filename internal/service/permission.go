@@ -94,7 +94,7 @@ func (s *PermissionService) GetProjectIDByBoard(ctx context.Context, boardID int
 	queries := dbgen.New(s.db)
 	b, err := queries.GetBoard(ctx, int32(boardID))
 	if err != nil {
-		return 0, err
+		return 0, repository.NormalizeError(err)
 	}
 	return int64(b.KanbanProjectID), nil
 }
@@ -103,7 +103,7 @@ func (s *PermissionService) GetProjectIDByColumn(ctx context.Context, columnID i
 	queries := dbgen.New(s.db)
 	projectID, err := queries.GetProjectIDByColumn(ctx, int32(columnID))
 	if err != nil {
-		return 0, err
+		return 0, repository.NormalizeError(err)
 	}
 	return int64(projectID), nil
 }
@@ -112,7 +112,7 @@ func (s *PermissionService) GetProjectIDByCard(ctx context.Context, cardID int64
 	queries := dbgen.New(s.db)
 	projectID, err := queries.GetProjectIDByCard(ctx, int32(cardID))
 	if err != nil {
-		return 0, fmt.Errorf("failed to get project_id by card: %w", err)
+		return 0, fmt.Errorf("failed to get project_id by card: %w", repository.NormalizeError(err))
 	}
 	return int64(projectID), nil
 }
@@ -121,7 +121,7 @@ func (s *PermissionService) GetProjectIDBySubtask(ctx context.Context, subtaskID
 	queries := dbgen.New(s.db)
 	projectID, err := queries.GetProjectIDBySubtask(ctx, int32(subtaskID))
 	if err != nil {
-		return 0, fmt.Errorf("failed to get project_id by subtask: %w", err)
+		return 0, fmt.Errorf("failed to get project_id by subtask: %w", repository.NormalizeError(err))
 	}
 	return int64(projectID), nil
 }
@@ -130,7 +130,7 @@ func (s *PermissionService) GetProjectIDByLabel(ctx context.Context, labelID int
 	queries := dbgen.New(s.db)
 	projectID, err := queries.GetProjectIDByLabel(ctx, int32(labelID))
 	if err != nil {
-		return 0, fmt.Errorf("failed to get project_id by label: %w", err)
+		return 0, fmt.Errorf("failed to get project_id by label: %w", repository.NormalizeError(err))
 	}
 	return int64(projectID), nil
 }

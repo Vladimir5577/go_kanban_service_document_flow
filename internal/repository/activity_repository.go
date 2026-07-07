@@ -42,20 +42,6 @@ func (r *ActivityRepository) GetActivities(ctx context.Context, cardID int64) ([
 		if a.UserID.Valid {
 			uid := int64(a.UserID.Int32)
 			act.UserID = &uid
-			
-			var nameParts string
-			if a.Firstname.Valid {
-				nameParts += a.Firstname.String
-			}
-			if a.Lastname.Valid {
-				if nameParts != "" {
-					nameParts += " "
-				}
-				nameParts += a.Lastname.String
-			}
-			if nameParts != "" {
-				act.UserName = &nameParts
-			}
 		}
 		if a.OldValue.Valid {
 			act.OldValue = &a.OldValue.String

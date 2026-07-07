@@ -508,37 +508,23 @@ func (q *Queries) DeleteSubtask(ctx context.Context, id int32) error {
 
 const getActivitiesByCard = `-- name: GetActivitiesByCard :many
 
-SELECT a.id, a.card_id, a.user_id, a.type, a.old_value, a.new_value, a.created_at, u.firstname, u.lastname
-FROM kanban_card_activity a
-LEFT JOIN users u ON a.user_id = u.id
-WHERE a.card_id = $1
-ORDER BY a.created_at DESC
+SELECT id, card_id, user_id, type, old_value, new_value, created_at FROM kanban_card_activity
+WHERE card_id = $1
+ORDER BY created_at DESC
 `
-
-type GetActivitiesByCardRow struct {
-	ID        int32            `json:"id"`
-	CardID    int32            `json:"card_id"`
-	UserID    pgtype.Int4      `json:"user_id"`
-	Type      string           `json:"type"`
-	OldValue  pgtype.Text      `json:"old_value"`
-	NewValue  pgtype.Text      `json:"new_value"`
-	CreatedAt pgtype.Timestamp `json:"created_at"`
-	Firstname pgtype.Text      `json:"firstname"`
-	Lastname  pgtype.Text      `json:"lastname"`
-}
 
 // ==============================
 // ACTIVITY
 // ==============================
-func (q *Queries) GetActivitiesByCard(ctx context.Context, cardID int32) ([]GetActivitiesByCardRow, error) {
+func (q *Queries) GetActivitiesByCard(ctx context.Context, cardID int32) ([]KanbanCardActivity, error) {
 	rows, err := q.db.Query(ctx, getActivitiesByCard, cardID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []GetActivitiesByCardRow{}
+	items := []KanbanCardActivity{}
 	for rows.Next() {
-		var i GetActivitiesByCardRow
+		var i KanbanCardActivity
 		if err := rows.Scan(
 			&i.ID,
 			&i.CardID,
@@ -547,8 +533,6 @@ func (q *Queries) GetActivitiesByCard(ctx context.Context, cardID int32) ([]GetA
 			&i.OldValue,
 			&i.NewValue,
 			&i.CreatedAt,
-			&i.Firstname,
-			&i.Lastname,
 		); err != nil {
 			return nil, err
 		}
@@ -784,6 +768,31 @@ func (q *Queries) GetCardAssignees(ctx context.Context, cardID int32) ([]int32, 
 	return items, nil
 }
 
+const getCardAssigneesByCardIDs = `-- name: GetCardAssigneesByCardIDs :many
+SELECT card_id, user_id FROM kanban_card_assignee
+WHERE card_id = ANY($1::int[])
+`
+
+func (q *Queries) GetCardAssigneesByCardIDs(ctx context.Context, dollar_1 []int32) ([]KanbanCardAssignee, error) {
+	rows, err := q.db.Query(ctx, getCardAssigneesByCardIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []KanbanCardAssignee{}
+	for rows.Next() {
+		var i KanbanCardAssignee
+		if err := rows.Scan(&i.CardID, &i.UserID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCardLabels = `-- name: GetCardLabels :many
 
 SELECT kanban_label_id FROM kanban_card_label
@@ -806,6 +815,75 @@ func (q *Queries) GetCardLabels(ctx context.Context, kanbanCardID int32) ([]int3
 			return nil, err
 		}
 		items = append(items, kanban_label_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getCardLabelsByCardIDs = `-- name: GetCardLabelsByCardIDs :many
+SELECT kanban_card_id, kanban_label_id FROM kanban_card_label
+WHERE kanban_card_id = ANY($1::int[])
+`
+
+func (q *Queries) GetCardLabelsByCardIDs(ctx context.Context, dollar_1 []int32) ([]KanbanCardLabel, error) {
+	rows, err := q.db.Query(ctx, getCardLabelsByCardIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []KanbanCardLabel{}
+	for rows.Next() {
+		var i KanbanCardLabel
+		if err := rows.Scan(&i.KanbanCardID, &i.KanbanLabelID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getCardsByBoard = `-- name: GetCardsByBoard :many
+SELECT c.id, c.title, c.description, c.position, c.due_date, c.priority, c.is_archived, c.archived_at, c.archived_by_id, c.completed_at, c.completed_by_id, c.column_id, c.created_by_id, c.border_color, c.created_at, c.updated_at FROM kanban_card c
+JOIN kanban_column col ON col.id = c.column_id
+WHERE col.board_id = $1 AND c.is_archived = FALSE
+ORDER BY col.position ASC, c.position ASC
+`
+
+func (q *Queries) GetCardsByBoard(ctx context.Context, boardID int32) ([]KanbanCard, error) {
+	rows, err := q.db.Query(ctx, getCardsByBoard, boardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []KanbanCard{}
+	for rows.Next() {
+		var i KanbanCard
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.Description,
+			&i.Position,
+			&i.DueDate,
+			&i.Priority,
+			&i.IsArchived,
+			&i.ArchivedAt,
+			&i.ArchivedByID,
+			&i.CompletedAt,
+			&i.CompletedByID,
+			&i.ColumnID,
+			&i.CreatedByID,
+			&i.BorderColor,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -846,6 +924,38 @@ func (q *Queries) GetCardsByColumn(ctx context.Context, columnID int32) ([]Kanba
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getChatAttachmentCountsByCardIDs = `-- name: GetChatAttachmentCountsByCardIDs :many
+SELECT card_id, COUNT(*) AS count
+FROM kanban_attachment
+WHERE card_id = ANY($1::int[]) AND context = 'chat'
+GROUP BY card_id
+`
+
+type GetChatAttachmentCountsByCardIDsRow struct {
+	CardID int32 `json:"card_id"`
+	Count  int64 `json:"count"`
+}
+
+func (q *Queries) GetChatAttachmentCountsByCardIDs(ctx context.Context, dollar_1 []int32) ([]GetChatAttachmentCountsByCardIDsRow, error) {
+	rows, err := q.db.Query(ctx, getChatAttachmentCountsByCardIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetChatAttachmentCountsByCardIDsRow{}
+	for rows.Next() {
+		var i GetChatAttachmentCountsByCardIDsRow
+		if err := rows.Scan(&i.CardID, &i.Count); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -931,6 +1041,38 @@ func (q *Queries) GetComment(ctx context.Context, id int32) (KanbanCardComment, 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getCommentCountsByCardIDs = `-- name: GetCommentCountsByCardIDs :many
+SELECT card_id, COUNT(*) AS count
+FROM kanban_card_comment
+WHERE card_id = ANY($1::int[])
+GROUP BY card_id
+`
+
+type GetCommentCountsByCardIDsRow struct {
+	CardID int32 `json:"card_id"`
+	Count  int64 `json:"count"`
+}
+
+func (q *Queries) GetCommentCountsByCardIDs(ctx context.Context, dollar_1 []int32) ([]GetCommentCountsByCardIDsRow, error) {
+	rows, err := q.db.Query(ctx, getCommentCountsByCardIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetCommentCountsByCardIDsRow{}
+	for rows.Next() {
+		var i GetCommentCountsByCardIDsRow
+		if err := rows.Scan(&i.CardID, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getCommentsByCard = `-- name: GetCommentsByCard :many
@@ -1197,6 +1339,9 @@ SELECT id, title, status, position, card_id, user_id FROM kanban_card_subtask
 WHERE id = $1 LIMIT 1
 `
 
+// ==============================
+// SUBTASKS
+// ==============================
 func (q *Queries) GetSubtask(ctx context.Context, id int32) (KanbanCardSubtask, error) {
 	row := q.db.QueryRow(ctx, getSubtask, id)
 	var i KanbanCardSubtask
@@ -1211,16 +1356,47 @@ func (q *Queries) GetSubtask(ctx context.Context, id int32) (KanbanCardSubtask, 
 	return i, err
 }
 
-const getSubtasksByCard = `-- name: GetSubtasksByCard :many
+const getSubtaskCountsByCardIDs = `-- name: GetSubtaskCountsByCardIDs :many
+SELECT card_id,
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE LOWER(status) = 'done') AS done
+FROM kanban_card_subtask
+WHERE card_id = ANY($1::int[])
+GROUP BY card_id
+`
 
+type GetSubtaskCountsByCardIDsRow struct {
+	CardID int32 `json:"card_id"`
+	Total  int64 `json:"total"`
+	Done   int64 `json:"done"`
+}
+
+func (q *Queries) GetSubtaskCountsByCardIDs(ctx context.Context, dollar_1 []int32) ([]GetSubtaskCountsByCardIDsRow, error) {
+	rows, err := q.db.Query(ctx, getSubtaskCountsByCardIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetSubtaskCountsByCardIDsRow{}
+	for rows.Next() {
+		var i GetSubtaskCountsByCardIDsRow
+		if err := rows.Scan(&i.CardID, &i.Total, &i.Done); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getSubtasksByCard = `-- name: GetSubtasksByCard :many
 SELECT id, title, status, position, card_id, user_id FROM kanban_card_subtask
 WHERE card_id = $1
 ORDER BY position ASC
 `
 
-// ==============================
-// SUBTASKS
-// ==============================
 func (q *Queries) GetSubtasksByCard(ctx context.Context, cardID int32) ([]KanbanCardSubtask, error) {
 	rows, err := q.db.Query(ctx, getSubtasksByCard, cardID)
 	if err != nil {

@@ -102,25 +102,17 @@ func (s *BoardService) CreateBoard(ctx context.Context, projectID int64, req dto
 		Position:    position,
 		CreatedByID: *authorID,
 	}
-	created, err := s.repo.CreateBoard(ctx, projectID, b)
-	if err != nil {
-		return nil, err
-	}
-
 	columns := normalizeBoardColumns(req.Columns)
+	modelColumns := make([]model.Column, 0, len(columns))
 	for i, column := range columns {
-		color := boardColumnColor(column.HeaderColor, i)
-		if _, err := s.columnRepo.CreateColumn(ctx, created.ID, &model.Column{
+		modelColumns = append(modelColumns, model.Column{
 			Title:       column.Title,
-			HeaderColor: color,
+			HeaderColor: boardColumnColor(column.HeaderColor, i),
 			Position:    float64(i + 1),
-			BoardID:     created.ID,
-		}); err != nil {
-			return nil, err
-		}
+		})
 	}
 
-	return created, nil
+	return s.repo.CreateBoardWithColumns(ctx, projectID, b, modelColumns)
 }
 
 func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID int64) (*dto.BoardResponse, error) {
@@ -149,46 +141,96 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 		labelMap[l.ID] = l
 	}
 
+	// Получить все карточки доски одним запросом
+	cards, err := s.cardRepo.GetCardsByBoard(ctx, boardID)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(cards) == 0 {
+		// Пустая доска — собираем колонки без карточек
+		for _, col := range columns {
+			colResp := dto.MapColumnResponse(&col)
+			colResp.Cards = []*dto.CardResponse{}
+			boardResp.Columns = append(boardResp.Columns, colResp)
+		}
+		return boardResp, nil
+	}
+
+	// Собрать ID всех карточек
+	cardIDs := make([]int64, len(cards))
+	for i, card := range cards {
+		cardIDs[i] = card.ID
+	}
+
+	// Bulk-запросы по всем card IDs
+	assigneesByCard, err := s.cardRepo.GetAssigneesByCardIDs(ctx, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	labelsByCard, err := s.cardRepo.GetLabelIDsByCardIDs(ctx, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	checklistsByCard, err := s.subtaskRepo.GetChecklistCountsByCardIDs(ctx, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	commentCountsByCard, err := s.commentRepo.GetCountsByCardIDs(ctx, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	chatCountsByCard, err := s.attachmentRepo.GetChatCountsByCardIDs(ctx, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Проставить assignees/labels на карточки из bulk-результатов
+	for i := range cards {
+		cards[i].AssigneeIDs = assigneesByCard[cards[i].ID]
+		cards[i].LabelIDs = labelsByCard[cards[i].ID]
+	}
+
+	// Сгруппировать карточки по columnID, сохранив порядок из запроса
+	cardsByColumn := make(map[int64][]*dto.CardResponse)
 	var allUserIDs []int64
 	var allCards []*dto.CardResponse
 
-	for _, col := range columns {
-		colResp := dto.MapColumnResponse(&col)
+	for i := range cards {
+		card := &cards[i]
+		cardResp := dto.MapCardResponse(card)
 
-		cards, _ := s.cardRepo.GetCardsByColumn(ctx, col.ID)
-		for _, card := range cards {
-			cardResp := dto.MapCardResponse(&card)
-
-			for _, lID := range card.LabelIDs {
-				if l, ok := labelMap[lID]; ok {
-					cardResp.Labels = append(cardResp.Labels, l)
-				}
+		// Проставить labels из labelMap
+		for _, lID := range card.LabelIDs {
+			if l, ok := labelMap[lID]; ok {
+				cardResp.Labels = append(cardResp.Labels, l)
 			}
-
-			subtasks, _ := s.subtaskRepo.GetSubtasks(ctx, card.ID)
-			cardResp.ChecklistTotal = len(subtasks)
-			for _, st := range subtasks {
-				if st.Status == "done" || st.Status == "DONE" {
-					cardResp.ChecklistDone++
-				}
-			}
-
-			comments, _ := s.commentRepo.GetComments(ctx, card.ID)
-			chatAttachments, _ := s.attachmentRepo.GetAttachmentsByCard(ctx, card.ID, "chat")
-			cardResp.CommentsCount = len(comments) + len(chatAttachments)
-
-			for _, uid := range card.AssigneeIDs {
-				allUserIDs = append(allUserIDs, uid)
-			}
-
-			colResp.Cards = append(colResp.Cards, cardResp)
-			allCards = append(allCards, cardResp)
 		}
-		boardResp.Columns = append(boardResp.Columns, colResp)
+
+		// Проставить checklist counts
+		if checklist, ok := checklistsByCard[card.ID]; ok {
+			cardResp.ChecklistTotal = checklist.Total
+			cardResp.ChecklistDone = checklist.Done
+		}
+
+		// Проставить comments count (comments + chat attachments)
+		cardResp.CommentsCount = commentCountsByCard[card.ID] + chatCountsByCard[card.ID]
+
+		// Собрать user IDs для bulk-загрузки
+		for _, uid := range card.AssigneeIDs {
+			allUserIDs = append(allUserIDs, uid)
+		}
+
+		cardsByColumn[card.ColumnID] = append(cardsByColumn[card.ColumnID], cardResp)
+		allCards = append(allCards, cardResp)
 	}
 
+	// Bulk-загрузка пользователей assignees
 	if len(allUserIDs) > 0 {
-		users, _ := s.userRepo.GetUsersByIDs(ctx, allUserIDs)
+		users, err := s.userRepo.GetUsersByIDs(ctx, allUserIDs)
+		if err != nil {
+			return nil, err
+		}
 		userMap := make(map[int64]model.User)
 		for _, u := range users {
 			userMap[u.ID] = u
@@ -209,6 +251,16 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 				}
 			}
 		}
+	}
+
+	// Собрать колонки с карточками
+	for _, col := range columns {
+		colResp := dto.MapColumnResponse(&col)
+		colResp.Cards = cardsByColumn[col.ID]
+		if colResp.Cards == nil {
+			colResp.Cards = []*dto.CardResponse{}
+		}
+		boardResp.Columns = append(boardResp.Columns, colResp)
 	}
 
 	return boardResp, nil

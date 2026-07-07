@@ -18,6 +18,7 @@ import (
 type BoardRepositoryInterface interface {
 	GetBoardsByProject(ctx context.Context, projectID int64) ([]model.Board, error)
 	CreateBoard(ctx context.Context, projectID int64, b *model.Board) (*model.Board, error)
+	CreateBoardWithColumns(ctx context.Context, projectID int64, b *model.Board, columns []model.Column) (*model.Board, error)
 	GetBoard(ctx context.Context, boardID int64) (*model.Board, error)
 	UpdateBoard(ctx context.Context, b *model.Board) (*model.Board, error)
 	DeleteBoard(ctx context.Context, boardID int64) error
@@ -68,18 +69,49 @@ func (r *BoardRepository) CreateBoard(ctx context.Context, projectID int64, b *m
 		CreatedByID:     int32(b.CreatedByID),
 	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
-	b.ID = int64(res.ID)
-	b.Title = res.Title
-	b.Position = res.Position
-	b.KanbanProjectID = int64(res.KanbanProjectID)
-	b.CreatedByID = int64(res.CreatedByID)
-	b.CreatedAt = res.CreatedAt.Time
-	b.UpdatedAt = res.UpdatedAt.Time
-	if res.DeletedAt.Valid {
-		b.DeletedAt = &res.DeletedAt.Time
+	mapDBBoard(&res, b)
+	return b, nil
+}
+
+func (r *BoardRepository) CreateBoardWithColumns(ctx context.Context, projectID int64, b *model.Board, columns []model.Column) (*model.Board, error) {
+	tx, err := r.Db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	queries := dbgen.New(tx)
+	res, err := queries.CreateBoard(ctx, dbgen.CreateBoardParams{
+		Title:           b.Title,
+		Position:        b.Position,
+		KanbanProjectID: int32(projectID),
+		CreatedByID:     int32(b.CreatedByID),
+	})
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	mapDBBoard(&res, b)
+
+	for i := range columns {
+		column := &columns[i]
+		createdColumn, err := queries.CreateColumn(ctx, dbgen.CreateColumnParams{
+			Title:       column.Title,
+			HeaderColor: column.HeaderColor,
+			Position:    column.Position,
+			BoardID:     int32(b.ID),
+		})
+		if err != nil {
+			return nil, NormalizeError(err)
+		}
+		column.ID = int64(createdColumn.ID)
+		column.BoardID = int64(createdColumn.BoardID)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return b, nil
 }
@@ -88,7 +120,7 @@ func (r *BoardRepository) GetBoard(ctx context.Context, id int64) (*model.Board,
 	queries := dbgen.New(r.Db)
 	b, err := queries.GetBoard(ctx, int32(id))
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	return &model.Board{
@@ -110,21 +142,10 @@ func (r *BoardRepository) UpdateBoard(ctx context.Context, b *model.Board) (*mod
 		ID:       int32(b.ID),
 	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
-	b.ID = int64(res.ID)
-	b.Title = res.Title
-	b.Position = res.Position
-	b.KanbanProjectID = int64(res.KanbanProjectID)
-	b.CreatedByID = int64(res.CreatedByID)
-	b.CreatedAt = res.CreatedAt.Time
-	b.UpdatedAt = res.UpdatedAt.Time
-	if res.DeletedAt.Valid {
-		b.DeletedAt = &res.DeletedAt.Time
-	} else {
-		b.DeletedAt = nil
-	}
+	mapDBBoard(&res, b)
 	return b, nil
 }
 
@@ -343,4 +364,19 @@ func (r *BoardRepository) NextBoardID(ctx context.Context, projectID int64, excl
 		return nil, err
 	}
 	return &id, nil
+}
+
+func mapDBBoard(b *dbgen.KanbanBoard, target *model.Board) {
+	target.ID = int64(b.ID)
+	target.Title = b.Title
+	target.Position = b.Position
+	target.KanbanProjectID = int64(b.KanbanProjectID)
+	target.CreatedByID = int64(b.CreatedByID)
+	target.CreatedAt = b.CreatedAt.Time
+	target.UpdatedAt = b.UpdatedAt.Time
+	if b.DeletedAt.Valid {
+		target.DeletedAt = &b.DeletedAt.Time
+	} else {
+		target.DeletedAt = nil
+	}
 }
