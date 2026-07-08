@@ -27,10 +27,10 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 	r.Group(func(r chi.Router) {
 		r.Use(authMw.Handler)
 
-		r.Get("/spa/api/me", h.User.LoginCheck())
+		r.Get("/spa/api/kanban/my-projects", h.User.LoginCheck())
 
 		// PROJECTS (ProjectController)
-		r.Route("/spa/api/projects", func(r chi.Router) {
+		r.Route("/spa/api/kanban/projects", func(r chi.Router) {
 			r.Get("/me", h.Project.GetMyProjects())
 			r.Post("/", h.Project.CreateProject())
 			r.Get("/{id}", h.Project.GetProject())
@@ -70,12 +70,12 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 		})
 
 		// PROJECT FOLDERS
-		r.Route("/spa/api/project-folders", func(r chi.Router) {
+		r.Route("/spa/api/kanban/project-folders", func(r chi.Router) {
 			r.Get("/", h.ProjectFolder.GetProjectFolders())
 		})
 
 		// CARDS
-		r.Route("/spa/api/cards", func(r chi.Router) {
+		r.Route("/spa/api/kanban/cards", func(r chi.Router) {
 			r.Post("/", h.Card.CreateCard())
 			r.Get("/{id}", h.Card.GetCard())
 			r.Patch("/{id}", h.Card.UpdateCard())
