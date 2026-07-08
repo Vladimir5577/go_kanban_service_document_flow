@@ -293,7 +293,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 			resp.Assignees = append(resp.Assignees, &dto.CardAssigneeResponse{
 				ID:        u.ID,
 				Name:      name,
-				AvatarUrl: u.AvatarName,
+				AvatarUrl: dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail),
 			})
 		}
 	}

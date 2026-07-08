@@ -34,6 +34,7 @@ type Config struct {
 	MinioSecretAccessKey string
 	MinioUseSSL          bool
 	MinioBucket          string
+	MinioUserBucket      string
 
 	// Imgproxy configuration
 	ImgproxyBaseUrl string
@@ -70,6 +71,7 @@ func Load() *Config {
 		MinioSecretAccessKey: getEnv("MINIO_SECRET_KEY", "minioadmin"),
 		MinioUseSSL:          getEnvAsBool("MINIO_USE_SSL", false),
 		MinioBucket:          getEnv("MINIO_BUCKET_NAME", "kanban"),
+		MinioUserBucket:      getEnv("MINIO_USER_BUCKET", "user"),
 
 		ImgproxyBaseUrl:       getEnv("IMGPROXY_BASE_URL", "http://localhost:8082"),
 		SymfonyInternalApiUrl: getEnv("SYMFONY_INTERNAL_API_URL", ""),

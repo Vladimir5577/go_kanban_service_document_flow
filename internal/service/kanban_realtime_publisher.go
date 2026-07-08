@@ -15,6 +15,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"go_kanban_service/internal/config"
+	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository"
 )
@@ -33,6 +35,7 @@ type KanbanRealtimePublisher struct {
 	attachmentRepo repository.AttachmentRepositoryInterface
 	labelRepo      repository.LabelRepositoryInterface
 	userRepo       repository.UserRepositoryInterface
+	cfg            *config.Config
 }
 
 func NewKanbanRealtimePublisher(
@@ -45,6 +48,7 @@ func NewKanbanRealtimePublisher(
 	attachmentRepo repository.AttachmentRepositoryInterface,
 	labelRepo repository.LabelRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
+	cfg *config.Config,
 ) *KanbanRealtimePublisher {
 	return &KanbanRealtimePublisher{
 		hubURL:    strings.TrimSpace(hubURL),
@@ -59,6 +63,7 @@ func NewKanbanRealtimePublisher(
 		attachmentRepo: attachmentRepo,
 		labelRepo:      labelRepo,
 		userRepo:       userRepo,
+		cfg:            cfg,
 	}
 }
 
@@ -233,7 +238,7 @@ func (p *KanbanRealtimePublisher) BuildAssignees(ctx context.Context, cardID int
 	assignees := make([]map[string]any, 0, len(card.AssigneeIDs))
 	for _, userID := range card.AssigneeIDs {
 		if user, ok := userByID[userID]; ok {
-			assignees = append(assignees, formatRealtimeAssignee(user))
+			assignees = append(assignees, formatRealtimeAssignee(p.cfg, user))
 		}
 	}
 
@@ -296,7 +301,7 @@ func (p *KanbanRealtimePublisher) publisherToken() (string, error) {
 	return token.SignedString([]byte(p.jwtSecret))
 }
 
-func formatRealtimeAssignee(user model.User) map[string]any {
+func formatRealtimeAssignee(cfg *config.Config, user model.User) map[string]any {
 	name := strings.TrimSpace(user.Lastname + " " + user.Firstname)
 	if name == "" {
 		name = strconv.FormatInt(user.ID, 10)
@@ -305,7 +310,7 @@ func formatRealtimeAssignee(user model.User) map[string]any {
 	return map[string]any{
 		"id":        user.ID,
 		"name":      name,
-		"avatarUrl": user.AvatarName,
+		"avatarUrl": dto.UserAvatarURL(cfg, user.AvatarName, dto.AvatarSizeThumbnail),
 	}
 }
 

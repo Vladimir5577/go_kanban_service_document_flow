@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"go_kanban_service/internal/apperr"
+	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository"
@@ -49,6 +50,7 @@ type BoardService struct {
 	commentRepo    repository.CommentRepositoryInterface
 	attachmentRepo repository.AttachmentRepositoryInterface
 	permSvc        *PermissionService
+	cfg            *config.Config
 }
 
 func NewBoardService(
@@ -61,6 +63,7 @@ func NewBoardService(
 	commentRepo repository.CommentRepositoryInterface,
 	attachmentRepo repository.AttachmentRepositoryInterface,
 	permSvc *PermissionService,
+	cfg *config.Config,
 ) *BoardService {
 	return &BoardService{
 		repo:           repo,
@@ -72,6 +75,7 @@ func NewBoardService(
 		commentRepo:    commentRepo,
 		attachmentRepo: attachmentRepo,
 		permSvc:        permSvc,
+		cfg:            cfg,
 	}
 }
 
@@ -246,7 +250,7 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 					cardResp.Assignees = append(cardResp.Assignees, &dto.CardAssigneeResponse{
 						ID:        u.ID,
 						Name:      name,
-						AvatarUrl: u.AvatarName,
+						AvatarUrl: dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail),
 					})
 				}
 			}
@@ -340,7 +344,7 @@ func (s *BoardService) GetBoardArchive(ctx context.Context, projectID int64, boa
 	if err != nil {
 		return nil, err
 	}
-	return dto.MapBoardArchiveResponse(archive), nil
+	return dto.MapBoardArchiveResponse(s.cfg, archive), nil
 }
 
 func (s *BoardService) resolveBoard(ctx context.Context, projectID int64, boardID int64) (*model.Board, error) {

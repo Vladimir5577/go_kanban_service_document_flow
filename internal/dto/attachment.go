@@ -40,7 +40,7 @@ func MapAttachmentResponse(cfg *config.Config, a model.Attachment) *AttachmentRe
 			cfg.MinioBucket,
 			a.StorageKey)
 	} else {
-		previewUrl = fmt.Sprintf("/spa/api/cards/%d/attachments/%d/preview", a.CardID, a.ID)
+		previewUrl = fmt.Sprintf("/spa/api/kanban/cards/%d/attachments/%d/preview", a.CardID, a.ID)
 	}
 
 	return &AttachmentResponse{

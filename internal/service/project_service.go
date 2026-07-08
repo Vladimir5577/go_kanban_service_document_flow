@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"go_kanban_service/internal/apperr"
+	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/middleware"
 	"go_kanban_service/internal/model"
@@ -28,6 +29,7 @@ type ProjectService struct {
 	memberRepo repository.ProjectMemberRepositoryInterface
 	userRepo   repository.UserRepositoryInterface
 	permSvc    *PermissionService
+	cfg        *config.Config
 }
 
 func NewProjectService(
@@ -36,6 +38,7 @@ func NewProjectService(
 	memberRepo repository.ProjectMemberRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
 	permSvc *PermissionService,
+	cfg *config.Config,
 ) *ProjectService {
 	return &ProjectService{
 		repo:       repo,
@@ -43,6 +46,7 @@ func NewProjectService(
 		memberRepo: memberRepo,
 		userRepo:   userRepo,
 		permSvc:    permSvc,
+		cfg:        cfg,
 	}
 }
 
@@ -147,7 +151,7 @@ func (s *ProjectService) GetProject(ctx context.Context, id int64) (*dto.Project
 			memResp.Lastname = u.Lastname
 			memResp.Firstname = u.Firstname
 			memResp.Patronymic = u.Patronymic
-			memResp.AvatarUrl = u.AvatarName
+			memResp.AvatarUrl = dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail)
 			memResp.IsOwner = (u.ID == p.OwnerID)
 		}
 		resp.Members = append(resp.Members, memResp)

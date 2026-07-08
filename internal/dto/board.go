@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/model"
 )
 
@@ -138,7 +139,7 @@ type BoardArchiveResponse struct {
 	ArchivedCount int64                          `json:"archivedCount"`
 }
 
-func MapBoardArchiveResponse(page *model.BoardArchivePage) *BoardArchiveResponse {
+func MapBoardArchiveResponse(cfg *config.Config, page *model.BoardArchivePage) *BoardArchiveResponse {
 	if page == nil {
 		return nil
 	}
@@ -160,12 +161,12 @@ func MapBoardArchiveResponse(page *model.BoardArchivePage) *BoardArchiveResponse
 	}
 
 	for i := range page.Cards {
-		resp.Cards = append(resp.Cards, MapArchivedCardResponse(&page.Cards[i]))
+		resp.Cards = append(resp.Cards, MapArchivedCardResponse(cfg, &page.Cards[i]))
 	}
 	return resp
 }
 
-func MapArchivedCardResponse(card *model.ArchivedCard) *ArchivedCardResponse {
+func MapArchivedCardResponse(cfg *config.Config, card *model.ArchivedCard) *ArchivedCardResponse {
 	if card == nil {
 		return nil
 	}
@@ -176,11 +177,11 @@ func MapArchivedCardResponse(card *model.ArchivedCard) *ArchivedCardResponse {
 		ColumnTitle: card.ColumnTitle,
 		BorderColor: card.BorderColor,
 		ArchivedAt:  card.ArchivedAt,
-		ArchivedBy:  mapArchivedByUser(card.ArchivedBy),
+		ArchivedBy:  mapArchivedByUser(cfg, card.ArchivedBy),
 	}
 }
 
-func mapArchivedByUser(user *model.User) *CardAssigneeResponse {
+func mapArchivedByUser(cfg *config.Config, user *model.User) *CardAssigneeResponse {
 	if user == nil {
 		return nil
 	}
@@ -192,6 +193,6 @@ func mapArchivedByUser(user *model.User) *CardAssigneeResponse {
 	return &CardAssigneeResponse{
 		ID:        user.ID,
 		Name:      name,
-		AvatarUrl: user.AvatarName,
+		AvatarUrl: UserAvatarURL(cfg, user.AvatarName, AvatarSizeThumbnail),
 	}
 }

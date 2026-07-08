@@ -95,6 +95,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		attachmentRepo,
 		labelRepo,
 		userRepo,
+		cfg,
 	)
 
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, activityRepo, realtimePublisher)
@@ -116,7 +117,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	projectFolderSvc := service.NewProjectFolderService(projectFolderRepo, permSvc)
 	projectFolderHandler := handler.NewProjectFolderHandler(projectFolderSvc)
 
-	projectSvc := service.NewProjectService(projectRepo, boardRepo, projectMemberRepo, userRepo, permSvc)
+	projectSvc := service.NewProjectService(projectRepo, boardRepo, projectMemberRepo, userRepo, permSvc, cfg)
 	projectHandler := handler.NewProjectHandler(projectSvc)
 
 	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc)
@@ -125,7 +126,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, activityRepo, userRepo, projectRepo, projectMemberRepo, realtimePublisher)
 	subtaskHandler := handler.NewSubtaskHandler(subtaskSvc)
 
-	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, subtaskRepo, commentRepo, attachmentRepo, permSvc)
+	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, subtaskRepo, commentRepo, attachmentRepo, permSvc, cfg)
 	boardHandler := handler.NewBoardHandler(boardSvc)
 
 	h := Handlers{

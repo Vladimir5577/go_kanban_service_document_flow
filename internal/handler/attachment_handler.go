@@ -50,7 +50,7 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 		defer file.Close()
 
 		ctxVal := normalizeAttachmentContext(r.FormValue("context"))
-		objectName := fmt.Sprintf("cards/%d/%s-%s", cardID, uuid.New().String(), header.Filename)
+		objectName := fmt.Sprintf("%d/%s-%s", cardID, uuid.New().String(), header.Filename)
 
 		err = h.minioSvc.UploadFile(r.Context(), h.cfg.MinioBucket, objectName, file, header.Size, header.Header.Get("Content-Type"))
 		if err != nil {
