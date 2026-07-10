@@ -14,6 +14,8 @@ import (
 	"go_kanban_service/internal/repository"
 )
 
+const defaultProjectBoardTitle = "Главная доска"
+
 type ProjectServiceInterface interface {
 	GetAllProjects(ctx context.Context) ([]model.Project, error)
 	CreateProject(ctx context.Context, req dto.CreateProjectRequest) (*model.Project, error)
@@ -81,7 +83,31 @@ func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjec
 	if err != nil {
 		return nil, err
 	}
+
+	board, err := s.createDefaultBoard(ctx, created.ID, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	created.EntryBoardID = &board.ID
 	return created, nil
+}
+
+func (s *ProjectService) createDefaultBoard(ctx context.Context, projectID int64, userID int64) (*model.Board, error) {
+	columns := normalizeBoardColumns(defaultBoardColumns)
+	modelColumns := make([]model.Column, 0, len(columns))
+	for i, column := range columns {
+		modelColumns = append(modelColumns, model.Column{
+			Title:       column.Title,
+			HeaderColor: boardColumnColor(column.HeaderColor, i),
+			Position:    float64(i + 1),
+		})
+	}
+
+	return s.boardRepo.CreateBoardWithColumns(ctx, projectID, &model.Board{
+		Title:       defaultProjectBoardTitle,
+		Position:    1,
+		CreatedByID: userID,
+	}, modelColumns)
 }
 
 func (s *ProjectService) GetProject(ctx context.Context, id int64) (*dto.ProjectResponse, error) {

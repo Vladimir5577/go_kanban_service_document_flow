@@ -19,7 +19,6 @@ type UpdateProjectRequest struct {
 	Description *string `json:"description,omitempty" validate:"omitempty,max=1000"`
 }
 
-
 // MemberResponse DTO для участника проекта
 type MemberResponse struct {
 	UserID     int64   `json:"userId"`
@@ -54,6 +53,7 @@ type ProjectResponse struct {
 	Description    *string           `json:"description,omitempty"`
 	CreatedAt      time.Time         `json:"createdAt"`
 	UpdatedAt      time.Time         `json:"updatedAt"`
+	EntryBoardId   *int64            `json:"entryBoardId,omitempty"`
 	Owner          *UserResponse     `json:"owner,omitempty"`
 	IsOwner        bool              `json:"isOwner"`
 	IsProjectAdmin bool              `json:"isProjectAdmin"`
@@ -68,13 +68,14 @@ func MapProjectResponse(p *model.Project) *ProjectResponse {
 		return nil
 	}
 	return &ProjectResponse{
-		ID:          p.ID,
-		Name:        p.Name,
-		Description: p.Description,
-		CreatedAt:   p.CreatedAt,
-		UpdatedAt:   p.UpdatedAt,
-		Boards:      make([]*BoardResponse, 0),
-		Members:     make([]*MemberResponse, 0),
+		ID:           p.ID,
+		Name:         p.Name,
+		Description:  p.Description,
+		CreatedAt:    p.CreatedAt,
+		UpdatedAt:    p.UpdatedAt,
+		EntryBoardId: p.EntryBoardID,
+		Boards:       make([]*BoardResponse, 0),
+		Members:      make([]*MemberResponse, 0),
 	}
 }
 
@@ -91,15 +92,15 @@ func MapProjectsResponse(projects []model.Project) []*ProjectResponse {
 func MapNavProjectResponse(p model.NavProject, currentUserID int64) *NavProjectResponse {
 	isOwner := p.OwnerID == currentUserID
 	isProjectAdmin := isOwner || p.Role == "KANBAN_ADMIN"
-	
+
 	// Create entry href: /projects/{id}
 	// By default, frontend expects it to be the project root
 	// If entry board is present, the frontend will navigate there automatically when clicking the nav item.
 	// We just provide the project base URL.
 	// Wait, the frontend code for EntryHref: entryHref: `/projects/${project.id}`
-	
+
 	// If EntryBoardID is null, we can just leave it as null, frontend handles it.
-	
+
 	// Helper function for float to float mapping
 	// Or we just map it.
 	return &NavProjectResponse{
