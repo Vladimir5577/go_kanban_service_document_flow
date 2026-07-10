@@ -16,12 +16,22 @@ import (
 const defaultLabelColor = "bg-primary"
 
 var allowedLabelColors = map[string]struct{}{
-	"bg-primary": {},
-	"bg-warning": {},
-	"bg-success": {},
-	"bg-danger":  {},
-	"bg-info":    {},
-	"bg-dark":    {},
+	"bg-dark":       {},
+	"bg-coral":      {},
+	"bg-bronze":     {},
+	"bg-lemon":      {},
+	"bg-olive":      {},
+	"bg-sea":        {},
+	"bg-periwinkle": {},
+	"bg-lilac":      {},
+	"bg-gray":       {},
+	"bg-danger":     {},
+	"bg-orange":     {},
+	"bg-warning":    {},
+	"bg-success":    {},
+	"bg-info":       {},
+	"bg-primary":    {},
+	"bg-magenta":    {},
 }
 
 type LabelServiceInterface interface {
