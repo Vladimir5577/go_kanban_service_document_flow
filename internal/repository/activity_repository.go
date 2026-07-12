@@ -26,7 +26,7 @@ func NewActivityRepository(db *pgxpool.Pool) *ActivityRepository {
 
 func (r *ActivityRepository) GetActivities(ctx context.Context, cardID int64) ([]model.Activity, error) {
 	queries := dbgen.New(r.Db)
-	dbActivities, err := queries.GetActivitiesByCard(ctx, int32(cardID))
+	dbActivities, err := queries.GetActivitiesByCard(ctx, cardID)
 	if err != nil {
 		return nil, err
 	}
@@ -34,13 +34,13 @@ func (r *ActivityRepository) GetActivities(ctx context.Context, cardID int64) ([
 	var activities []model.Activity
 	for _, a := range dbActivities {
 		act := model.Activity{
-			ID:        int64(a.ID),
-			CardID:    int64(a.CardID),
+			ID:        a.ID,
+			CardID:    a.CardID,
 			Type:      a.Type,
 			CreatedAt: a.CreatedAt.Time,
 		}
 		if a.UserID.Valid {
-			uid := int64(a.UserID.Int32)
+			uid := a.UserID.Int64
 			act.UserID = &uid
 		}
 		if a.OldValue.Valid {
@@ -59,10 +59,10 @@ func (r *ActivityRepository) LogActivity(ctx context.Context, cardID int64, auth
 
 	params := dbgen.CreateActivityParams{
 		Type:   action,
-		CardID: int32(cardID),
+		CardID: cardID,
 	}
 	if authorID != nil {
-		params.UserID = pgtype.Int4{Int32: int32(*authorID), Valid: true}
+		params.UserID = pgtype.Int8{Int64: *authorID, Valid: true}
 	}
 	if oldValue != nil {
 		params.OldValue = pgtype.Text{String: *oldValue, Valid: true}

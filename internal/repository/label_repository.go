@@ -29,7 +29,7 @@ func NewLabelRepository(db *pgxpool.Pool) *LabelRepository {
 
 func (r *LabelRepository) GetLabels(ctx context.Context, boardID int64) ([]model.Label, error) {
 	queries := dbgen.New(r.Db)
-	dbLabels, err := queries.GetLabelsByBoard(ctx, int32(boardID))
+	dbLabels, err := queries.GetLabelsByBoard(ctx, boardID)
 	if err != nil {
 		return nil, err
 	}
@@ -37,10 +37,10 @@ func (r *LabelRepository) GetLabels(ctx context.Context, boardID int64) ([]model
 	var labels []model.Label
 	for _, l := range dbLabels {
 		labels = append(labels, model.Label{
-			ID:      int64(l.ID),
+			ID:      l.ID,
 			Name:    l.Name,
 			Color:   l.Color,
-			BoardID: int64(l.BoardID),
+			BoardID: l.BoardID,
 		})
 	}
 	return labels, nil
@@ -48,16 +48,16 @@ func (r *LabelRepository) GetLabels(ctx context.Context, boardID int64) ([]model
 
 func (r *LabelRepository) GetLabel(ctx context.Context, labelID int64) (*model.Label, error) {
 	queries := dbgen.New(r.Db)
-	l, err := queries.GetLabel(ctx, int32(labelID))
+	l, err := queries.GetLabel(ctx, labelID)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
 	return &model.Label{
-		ID:      int64(l.ID),
+		ID:      l.ID,
 		Name:    l.Name,
 		Color:   l.Color,
-		BoardID: int64(l.BoardID),
+		BoardID: l.BoardID,
 	}, nil
 }
 
@@ -66,42 +66,42 @@ func (r *LabelRepository) CreateLabel(ctx context.Context, boardID int64, l *mod
 	res, err := queries.CreateLabel(ctx, dbgen.CreateLabelParams{
 		Name:    l.Name,
 		Color:   l.Color,
-		BoardID: int32(boardID),
+		BoardID: boardID,
 	})
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
-	l.ID = int64(res.ID)
-	l.BoardID = int64(res.BoardID)
+	l.ID = res.ID
+	l.BoardID = res.BoardID
 	return l, nil
 }
 
 func (r *LabelRepository) DeleteLabel(ctx context.Context, labelID int64) error {
 	queries := dbgen.New(r.Db)
-	return queries.DeleteLabel(ctx, int32(labelID))
+	return queries.DeleteLabel(ctx, labelID)
 }
 
 func (r *LabelRepository) ToggleLabel(ctx context.Context, cardID int64, labelID int64) (bool, error) {
 	queries := dbgen.New(r.Db)
-	cardLabels, err := queries.GetCardLabels(ctx, int32(cardID))
+	cardLabels, err := queries.GetCardLabels(ctx, cardID)
 	if err != nil {
 		return false, err
 	}
 
 	for _, id := range cardLabels {
-		if int64(id) == labelID {
+		if id == labelID {
 			err := queries.RemoveCardLabel(ctx, dbgen.RemoveCardLabelParams{
-				KanbanCardID:  int32(cardID),
-				KanbanLabelID: int32(labelID),
+				KanbanCardID:  cardID,
+				KanbanLabelID: labelID,
 			})
 			return false, err
 		}
 	}
 
 	err = queries.AddCardLabel(ctx, dbgen.AddCardLabelParams{
-		KanbanCardID:  int32(cardID),
-		KanbanLabelID: int32(labelID),
+		KanbanCardID:  cardID,
+		KanbanLabelID: labelID,
 	})
 	return true, err
 }

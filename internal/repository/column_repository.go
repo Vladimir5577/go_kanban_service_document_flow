@@ -30,7 +30,7 @@ func NewColumnRepository(db *pgxpool.Pool) *ColumnRepository {
 
 func (r *ColumnRepository) GetColumnsByBoard(ctx context.Context, boardID int64) ([]model.Column, error) {
 	queries := dbgen.New(r.Db)
-	dbCols, err := queries.GetColumnsByBoard(ctx, int32(boardID))
+	dbCols, err := queries.GetColumnsByBoard(ctx, boardID)
 	if err != nil {
 		return nil, err
 	}
@@ -38,11 +38,11 @@ func (r *ColumnRepository) GetColumnsByBoard(ctx context.Context, boardID int64)
 	var cols []model.Column
 	for _, c := range dbCols {
 		cols = append(cols, model.Column{
-			ID:          int64(c.ID),
+			ID:          c.ID,
 			Title:       c.Title,
 			HeaderColor: c.HeaderColor,
 			Position:    c.Position,
-			BoardID:     int64(c.BoardID),
+			BoardID:     c.BoardID,
 		})
 	}
 	return cols, nil
@@ -54,33 +54,33 @@ func (r *ColumnRepository) CreateColumn(ctx context.Context, boardID int64, c *m
 		Title:       c.Title,
 		HeaderColor: c.HeaderColor,
 		Position:    c.Position,
-		BoardID:     int32(boardID),
+		BoardID:     boardID,
 	})
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
-	c.ID = int64(res.ID)
+	c.ID = res.ID
 	c.Title = res.Title
 	c.HeaderColor = res.HeaderColor
 	c.Position = res.Position
-	c.BoardID = int64(res.BoardID)
+	c.BoardID = res.BoardID
 	return c, nil
 }
 
 func (r *ColumnRepository) GetColumn(ctx context.Context, id int64) (*model.Column, error) {
 	queries := dbgen.New(r.Db)
-	c, err := queries.GetColumn(ctx, int32(id))
+	c, err := queries.GetColumn(ctx, id)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
 	return &model.Column{
-		ID:          int64(c.ID),
+		ID:          c.ID,
 		Title:       c.Title,
 		HeaderColor: c.HeaderColor,
 		Position:    c.Position,
-		BoardID:     int64(c.BoardID),
+		BoardID:     c.BoardID,
 	}, nil
 }
 
@@ -90,28 +90,28 @@ func (r *ColumnRepository) UpdateColumn(ctx context.Context, c *model.Column) (*
 		Title:       c.Title,
 		HeaderColor: c.HeaderColor,
 		Position:    c.Position,
-		ID:          int32(c.ID),
+		ID:          c.ID,
 	})
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
-	c.ID = int64(res.ID)
+	c.ID = res.ID
 	c.Title = res.Title
 	c.HeaderColor = res.HeaderColor
 	c.Position = res.Position
-	c.BoardID = int64(res.BoardID)
+	c.BoardID = res.BoardID
 	return c, nil
 }
 
 func (r *ColumnRepository) DeleteColumn(ctx context.Context, id int64) error {
 	queries := dbgen.New(r.Db)
-	return queries.DeleteColumn(ctx, int32(id))
+	return queries.DeleteColumn(ctx, id)
 }
 
 func (r *ColumnRepository) HasCardsByColumn(ctx context.Context, columnID int64) (bool, error) {
 	queries := dbgen.New(r.Db)
-	res, err := queries.HasCardsByColumn(ctx, int32(columnID))
+	res, err := queries.HasCardsByColumn(ctx, columnID)
 	if err != nil {
 		return false, err
 	}

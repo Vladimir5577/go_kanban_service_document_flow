@@ -31,7 +31,7 @@ func NewSubtaskRepository(db *pgxpool.Pool) *SubtaskRepository {
 
 func (r *SubtaskRepository) GetSubtasks(ctx context.Context, cardID int64) ([]model.Subtask, error) {
 	queries := dbgen.New(r.Db)
-	dbSubtasks, err := queries.GetSubtasksByCard(ctx, int32(cardID))
+	dbSubtasks, err := queries.GetSubtasksByCard(ctx, cardID)
 	if err != nil {
 		return nil, err
 	}
@@ -39,14 +39,14 @@ func (r *SubtaskRepository) GetSubtasks(ctx context.Context, cardID int64) ([]mo
 	var subtasks []model.Subtask
 	for _, s := range dbSubtasks {
 		st := model.Subtask{
-			ID:       int64(s.ID),
+			ID:       s.ID,
 			Title:    s.Title,
 			Status:   s.Status,
 			Position: s.Position,
-			CardID:   int64(s.CardID),
+			CardID:   s.CardID,
 		}
 		if s.UserID.Valid {
-			uid := int64(s.UserID.Int32)
+			uid := s.UserID.Int64
 			st.UserID = &uid
 		}
 		subtasks = append(subtasks, st)
@@ -59,21 +59,15 @@ func (r *SubtaskRepository) GetChecklistCountsByCardIDs(ctx context.Context, car
 		return make(map[int64]model.ChecklistCount), nil
 	}
 
-	cardIDs32 := make([]int32, len(cardIDs))
-	for i, id := range cardIDs {
-		cardIDs32[i] = int32(id)
-	}
-
 	queries := dbgen.New(r.Db)
-	rows, err := queries.GetSubtaskCountsByCardIDs(ctx, cardIDs32)
+	rows, err := queries.GetSubtaskCountsByCardIDs(ctx, cardIDs)
 	if err != nil {
 		return nil, err
 	}
 
 	result := make(map[int64]model.ChecklistCount)
 	for _, row := range rows {
-		cardID := int64(row.CardID)
-		result[cardID] = model.ChecklistCount{
+		result[row.CardID] = model.ChecklistCount{
 			Total: int(row.Total),
 			Done:  int(row.Done),
 		}
@@ -84,19 +78,19 @@ func (r *SubtaskRepository) GetChecklistCountsByCardIDs(ctx context.Context, car
 
 func (r *SubtaskRepository) GetSubtask(ctx context.Context, id int64) (*model.Subtask, error) {
 	queries := dbgen.New(r.Db)
-	dbSubtask, err := queries.GetSubtask(ctx, int32(id))
+	dbSubtask, err := queries.GetSubtask(ctx, id)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 	s := &model.Subtask{
-		ID:       int64(dbSubtask.ID),
+		ID:       dbSubtask.ID,
 		Title:    dbSubtask.Title,
 		Status:   dbSubtask.Status,
 		Position: dbSubtask.Position,
-		CardID:   int64(dbSubtask.CardID),
+		CardID:   dbSubtask.CardID,
 	}
 	if dbSubtask.UserID.Valid {
-		uid := int64(dbSubtask.UserID.Int32)
+		uid := dbSubtask.UserID.Int64
 		s.UserID = &uid
 	}
 	return s, nil
@@ -105,32 +99,32 @@ func (r *SubtaskRepository) GetSubtask(ctx context.Context, id int64) (*model.Su
 func (r *SubtaskRepository) CreateSubtask(ctx context.Context, cardID int64, s *model.Subtask) (*model.Subtask, error) {
 	queries := dbgen.New(r.Db)
 
-	var userID pgtype.Int4
+	var userID pgtype.Int8
 	if s.UserID != nil {
-		userID = pgtype.Int4{Int32: int32(*s.UserID), Valid: true}
+		userID = pgtype.Int8{Int64: *s.UserID, Valid: true}
 	}
 
 	res, err := queries.CreateSubtask(ctx, dbgen.CreateSubtaskParams{
 		Title:    s.Title,
 		Status:   s.Status,
 		Position: s.Position,
-		CardID:   int32(cardID),
+		CardID:   cardID,
 		UserID:   userID,
 	})
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
-	s.ID = int64(res.ID)
+	s.ID = res.ID
 	return s, nil
 }
 
 func (r *SubtaskRepository) UpdateSubtask(ctx context.Context, subtaskID int64, s *model.Subtask) (*model.Subtask, error) {
 	queries := dbgen.New(r.Db)
 
-	var userID pgtype.Int4
+	var userID pgtype.Int8
 	if s.UserID != nil {
-		userID = pgtype.Int4{Int32: int32(*s.UserID), Valid: true}
+		userID = pgtype.Int8{Int64: *s.UserID, Valid: true}
 	}
 
 	_, err := queries.UpdateSubtask(ctx, dbgen.UpdateSubtaskParams{
@@ -138,7 +132,7 @@ func (r *SubtaskRepository) UpdateSubtask(ctx context.Context, subtaskID int64, 
 		Status:   s.Status,
 		Position: s.Position,
 		UserID:   userID,
-		ID:       int32(subtaskID),
+		ID:       subtaskID,
 	})
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -148,5 +142,5 @@ func (r *SubtaskRepository) UpdateSubtask(ctx context.Context, subtaskID int64, 
 
 func (r *SubtaskRepository) DeleteSubtask(ctx context.Context, subtaskID int64) error {
 	queries := dbgen.New(r.Db)
-	return queries.DeleteSubtask(ctx, int32(subtaskID))
+	return queries.DeleteSubtask(ctx, subtaskID)
 }

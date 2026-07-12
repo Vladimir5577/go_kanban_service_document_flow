@@ -35,7 +35,7 @@ func NewProjectMemberRepository(db *pgxpool.Pool) *ProjectMemberRepository {
 
 func (r *ProjectMemberRepository) GetMembers(ctx context.Context, projectID int64) ([]model.ProjectUser, error) {
 	queries := dbgen.New(r.Db)
-	dbMembers, err := queries.GetProjectMembers(ctx, int32(projectID))
+	dbMembers, err := queries.GetProjectMembers(ctx, projectID)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
@@ -43,12 +43,12 @@ func (r *ProjectMemberRepository) GetMembers(ctx context.Context, projectID int6
 	var members []model.ProjectUser
 	for _, m := range dbMembers {
 		member := model.ProjectUser{
-			KanbanProjectID: int64(m.KanbanProjectID),
-			UserID:          int64(m.UserID),
+			KanbanProjectID: m.KanbanProjectID,
+			UserID:          m.UserID,
 			Role:            m.Role,
 		}
 		if m.FolderID.Valid {
-			v := int64(m.FolderID.Int32)
+			v := m.FolderID.Int64
 			member.FolderID = &v
 		}
 		members = append(members, member)
@@ -59,21 +59,21 @@ func (r *ProjectMemberRepository) GetMembers(ctx context.Context, projectID int6
 func (r *ProjectMemberRepository) GetProjectMember(ctx context.Context, projectID, userID int64) (*model.ProjectUser, error) {
 	queries := dbgen.New(r.Db)
 	dbMember, err := queries.GetProjectMember(ctx, dbgen.GetProjectMemberParams{
-		KanbanProjectID: int32(projectID),
-		UserID:          int32(userID),
+		KanbanProjectID: projectID,
+		UserID:          userID,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	return &model.ProjectUser{
-		ID:              int64(dbMember.ID),
-		KanbanProjectID: int64(dbMember.KanbanProjectID),
-		UserID:          int64(dbMember.UserID),
+		ID:              dbMember.ID,
+		KanbanProjectID: dbMember.KanbanProjectID,
+		UserID:          dbMember.UserID,
 		Role:            dbMember.Role,
 		FolderID: func() *int64 {
 			if dbMember.FolderID.Valid {
-				v := int64(dbMember.FolderID.Int32)
+				v := dbMember.FolderID.Int64
 				return &v
 			}
 			return nil
@@ -85,54 +85,47 @@ func (r *ProjectMemberRepository) GetProjectMember(ctx context.Context, projectI
 func (r *ProjectMemberRepository) AddMember(ctx context.Context, projectID int64, member model.ProjectUser) error {
 	queries := dbgen.New(r.Db)
 	params := dbgen.AddProjectMemberParams{
-		KanbanProjectID: int32(projectID),
-		UserID:          int32(member.UserID),
+		KanbanProjectID: projectID,
+		UserID:          member.UserID,
 		Role:            member.Role,
 		Position:        member.Position,
 	}
 	if member.FolderID != nil {
-		params.FolderID = pgtype.Int4{Int32: int32(*member.FolderID), Valid: true}
+		params.FolderID = pgtype.Int8{Int64: *member.FolderID, Valid: true}
 	}
 	return queries.AddProjectMember(ctx, params)
 }
 
 func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID int64, members []model.ProjectUser) error {
-	tx, err := r.Db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-	}()
-
-	queries := dbgen.New(tx)
-	if err := queries.ReplaceProjectMembers(ctx, int32(projectID)); err != nil {
-		return err
-	}
-
-	for _, m := range members {
-		params := dbgen.AddProjectMemberParams{
-			KanbanProjectID: int32(projectID),
-			UserID:          int32(m.UserID),
-			Role:            m.Role,
-			Position:        m.Position,
-		}
-		if m.FolderID != nil {
-			params.FolderID = pgtype.Int4{Int32: int32(*m.FolderID), Valid: true}
-		}
-
-		if err := queries.AddProjectMember(ctx, params); err != nil {
+	return ExecTx(ctx, r.Db, func(q *dbgen.Queries) error {
+		if err := q.ReplaceProjectMembers(ctx, projectID); err != nil {
 			return err
 		}
-	}
-	return tx.Commit(ctx)
+
+		for _, m := range members {
+			params := dbgen.AddProjectMemberParams{
+				KanbanProjectID: projectID,
+				UserID:          m.UserID,
+				Role:            m.Role,
+				Position:        m.Position,
+			}
+			if m.FolderID != nil {
+				params.FolderID = pgtype.Int8{Int64: *m.FolderID, Valid: true}
+			}
+
+			if err := q.AddProjectMember(ctx, params); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (r *ProjectMemberRepository) UpdateMemberRole(ctx context.Context, projectID int64, userID int64, role string) error {
 	queries := dbgen.New(r.Db)
 	return queries.UpdateProjectMemberRole(ctx, dbgen.UpdateProjectMemberRoleParams{
-		KanbanProjectID: int32(projectID),
-		UserID:          int32(userID),
+		KanbanProjectID: projectID,
+		UserID:          userID,
 		Role:            role,
 	})
 }
@@ -142,8 +135,12 @@ func (r *ProjectMemberRepository) RemoveMember(ctx context.Context, projectID in
 	if err != nil {
 		return err
 	}
+
+	committed := false
 	defer func() {
-		_ = tx.Rollback(ctx)
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
 	}()
 
 	if _, err := tx.Exec(ctx, `
@@ -173,13 +170,17 @@ func (r *ProjectMemberRepository) RemoveMember(ctx context.Context, projectID in
 
 	queries := dbgen.New(tx)
 	if err := queries.RemoveProjectMember(ctx, dbgen.RemoveProjectMemberParams{
-		KanbanProjectID: int32(projectID),
-		UserID:          int32(userID),
+		KanbanProjectID: projectID,
+		UserID:          userID,
 	}); err != nil {
 		return err
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 // GetAdminUserIDs returns the owner of the project plus all members with KANBAN_ADMIN role.
@@ -196,14 +197,14 @@ func (r *ProjectMemberRepository) GetAdminUserIDs(ctx context.Context, projectID
 	}
 
 	queries := dbgen.New(r.Db)
-	members, err := queries.GetProjectMembers(ctx, int32(projectID))
+	members, err := queries.GetProjectMembers(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, m := range members {
 		if m.Role == "KANBAN_ADMIN" {
-			admins[int64(m.UserID)] = true
+			admins[m.UserID] = true
 		}
 	}
 

@@ -40,14 +40,13 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 
 		for rows.Next() {
 			var a model.Attachment
-			var authorID *int32
+			var authorID *int64
 			err := rows.Scan(&a.ID, &a.Filename, &a.StorageKey, &a.ContentType, &a.SizeBytes, &a.Context, &a.CardID, &authorID, &a.CreatedAt)
 			if err != nil {
 				return nil, err
 			}
 			if authorID != nil {
-				v := int64(*authorID)
-				a.AuthorID = &v
+				a.AuthorID = authorID
 			}
 			attachments = append(attachments, a)
 		}
@@ -59,7 +58,7 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 
 	queries := dbgen.New(r.Db)
 	dbAtt, err := queries.GetAttachmentsByCard(ctx, dbgen.GetAttachmentsByCardParams{
-		CardID:  int32(cardID),
+		CardID:  cardID,
 		Context: contextStr,
 	})
 	if err != nil {
@@ -68,17 +67,17 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 
 	for _, a := range dbAtt {
 		att := model.Attachment{
-			ID:          int64(a.ID),
+			ID:          a.ID,
 			Filename:    a.Filename,
 			StorageKey:  a.StorageKey,
 			ContentType: a.ContentType,
-			SizeBytes:   int64(a.SizeBytes),
+			SizeBytes:   a.SizeBytes,
 			Context:     a.Context,
-			CardID:      int64(a.CardID),
+			CardID:      a.CardID,
 			CreatedAt:   a.CreatedAt.Time,
 		}
 		if a.AuthorID.Valid {
-			v := int64(a.AuthorID.Int32)
+			v := a.AuthorID.Int64
 			att.AuthorID = &v
 		}
 		attachments = append(attachments, att)
@@ -91,21 +90,15 @@ func (r *AttachmentRepository) GetChatCountsByCardIDs(ctx context.Context, cardI
 		return make(map[int64]int), nil
 	}
 
-	cardIDs32 := make([]int32, len(cardIDs))
-	for i, id := range cardIDs {
-		cardIDs32[i] = int32(id)
-	}
-
 	queries := dbgen.New(r.Db)
-	rows, err := queries.GetChatAttachmentCountsByCardIDs(ctx, cardIDs32)
+	rows, err := queries.GetChatAttachmentCountsByCardIDs(ctx, cardIDs)
 	if err != nil {
 		return nil, err
 	}
 
 	result := make(map[int64]int)
 	for _, row := range rows {
-		cardID := int64(row.CardID)
-		result[cardID] = int(row.Count)
+		result[row.CardID] = int(row.Count)
 	}
 
 	return result, nil
@@ -113,23 +106,23 @@ func (r *AttachmentRepository) GetChatCountsByCardIDs(ctx context.Context, cardI
 
 func (r *AttachmentRepository) GetAttachment(ctx context.Context, id int64) (*model.Attachment, error) {
 	queries := dbgen.New(r.Db)
-	a, err := queries.GetAttachment(ctx, int32(id))
+	a, err := queries.GetAttachment(ctx, id)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
 	att := &model.Attachment{
-		ID:          int64(a.ID),
+		ID:          a.ID,
 		Filename:    a.Filename,
 		StorageKey:  a.StorageKey,
 		ContentType: a.ContentType,
-		SizeBytes:   int64(a.SizeBytes),
+		SizeBytes:   a.SizeBytes,
 		Context:     a.Context,
-		CardID:      int64(a.CardID),
+		CardID:      a.CardID,
 		CreatedAt:   a.CreatedAt.Time,
 	}
 	if a.AuthorID.Valid {
-		v := int64(a.AuthorID.Int32)
+		v := a.AuthorID.Int64
 		att.AuthorID = &v
 	}
 	return att, nil
@@ -142,12 +135,12 @@ func (r *AttachmentRepository) CreateAttachment(ctx context.Context, cardID int6
 		Filename:    a.Filename,
 		StorageKey:  a.StorageKey,
 		ContentType: a.ContentType,
-		SizeBytes:   int32(a.SizeBytes),
+		SizeBytes:   a.SizeBytes,
 		Context:     a.Context,
-		CardID:      int32(cardID),
+		CardID:      cardID,
 	}
 	if a.AuthorID != nil {
-		params.AuthorID = pgtype.Int4{Int32: int32(*a.AuthorID), Valid: true}
+		params.AuthorID = pgtype.Int8{Int64: *a.AuthorID, Valid: true}
 	}
 
 	res, err := queries.CreateAttachment(ctx, params)
@@ -155,12 +148,12 @@ func (r *AttachmentRepository) CreateAttachment(ctx context.Context, cardID int6
 		return nil, NormalizeError(err)
 	}
 
-	a.ID = int64(res.ID)
+	a.ID = res.ID
 	a.CreatedAt = res.CreatedAt.Time
 	return a, nil
 }
 
 func (r *AttachmentRepository) DeleteAttachment(ctx context.Context, id int64) error {
 	queries := dbgen.New(r.Db)
-	return queries.DeleteAttachment(ctx, int32(id))
+	return queries.DeleteAttachment(ctx, id)
 }

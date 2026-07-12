@@ -18,8 +18,8 @@ ON CONFLICT DO NOTHING
 `
 
 type AddCardAssigneeParams struct {
-	CardID int32 `json:"card_id"`
-	UserID int32 `json:"user_id"`
+	CardID int64 `json:"card_id"`
+	UserID int64 `json:"user_id"`
 }
 
 func (q *Queries) AddCardAssignee(ctx context.Context, arg AddCardAssigneeParams) error {
@@ -34,8 +34,8 @@ ON CONFLICT DO NOTHING
 `
 
 type AddCardLabelParams struct {
-	KanbanCardID  int32 `json:"kanban_card_id"`
-	KanbanLabelID int32 `json:"kanban_label_id"`
+	KanbanCardID  int64 `json:"kanban_card_id"`
+	KanbanLabelID int64 `json:"kanban_label_id"`
 }
 
 func (q *Queries) AddCardLabel(ctx context.Context, arg AddCardLabelParams) error {
@@ -51,10 +51,10 @@ SET role = EXCLUDED.role, folder_id = EXCLUDED.folder_id, position = EXCLUDED.po
 `
 
 type AddProjectMemberParams struct {
-	KanbanProjectID int32       `json:"kanban_project_id"`
-	UserID          int32       `json:"user_id"`
+	KanbanProjectID int64       `json:"kanban_project_id"`
+	UserID          int64       `json:"user_id"`
 	Role            string      `json:"role"`
-	FolderID        pgtype.Int4 `json:"folder_id"`
+	FolderID        pgtype.Int8 `json:"folder_id"`
 	Position        float64     `json:"position"`
 }
 
@@ -74,7 +74,7 @@ DELETE FROM kanban_card_assignee
 WHERE card_id = $1
 `
 
-func (q *Queries) ClearCardAssignees(ctx context.Context, cardID int32) error {
+func (q *Queries) ClearCardAssignees(ctx context.Context, cardID int64) error {
 	_, err := q.db.Exec(ctx, clearCardAssignees, cardID)
 	return err
 }
@@ -87,8 +87,8 @@ RETURNING id, card_id, user_id, type, old_value, new_value, created_at
 
 type CreateActivityParams struct {
 	Type     string      `json:"type"`
-	CardID   int32       `json:"card_id"`
-	UserID   pgtype.Int4 `json:"user_id"`
+	CardID   int64       `json:"card_id"`
+	UserID   pgtype.Int8 `json:"user_id"`
 	OldValue pgtype.Text `json:"old_value"`
 	NewValue pgtype.Text `json:"new_value"`
 }
@@ -124,10 +124,10 @@ type CreateAttachmentParams struct {
 	Filename    string      `json:"filename"`
 	StorageKey  string      `json:"storage_key"`
 	ContentType string      `json:"content_type"`
-	SizeBytes   int32       `json:"size_bytes"`
+	SizeBytes   int64       `json:"size_bytes"`
 	Context     string      `json:"context"`
-	CardID      int32       `json:"card_id"`
-	AuthorID    pgtype.Int4 `json:"author_id"`
+	CardID      int64       `json:"card_id"`
+	AuthorID    pgtype.Int8 `json:"author_id"`
 }
 
 func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentParams) (KanbanAttachment, error) {
@@ -164,8 +164,8 @@ RETURNING id, title, position, kanban_project_id, created_by_id, created_at, upd
 type CreateBoardParams struct {
 	Title           string  `json:"title"`
 	Position        float64 `json:"position"`
-	KanbanProjectID int32   `json:"kanban_project_id"`
-	CreatedByID     int32   `json:"created_by_id"`
+	KanbanProjectID int64   `json:"kanban_project_id"`
+	CreatedByID     int64   `json:"created_by_id"`
 }
 
 func (q *Queries) CreateBoard(ctx context.Context, arg CreateBoardParams) (KanbanBoard, error) {
@@ -201,8 +201,8 @@ type CreateCardParams struct {
 	Position    float64          `json:"position"`
 	DueDate     pgtype.Timestamp `json:"due_date"`
 	Priority    pgtype.Text      `json:"priority"`
-	ColumnID    int32            `json:"column_id"`
-	CreatedByID pgtype.Int4      `json:"created_by_id"`
+	ColumnID    int64            `json:"column_id"`
+	CreatedByID pgtype.Int8      `json:"created_by_id"`
 	BorderColor pgtype.Text      `json:"border_color"`
 }
 
@@ -249,7 +249,7 @@ type CreateColumnParams struct {
 	Title       string  `json:"title"`
 	HeaderColor string  `json:"header_color"`
 	Position    float64 `json:"position"`
-	BoardID     int32   `json:"board_id"`
+	BoardID     int64   `json:"board_id"`
 }
 
 func (q *Queries) CreateColumn(ctx context.Context, arg CreateColumnParams) (KanbanColumn, error) {
@@ -278,8 +278,8 @@ RETURNING id, body, card_id, author_id, created_at, updated_at
 
 type CreateCommentParams struct {
 	Body     string `json:"body"`
-	CardID   int32  `json:"card_id"`
-	AuthorID int32  `json:"author_id"`
+	CardID   int64  `json:"card_id"`
+	AuthorID int64  `json:"author_id"`
 }
 
 func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (KanbanCardComment, error) {
@@ -305,7 +305,7 @@ RETURNING id, name, color, board_id
 type CreateLabelParams struct {
 	Name    string `json:"name"`
 	Color   string `json:"color"`
-	BoardID int32  `json:"board_id"`
+	BoardID int64  `json:"board_id"`
 }
 
 func (q *Queries) CreateLabel(ctx context.Context, arg CreateLabelParams) (KanbanLabel, error) {
@@ -329,8 +329,8 @@ RETURNING id, name, description, owner_id, created_by_id, created_at, updated_at
 type CreateProjectParams struct {
 	Name        string      `json:"name"`
 	Description pgtype.Text `json:"description"`
-	OwnerID     int32       `json:"owner_id"`
-	CreatedByID pgtype.Int4 `json:"created_by_id"`
+	OwnerID     int64       `json:"owner_id"`
+	CreatedByID pgtype.Int8 `json:"created_by_id"`
 }
 
 func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (KanbanProject, error) {
@@ -362,7 +362,7 @@ RETURNING id, name, user_id, position, created_at, updated_at
 
 type CreateProjectFolderParams struct {
 	Name     string  `json:"name"`
-	UserID   int32   `json:"user_id"`
+	UserID   int64   `json:"user_id"`
 	Position float64 `json:"position"`
 }
 
@@ -390,8 +390,8 @@ type CreateSubtaskParams struct {
 	Title    string      `json:"title"`
 	Status   string      `json:"status"`
 	Position float64     `json:"position"`
-	CardID   int32       `json:"card_id"`
-	UserID   pgtype.Int4 `json:"user_id"`
+	CardID   int64       `json:"card_id"`
+	UserID   pgtype.Int8 `json:"user_id"`
 }
 
 func (q *Queries) CreateSubtask(ctx context.Context, arg CreateSubtaskParams) (KanbanCardSubtask, error) {
@@ -419,7 +419,7 @@ DELETE FROM kanban_attachment
 WHERE id = $1
 `
 
-func (q *Queries) DeleteAttachment(ctx context.Context, id int32) error {
+func (q *Queries) DeleteAttachment(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteAttachment, id)
 	return err
 }
@@ -430,7 +430,7 @@ SET deleted_at = CURRENT_TIMESTAMP
 WHERE id = $1
 `
 
-func (q *Queries) DeleteBoard(ctx context.Context, id int32) error {
+func (q *Queries) DeleteBoard(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteBoard, id)
 	return err
 }
@@ -440,7 +440,7 @@ DELETE FROM kanban_card
 WHERE id = $1
 `
 
-func (q *Queries) DeleteCard(ctx context.Context, id int32) error {
+func (q *Queries) DeleteCard(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteCard, id)
 	return err
 }
@@ -450,7 +450,7 @@ DELETE FROM kanban_column
 WHERE id = $1
 `
 
-func (q *Queries) DeleteColumn(ctx context.Context, id int32) error {
+func (q *Queries) DeleteColumn(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteColumn, id)
 	return err
 }
@@ -460,7 +460,7 @@ DELETE FROM kanban_card_comment
 WHERE id = $1
 `
 
-func (q *Queries) DeleteComment(ctx context.Context, id int32) error {
+func (q *Queries) DeleteComment(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteComment, id)
 	return err
 }
@@ -470,7 +470,7 @@ DELETE FROM kanban_label
 WHERE id = $1
 `
 
-func (q *Queries) DeleteLabel(ctx context.Context, id int32) error {
+func (q *Queries) DeleteLabel(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteLabel, id)
 	return err
 }
@@ -481,7 +481,7 @@ SET deleted_at = CURRENT_TIMESTAMP
 WHERE id = $1
 `
 
-func (q *Queries) DeleteProject(ctx context.Context, id int32) error {
+func (q *Queries) DeleteProject(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteProject, id)
 	return err
 }
@@ -491,7 +491,7 @@ DELETE FROM kanban_project_user_folder
 WHERE id = $1
 `
 
-func (q *Queries) DeleteProjectFolder(ctx context.Context, id int32) error {
+func (q *Queries) DeleteProjectFolder(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteProjectFolder, id)
 	return err
 }
@@ -501,7 +501,7 @@ DELETE FROM kanban_card_subtask
 WHERE id = $1
 `
 
-func (q *Queries) DeleteSubtask(ctx context.Context, id int32) error {
+func (q *Queries) DeleteSubtask(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteSubtask, id)
 	return err
 }
@@ -516,7 +516,7 @@ ORDER BY created_at DESC
 // ==============================
 // ACTIVITY
 // ==============================
-func (q *Queries) GetActivitiesByCard(ctx context.Context, cardID int32) ([]KanbanCardActivity, error) {
+func (q *Queries) GetActivitiesByCard(ctx context.Context, cardID int64) ([]KanbanCardActivity, error) {
 	rows, err := q.db.Query(ctx, getActivitiesByCard, cardID)
 	if err != nil {
 		return nil, err
@@ -588,7 +588,7 @@ WHERE id = $1 LIMIT 1
 // ==============================
 // ATTACHMENTS
 // ==============================
-func (q *Queries) GetAttachment(ctx context.Context, id int32) (KanbanAttachment, error) {
+func (q *Queries) GetAttachment(ctx context.Context, id int64) (KanbanAttachment, error) {
 	row := q.db.QueryRow(ctx, getAttachment, id)
 	var i KanbanAttachment
 	err := row.Scan(
@@ -612,7 +612,7 @@ ORDER BY created_at ASC
 `
 
 type GetAttachmentsByCardParams struct {
-	CardID  int32  `json:"card_id"`
+	CardID  int64  `json:"card_id"`
 	Context string `json:"context"`
 }
 
@@ -655,7 +655,7 @@ WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 // ==============================
 // BOARDS
 // ==============================
-func (q *Queries) GetBoard(ctx context.Context, id int32) (KanbanBoard, error) {
+func (q *Queries) GetBoard(ctx context.Context, id int64) (KanbanBoard, error) {
 	row := q.db.QueryRow(ctx, getBoard, id)
 	var i KanbanBoard
 	err := row.Scan(
@@ -677,7 +677,7 @@ WHERE kanban_project_id = $1 AND deleted_at IS NULL
 ORDER BY position ASC
 `
 
-func (q *Queries) GetBoardsByProject(ctx context.Context, kanbanProjectID int32) ([]KanbanBoard, error) {
+func (q *Queries) GetBoardsByProject(ctx context.Context, kanbanProjectID int64) ([]KanbanBoard, error) {
 	rows, err := q.db.Query(ctx, getBoardsByProject, kanbanProjectID)
 	if err != nil {
 		return nil, err
@@ -715,7 +715,7 @@ WHERE id = $1 LIMIT 1
 // ==============================
 // CARDS
 // ==============================
-func (q *Queries) GetCard(ctx context.Context, id int32) (KanbanCard, error) {
+func (q *Queries) GetCard(ctx context.Context, id int64) (KanbanCard, error) {
 	row := q.db.QueryRow(ctx, getCard, id)
 	var i KanbanCard
 	err := row.Scan(
@@ -748,15 +748,15 @@ WHERE card_id = $1
 // ==============================
 // CARD ASSIGNEES
 // ==============================
-func (q *Queries) GetCardAssignees(ctx context.Context, cardID int32) ([]int32, error) {
+func (q *Queries) GetCardAssignees(ctx context.Context, cardID int64) ([]int64, error) {
 	rows, err := q.db.Query(ctx, getCardAssignees, cardID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []int32{}
+	items := []int64{}
 	for rows.Next() {
-		var user_id int32
+		var user_id int64
 		if err := rows.Scan(&user_id); err != nil {
 			return nil, err
 		}
@@ -770,10 +770,10 @@ func (q *Queries) GetCardAssignees(ctx context.Context, cardID int32) ([]int32, 
 
 const getCardAssigneesByCardIDs = `-- name: GetCardAssigneesByCardIDs :many
 SELECT card_id, user_id FROM kanban_card_assignee
-WHERE card_id = ANY($1::int[])
+WHERE card_id = ANY($1::bigint[])
 `
 
-func (q *Queries) GetCardAssigneesByCardIDs(ctx context.Context, dollar_1 []int32) ([]KanbanCardAssignee, error) {
+func (q *Queries) GetCardAssigneesByCardIDs(ctx context.Context, dollar_1 []int64) ([]KanbanCardAssignee, error) {
 	rows, err := q.db.Query(ctx, getCardAssigneesByCardIDs, dollar_1)
 	if err != nil {
 		return nil, err
@@ -802,15 +802,15 @@ WHERE kanban_card_id = $1
 // ==============================
 // CARD LABELS
 // ==============================
-func (q *Queries) GetCardLabels(ctx context.Context, kanbanCardID int32) ([]int32, error) {
+func (q *Queries) GetCardLabels(ctx context.Context, kanbanCardID int64) ([]int64, error) {
 	rows, err := q.db.Query(ctx, getCardLabels, kanbanCardID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []int32{}
+	items := []int64{}
 	for rows.Next() {
-		var kanban_label_id int32
+		var kanban_label_id int64
 		if err := rows.Scan(&kanban_label_id); err != nil {
 			return nil, err
 		}
@@ -824,10 +824,10 @@ func (q *Queries) GetCardLabels(ctx context.Context, kanbanCardID int32) ([]int3
 
 const getCardLabelsByCardIDs = `-- name: GetCardLabelsByCardIDs :many
 SELECT kanban_card_id, kanban_label_id FROM kanban_card_label
-WHERE kanban_card_id = ANY($1::int[])
+WHERE kanban_card_id = ANY($1::bigint[])
 `
 
-func (q *Queries) GetCardLabelsByCardIDs(ctx context.Context, dollar_1 []int32) ([]KanbanCardLabel, error) {
+func (q *Queries) GetCardLabelsByCardIDs(ctx context.Context, dollar_1 []int64) ([]KanbanCardLabel, error) {
 	rows, err := q.db.Query(ctx, getCardLabelsByCardIDs, dollar_1)
 	if err != nil {
 		return nil, err
@@ -854,7 +854,7 @@ WHERE col.board_id = $1 AND c.is_archived = FALSE
 ORDER BY col.position ASC, c.position ASC
 `
 
-func (q *Queries) GetCardsByBoard(ctx context.Context, boardID int32) ([]KanbanCard, error) {
+func (q *Queries) GetCardsByBoard(ctx context.Context, boardID int64) ([]KanbanCard, error) {
 	rows, err := q.db.Query(ctx, getCardsByBoard, boardID)
 	if err != nil {
 		return nil, err
@@ -897,7 +897,7 @@ WHERE column_id = $1 AND is_archived = FALSE
 ORDER BY position ASC
 `
 
-func (q *Queries) GetCardsByColumn(ctx context.Context, columnID int32) ([]KanbanCard, error) {
+func (q *Queries) GetCardsByColumn(ctx context.Context, columnID int64) ([]KanbanCard, error) {
 	rows, err := q.db.Query(ctx, getCardsByColumn, columnID)
 	if err != nil {
 		return nil, err
@@ -937,16 +937,16 @@ func (q *Queries) GetCardsByColumn(ctx context.Context, columnID int32) ([]Kanba
 const getChatAttachmentCountsByCardIDs = `-- name: GetChatAttachmentCountsByCardIDs :many
 SELECT card_id, COUNT(*) AS count
 FROM kanban_attachment
-WHERE card_id = ANY($1::int[]) AND context = 'chat'
+WHERE card_id = ANY($1::bigint[]) AND context = 'chat'
 GROUP BY card_id
 `
 
 type GetChatAttachmentCountsByCardIDsRow struct {
-	CardID int32 `json:"card_id"`
+	CardID int64 `json:"card_id"`
 	Count  int64 `json:"count"`
 }
 
-func (q *Queries) GetChatAttachmentCountsByCardIDs(ctx context.Context, dollar_1 []int32) ([]GetChatAttachmentCountsByCardIDsRow, error) {
+func (q *Queries) GetChatAttachmentCountsByCardIDs(ctx context.Context, dollar_1 []int64) ([]GetChatAttachmentCountsByCardIDsRow, error) {
 	rows, err := q.db.Query(ctx, getChatAttachmentCountsByCardIDs, dollar_1)
 	if err != nil {
 		return nil, err
@@ -975,7 +975,7 @@ WHERE id = $1 LIMIT 1
 // ==============================
 // COLUMNS
 // ==============================
-func (q *Queries) GetColumn(ctx context.Context, id int32) (KanbanColumn, error) {
+func (q *Queries) GetColumn(ctx context.Context, id int64) (KanbanColumn, error) {
 	row := q.db.QueryRow(ctx, getColumn, id)
 	var i KanbanColumn
 	err := row.Scan(
@@ -994,7 +994,7 @@ WHERE board_id = $1
 ORDER BY position ASC
 `
 
-func (q *Queries) GetColumnsByBoard(ctx context.Context, boardID int32) ([]KanbanColumn, error) {
+func (q *Queries) GetColumnsByBoard(ctx context.Context, boardID int64) ([]KanbanColumn, error) {
 	rows, err := q.db.Query(ctx, getColumnsByBoard, boardID)
 	if err != nil {
 		return nil, err
@@ -1029,7 +1029,7 @@ WHERE id = $1 LIMIT 1
 // ==============================
 // COMMENTS
 // ==============================
-func (q *Queries) GetComment(ctx context.Context, id int32) (KanbanCardComment, error) {
+func (q *Queries) GetComment(ctx context.Context, id int64) (KanbanCardComment, error) {
 	row := q.db.QueryRow(ctx, getComment, id)
 	var i KanbanCardComment
 	err := row.Scan(
@@ -1046,16 +1046,16 @@ func (q *Queries) GetComment(ctx context.Context, id int32) (KanbanCardComment, 
 const getCommentCountsByCardIDs = `-- name: GetCommentCountsByCardIDs :many
 SELECT card_id, COUNT(*) AS count
 FROM kanban_card_comment
-WHERE card_id = ANY($1::int[])
+WHERE card_id = ANY($1::bigint[])
 GROUP BY card_id
 `
 
 type GetCommentCountsByCardIDsRow struct {
-	CardID int32 `json:"card_id"`
+	CardID int64 `json:"card_id"`
 	Count  int64 `json:"count"`
 }
 
-func (q *Queries) GetCommentCountsByCardIDs(ctx context.Context, dollar_1 []int32) ([]GetCommentCountsByCardIDsRow, error) {
+func (q *Queries) GetCommentCountsByCardIDs(ctx context.Context, dollar_1 []int64) ([]GetCommentCountsByCardIDsRow, error) {
 	rows, err := q.db.Query(ctx, getCommentCountsByCardIDs, dollar_1)
 	if err != nil {
 		return nil, err
@@ -1081,7 +1081,7 @@ WHERE card_id = $1
 ORDER BY created_at ASC
 `
 
-func (q *Queries) GetCommentsByCard(ctx context.Context, cardID int32) ([]KanbanCardComment, error) {
+func (q *Queries) GetCommentsByCard(ctx context.Context, cardID int64) ([]KanbanCardComment, error) {
 	rows, err := q.db.Query(ctx, getCommentsByCard, cardID)
 	if err != nil {
 		return nil, err
@@ -1117,7 +1117,7 @@ WHERE id = $1 LIMIT 1
 // ==============================
 // LABELS
 // ==============================
-func (q *Queries) GetLabel(ctx context.Context, id int32) (KanbanLabel, error) {
+func (q *Queries) GetLabel(ctx context.Context, id int64) (KanbanLabel, error) {
 	row := q.db.QueryRow(ctx, getLabel, id)
 	var i KanbanLabel
 	err := row.Scan(
@@ -1134,7 +1134,7 @@ SELECT id, name, color, board_id FROM kanban_label
 WHERE board_id = $1
 `
 
-func (q *Queries) GetLabelsByBoard(ctx context.Context, boardID int32) ([]KanbanLabel, error) {
+func (q *Queries) GetLabelsByBoard(ctx context.Context, boardID int64) ([]KanbanLabel, error) {
 	rows, err := q.db.Query(ctx, getLabelsByBoard, boardID)
 	if err != nil {
 		return nil, err
@@ -1164,7 +1164,7 @@ SELECT id, name, description, owner_id, created_by_id, created_at, updated_at, d
 WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
-func (q *Queries) GetProject(ctx context.Context, id int32) (KanbanProject, error) {
+func (q *Queries) GetProject(ctx context.Context, id int64) (KanbanProject, error) {
 	row := q.db.QueryRow(ctx, getProject, id)
 	var i KanbanProject
 	err := row.Scan(
@@ -1189,7 +1189,7 @@ WHERE user_id = $1 ORDER BY position ASC
 // ==============================
 // PROJECT FOLDERS
 // ==============================
-func (q *Queries) GetProjectFolders(ctx context.Context, userID int32) ([]KanbanProjectUserFolder, error) {
+func (q *Queries) GetProjectFolders(ctx context.Context, userID int64) ([]KanbanProjectUserFolder, error) {
 	rows, err := q.db.Query(ctx, getProjectFolders, userID)
 	if err != nil {
 		return nil, err
@@ -1223,9 +1223,9 @@ JOIN kanban_board b ON c.board_id = b.id
 WHERE card.id = $1
 `
 
-func (q *Queries) GetProjectIDByCard(ctx context.Context, id int32) (int32, error) {
+func (q *Queries) GetProjectIDByCard(ctx context.Context, id int64) (int64, error) {
 	row := q.db.QueryRow(ctx, getProjectIDByCard, id)
-	var kanban_project_id int32
+	var kanban_project_id int64
 	err := row.Scan(&kanban_project_id)
 	return kanban_project_id, err
 }
@@ -1236,9 +1236,9 @@ JOIN kanban_board b ON c.board_id = b.id
 WHERE c.id = $1
 `
 
-func (q *Queries) GetProjectIDByColumn(ctx context.Context, id int32) (int32, error) {
+func (q *Queries) GetProjectIDByColumn(ctx context.Context, id int64) (int64, error) {
 	row := q.db.QueryRow(ctx, getProjectIDByColumn, id)
-	var kanban_project_id int32
+	var kanban_project_id int64
 	err := row.Scan(&kanban_project_id)
 	return kanban_project_id, err
 }
@@ -1250,9 +1250,9 @@ JOIN kanban_board b ON l.board_id = b.id
 WHERE l.id = $1
 `
 
-func (q *Queries) GetProjectIDByLabel(ctx context.Context, id int32) (int32, error) {
+func (q *Queries) GetProjectIDByLabel(ctx context.Context, id int64) (int64, error) {
 	row := q.db.QueryRow(ctx, getProjectIDByLabel, id)
-	var project_id int32
+	var project_id int64
 	err := row.Scan(&project_id)
 	return project_id, err
 }
@@ -1266,9 +1266,9 @@ JOIN kanban_board b ON col.board_id = b.id
 WHERE s.id = $1
 `
 
-func (q *Queries) GetProjectIDBySubtask(ctx context.Context, id int32) (int32, error) {
+func (q *Queries) GetProjectIDBySubtask(ctx context.Context, id int64) (int64, error) {
 	row := q.db.QueryRow(ctx, getProjectIDBySubtask, id)
-	var project_id int32
+	var project_id int64
 	err := row.Scan(&project_id)
 	return project_id, err
 }
@@ -1279,8 +1279,8 @@ WHERE kanban_project_id = $1 AND user_id = $2
 `
 
 type GetProjectMemberParams struct {
-	KanbanProjectID int32 `json:"kanban_project_id"`
-	UserID          int32 `json:"user_id"`
+	KanbanProjectID int64 `json:"kanban_project_id"`
+	UserID          int64 `json:"user_id"`
 }
 
 func (q *Queries) GetProjectMember(ctx context.Context, arg GetProjectMemberParams) (KanbanProjectUser, error) {
@@ -1306,7 +1306,7 @@ WHERE kanban_project_id = $1
 // ==============================
 // PROJECT MEMBERS
 // ==============================
-func (q *Queries) GetProjectMembers(ctx context.Context, kanbanProjectID int32) ([]KanbanProjectUser, error) {
+func (q *Queries) GetProjectMembers(ctx context.Context, kanbanProjectID int64) ([]KanbanProjectUser, error) {
 	rows, err := q.db.Query(ctx, getProjectMembers, kanbanProjectID)
 	if err != nil {
 		return nil, err
@@ -1342,7 +1342,7 @@ WHERE id = $1 LIMIT 1
 // ==============================
 // SUBTASKS
 // ==============================
-func (q *Queries) GetSubtask(ctx context.Context, id int32) (KanbanCardSubtask, error) {
+func (q *Queries) GetSubtask(ctx context.Context, id int64) (KanbanCardSubtask, error) {
 	row := q.db.QueryRow(ctx, getSubtask, id)
 	var i KanbanCardSubtask
 	err := row.Scan(
@@ -1361,17 +1361,17 @@ SELECT card_id,
        COUNT(*) AS total,
        COUNT(*) FILTER (WHERE LOWER(status) = 'done') AS done
 FROM kanban_card_subtask
-WHERE card_id = ANY($1::int[])
+WHERE card_id = ANY($1::bigint[])
 GROUP BY card_id
 `
 
 type GetSubtaskCountsByCardIDsRow struct {
-	CardID int32 `json:"card_id"`
+	CardID int64 `json:"card_id"`
 	Total  int64 `json:"total"`
 	Done   int64 `json:"done"`
 }
 
-func (q *Queries) GetSubtaskCountsByCardIDs(ctx context.Context, dollar_1 []int32) ([]GetSubtaskCountsByCardIDsRow, error) {
+func (q *Queries) GetSubtaskCountsByCardIDs(ctx context.Context, dollar_1 []int64) ([]GetSubtaskCountsByCardIDsRow, error) {
 	rows, err := q.db.Query(ctx, getSubtaskCountsByCardIDs, dollar_1)
 	if err != nil {
 		return nil, err
@@ -1397,7 +1397,7 @@ WHERE card_id = $1
 ORDER BY position ASC
 `
 
-func (q *Queries) GetSubtasksByCard(ctx context.Context, cardID int32) ([]KanbanCardSubtask, error) {
+func (q *Queries) GetSubtasksByCard(ctx context.Context, cardID int64) ([]KanbanCardSubtask, error) {
 	rows, err := q.db.Query(ctx, getSubtasksByCard, cardID)
 	if err != nil {
 		return nil, err
@@ -1430,7 +1430,7 @@ SELECT EXISTS(
 )
 `
 
-func (q *Queries) HasCardsByColumn(ctx context.Context, columnID int32) (bool, error) {
+func (q *Queries) HasCardsByColumn(ctx context.Context, columnID int64) (bool, error) {
 	row := q.db.QueryRow(ctx, hasCardsByColumn, columnID)
 	var exists bool
 	err := row.Scan(&exists)
@@ -1443,7 +1443,7 @@ SELECT EXISTS(
 )
 `
 
-func (q *Queries) HasColumnsByBoard(ctx context.Context, boardID int32) (bool, error) {
+func (q *Queries) HasColumnsByBoard(ctx context.Context, boardID int64) (bool, error) {
 	row := q.db.QueryRow(ctx, hasColumnsByBoard, boardID)
 	var exists bool
 	err := row.Scan(&exists)
@@ -1462,7 +1462,7 @@ FROM ranked
 WHERE kanban_card.id = ranked.id
 `
 
-func (q *Queries) RebalanceColumnCards(ctx context.Context, columnID int32) error {
+func (q *Queries) RebalanceColumnCards(ctx context.Context, columnID int64) error {
 	_, err := q.db.Exec(ctx, rebalanceColumnCards, columnID)
 	return err
 }
@@ -1473,8 +1473,8 @@ WHERE card_id = $1 AND user_id = $2
 `
 
 type RemoveCardAssigneeParams struct {
-	CardID int32 `json:"card_id"`
-	UserID int32 `json:"user_id"`
+	CardID int64 `json:"card_id"`
+	UserID int64 `json:"user_id"`
 }
 
 func (q *Queries) RemoveCardAssignee(ctx context.Context, arg RemoveCardAssigneeParams) error {
@@ -1488,8 +1488,8 @@ WHERE kanban_card_id = $1 AND kanban_label_id = $2
 `
 
 type RemoveCardLabelParams struct {
-	KanbanCardID  int32 `json:"kanban_card_id"`
-	KanbanLabelID int32 `json:"kanban_label_id"`
+	KanbanCardID  int64 `json:"kanban_card_id"`
+	KanbanLabelID int64 `json:"kanban_label_id"`
 }
 
 func (q *Queries) RemoveCardLabel(ctx context.Context, arg RemoveCardLabelParams) error {
@@ -1503,8 +1503,8 @@ WHERE kanban_project_id = $1 AND user_id = $2
 `
 
 type RemoveProjectMemberParams struct {
-	KanbanProjectID int32 `json:"kanban_project_id"`
-	UserID          int32 `json:"user_id"`
+	KanbanProjectID int64 `json:"kanban_project_id"`
+	UserID          int64 `json:"user_id"`
 }
 
 func (q *Queries) RemoveProjectMember(ctx context.Context, arg RemoveProjectMemberParams) error {
@@ -1517,7 +1517,7 @@ DELETE FROM kanban_project_user
 WHERE kanban_project_id = $1
 `
 
-func (q *Queries) ReplaceProjectMembers(ctx context.Context, kanbanProjectID int32) error {
+func (q *Queries) ReplaceProjectMembers(ctx context.Context, kanbanProjectID int64) error {
 	_, err := q.db.Exec(ctx, replaceProjectMembers, kanbanProjectID)
 	return err
 }
@@ -1532,7 +1532,7 @@ RETURNING id, title, position, kanban_project_id, created_by_id, created_at, upd
 type UpdateBoardParams struct {
 	Title    string  `json:"title"`
 	Position float64 `json:"position"`
-	ID       int32   `json:"id"`
+	ID       int64   `json:"id"`
 }
 
 func (q *Queries) UpdateBoard(ctx context.Context, arg UpdateBoardParams) (KanbanBoard, error) {
@@ -1566,12 +1566,12 @@ type UpdateCardParams struct {
 	Priority      pgtype.Text      `json:"priority"`
 	IsArchived    bool             `json:"is_archived"`
 	ArchivedAt    pgtype.Timestamp `json:"archived_at"`
-	ArchivedByID  pgtype.Int4      `json:"archived_by_id"`
+	ArchivedByID  pgtype.Int8      `json:"archived_by_id"`
 	CompletedAt   pgtype.Timestamp `json:"completed_at"`
-	CompletedByID pgtype.Int4      `json:"completed_by_id"`
-	ColumnID      int32            `json:"column_id"`
+	CompletedByID pgtype.Int8      `json:"completed_by_id"`
+	ColumnID      int64            `json:"column_id"`
 	BorderColor   pgtype.Text      `json:"border_color"`
-	ID            int32            `json:"id"`
+	ID            int64            `json:"id"`
 }
 
 func (q *Queries) UpdateCard(ctx context.Context, arg UpdateCardParams) (KanbanCard, error) {
@@ -1623,7 +1623,7 @@ type UpdateColumnParams struct {
 	Title       string  `json:"title"`
 	HeaderColor string  `json:"header_color"`
 	Position    float64 `json:"position"`
-	ID          int32   `json:"id"`
+	ID          int64   `json:"id"`
 }
 
 func (q *Queries) UpdateColumn(ctx context.Context, arg UpdateColumnParams) (KanbanColumn, error) {
@@ -1653,7 +1653,7 @@ RETURNING id, body, card_id, author_id, created_at, updated_at
 
 type UpdateCommentParams struct {
 	Body string `json:"body"`
-	ID   int32  `json:"id"`
+	ID   int64  `json:"id"`
 }
 
 func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) (KanbanCardComment, error) {
@@ -1680,7 +1680,7 @@ RETURNING id, name, description, owner_id, created_by_id, created_at, updated_at
 type UpdateProjectParams struct {
 	Name        string      `json:"name"`
 	Description pgtype.Text `json:"description"`
-	ID          int32       `json:"id"`
+	ID          int64       `json:"id"`
 }
 
 func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (KanbanProject, error) {
@@ -1709,7 +1709,7 @@ RETURNING id, name, user_id, position, created_at, updated_at
 type UpdateProjectFolderParams struct {
 	Name     string  `json:"name"`
 	Position float64 `json:"position"`
-	ID       int32   `json:"id"`
+	ID       int64   `json:"id"`
 }
 
 func (q *Queries) UpdateProjectFolder(ctx context.Context, arg UpdateProjectFolderParams) (KanbanProjectUserFolder, error) {
@@ -1733,8 +1733,8 @@ WHERE kanban_project_id = $1 AND user_id = $2
 `
 
 type UpdateProjectMemberRoleParams struct {
-	KanbanProjectID int32  `json:"kanban_project_id"`
-	UserID          int32  `json:"user_id"`
+	KanbanProjectID int64  `json:"kanban_project_id"`
+	UserID          int64  `json:"user_id"`
 	Role            string `json:"role"`
 }
 
@@ -1754,8 +1754,8 @@ type UpdateSubtaskParams struct {
 	Title    string      `json:"title"`
 	Status   string      `json:"status"`
 	Position float64     `json:"position"`
-	UserID   pgtype.Int4 `json:"user_id"`
-	ID       int32       `json:"id"`
+	UserID   pgtype.Int8 `json:"user_id"`
+	ID       int64       `json:"id"`
 }
 
 func (q *Queries) UpdateSubtask(ctx context.Context, arg UpdateSubtaskParams) (KanbanCardSubtask, error) {

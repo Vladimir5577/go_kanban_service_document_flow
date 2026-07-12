@@ -40,7 +40,7 @@ func NewBoardRepository(db *pgxpool.Pool) *BoardRepository {
 
 func (r *BoardRepository) GetBoardsByProject(ctx context.Context, projectID int64) ([]model.Board, error) {
 	queries := dbgen.New(r.Db)
-	dbBoards, err := queries.GetBoardsByProject(ctx, int32(projectID))
+	dbBoards, err := queries.GetBoardsByProject(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -48,11 +48,11 @@ func (r *BoardRepository) GetBoardsByProject(ctx context.Context, projectID int6
 	var boards []model.Board
 	for _, b := range dbBoards {
 		boards = append(boards, model.Board{
-			ID:              int64(b.ID),
+			ID:              b.ID,
 			Title:           b.Title,
 			Position:        b.Position,
-			KanbanProjectID: int64(b.KanbanProjectID),
-			CreatedByID:     int64(b.CreatedByID),
+			KanbanProjectID: b.KanbanProjectID,
+			CreatedByID:     b.CreatedByID,
 			CreatedAt:       b.CreatedAt.Time,
 			UpdatedAt:       b.UpdatedAt.Time,
 		})
@@ -65,8 +65,8 @@ func (r *BoardRepository) CreateBoard(ctx context.Context, projectID int64, b *m
 	res, err := queries.CreateBoard(ctx, dbgen.CreateBoardParams{
 		Title:           b.Title,
 		Position:        b.Position,
-		KanbanProjectID: int32(projectID),
-		CreatedByID:     int32(b.CreatedByID),
+		KanbanProjectID: projectID,
+		CreatedByID:     b.CreatedByID,
 	})
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -81,14 +81,20 @@ func (r *BoardRepository) CreateBoardWithColumns(ctx context.Context, projectID 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
 
 	queries := dbgen.New(tx)
 	res, err := queries.CreateBoard(ctx, dbgen.CreateBoardParams{
 		Title:           b.Title,
 		Position:        b.Position,
-		KanbanProjectID: int32(projectID),
-		CreatedByID:     int32(b.CreatedByID),
+		KanbanProjectID: projectID,
+		CreatedByID:     b.CreatedByID,
 	})
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -101,34 +107,35 @@ func (r *BoardRepository) CreateBoardWithColumns(ctx context.Context, projectID 
 			Title:       column.Title,
 			HeaderColor: column.HeaderColor,
 			Position:    column.Position,
-			BoardID:     int32(b.ID),
+			BoardID:     b.ID,
 		})
 		if err != nil {
 			return nil, NormalizeError(err)
 		}
-		column.ID = int64(createdColumn.ID)
-		column.BoardID = int64(createdColumn.BoardID)
+		column.ID = createdColumn.ID
+		column.BoardID = createdColumn.BoardID
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+	committed = true
 	return b, nil
 }
 
 func (r *BoardRepository) GetBoard(ctx context.Context, id int64) (*model.Board, error) {
 	queries := dbgen.New(r.Db)
-	b, err := queries.GetBoard(ctx, int32(id))
+	b, err := queries.GetBoard(ctx, id)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
 	return &model.Board{
-		ID:              int64(b.ID),
+		ID:              b.ID,
 		Title:           b.Title,
 		Position:        b.Position,
-		KanbanProjectID: int64(b.KanbanProjectID),
-		CreatedByID:     int64(b.CreatedByID),
+		KanbanProjectID: b.KanbanProjectID,
+		CreatedByID:     b.CreatedByID,
 		CreatedAt:       b.CreatedAt.Time,
 		UpdatedAt:       b.UpdatedAt.Time,
 	}, nil
@@ -139,7 +146,7 @@ func (r *BoardRepository) UpdateBoard(ctx context.Context, b *model.Board) (*mod
 	res, err := queries.UpdateBoard(ctx, dbgen.UpdateBoardParams{
 		Title:    b.Title,
 		Position: b.Position,
-		ID:       int32(b.ID),
+		ID:       b.ID,
 	})
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -151,7 +158,7 @@ func (r *BoardRepository) UpdateBoard(ctx context.Context, b *model.Board) (*mod
 
 func (r *BoardRepository) DeleteBoard(ctx context.Context, id int64) error {
 	queries := dbgen.New(r.Db)
-	return queries.DeleteBoard(ctx, int32(id))
+	return queries.DeleteBoard(ctx, id)
 }
 
 func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, filters model.BoardArchiveFilters) (*model.BoardArchivePage, error) {
@@ -224,7 +231,7 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 		var description pgtype.Text
 		var borderColor pgtype.Text
 		var archivedAt pgtype.Timestamp
-		var archivedByID pgtype.Int4
+		var archivedByID pgtype.Int8
 		var archivedByLastname pgtype.Text
 		var archivedByFirstname pgtype.Text
 		var archivedByAvatar pgtype.Text
@@ -254,7 +261,7 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 			card.ArchivedAt = &archivedAt.Time
 		}
 		if archivedByID.Valid {
-			user := &model.User{ID: int64(archivedByID.Int32)}
+			user := &model.User{ID: archivedByID.Int64}
 			if archivedByLastname.Valid {
 				user.Lastname = archivedByLastname.String
 			}
@@ -324,7 +331,7 @@ func parseArchiveDate(value string, endOfDay bool) (time.Time, bool) {
 
 func (r *BoardRepository) HasColumnsByBoard(ctx context.Context, boardID int64) (bool, error) {
 	queries := dbgen.New(r.Db)
-	res, err := queries.HasColumnsByBoard(ctx, int32(boardID))
+	res, err := queries.HasColumnsByBoard(ctx, boardID)
 	if err != nil {
 		return false, err
 	}
@@ -367,11 +374,11 @@ func (r *BoardRepository) NextBoardID(ctx context.Context, projectID int64, excl
 }
 
 func mapDBBoard(b *dbgen.KanbanBoard, target *model.Board) {
-	target.ID = int64(b.ID)
+	target.ID = b.ID
 	target.Title = b.Title
 	target.Position = b.Position
-	target.KanbanProjectID = int64(b.KanbanProjectID)
-	target.CreatedByID = int64(b.CreatedByID)
+	target.KanbanProjectID = b.KanbanProjectID
+	target.CreatedByID = b.CreatedByID
 	target.CreatedAt = b.CreatedAt.Time
 	target.UpdatedAt = b.UpdatedAt.Time
 	if b.DeletedAt.Valid {

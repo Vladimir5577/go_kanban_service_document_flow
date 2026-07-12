@@ -95,7 +95,13 @@ func (r *UserRepository) UpsertUsers(ctx context.Context, users []model.User) er
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
 
 	// 1. Создаём временную таблицу (автоматически удалится при commit/rollback)
 	_, err = tx.Exec(ctx, `
@@ -146,7 +152,11 @@ func (r *UserRepository) UpsertUsers(ctx context.Context, users []model.User) er
 		return err
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (r *UserRepository) MarkUserDeleted(ctx context.Context, userID int64, deletedAt time.Time) error {

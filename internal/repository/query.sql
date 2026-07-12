@@ -149,7 +149,7 @@ WHERE card_id = $1;
 
 -- name: GetCardAssigneesByCardIDs :many
 SELECT card_id, user_id FROM kanban_card_assignee
-WHERE card_id = ANY($1::int[]);
+WHERE card_id = ANY($1::bigint[]);
 
 -- name: AddCardAssignee :exec
 INSERT INTO kanban_card_assignee (card_id, user_id)
@@ -197,7 +197,7 @@ WHERE kanban_card_id = $1;
 
 -- name: GetCardLabelsByCardIDs :many
 SELECT kanban_card_id, kanban_label_id FROM kanban_card_label
-WHERE kanban_card_id = ANY($1::int[]);
+WHERE kanban_card_id = ANY($1::bigint[]);
 
 -- name: AddCardLabel :exec
 INSERT INTO kanban_card_label (kanban_card_id, kanban_label_id)
@@ -225,7 +225,7 @@ ORDER BY created_at ASC;
 -- name: GetCommentCountsByCardIDs :many
 SELECT card_id, COUNT(*) AS count
 FROM kanban_card_comment
-WHERE card_id = ANY($1::int[])
+WHERE card_id = ANY($1::bigint[])
 GROUP BY card_id;
 
 -- name: CreateComment :one
@@ -262,7 +262,7 @@ SELECT card_id,
        COUNT(*) AS total,
        COUNT(*) FILTER (WHERE LOWER(status) = 'done') AS done
 FROM kanban_card_subtask
-WHERE card_id = ANY($1::int[])
+WHERE card_id = ANY($1::bigint[])
 GROUP BY card_id;
 
 -- name: CreateSubtask :one
@@ -297,7 +297,7 @@ ORDER BY created_at ASC;
 -- name: GetChatAttachmentCountsByCardIDs :many
 SELECT card_id, COUNT(*) AS count
 FROM kanban_attachment
-WHERE card_id = ANY($1::int[]) AND context = 'chat'
+WHERE card_id = ANY($1::bigint[]) AND context = 'chat'
 GROUP BY card_id;
 
 -- name: CreateAttachment :one

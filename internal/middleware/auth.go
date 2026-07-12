@@ -3,7 +3,7 @@ package middleware
 import (
 	"context"
 	"crypto/rsa"
-	"fmt"
+	"errors"
 	"log/slog"
 	"net/http"
 	"os"
@@ -49,35 +49,46 @@ func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "" {
-			http.Error(w, `{"error": "Unauthorized: missing Authorization header"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","code":"unauthorized"}`))
 			return
 		}
 
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			http.Error(w, `{"error": "Unauthorized: invalid Authorization header format"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","code":"unauthorized"}`))
 			return
 		}
 
 		tokenStr := parts[1]
 
-		// Парсим и валидируем токен
+		// Парсим и валидируем токен.
+		// Критично: WithExpirationRequired() требует наличие и валидность exp claim.
+		// Без этого просроченные/украденные токены будут работать вечно.
 		token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-			// Проверяем метод подписи
+			// Проверяем метод подписи (должен быть RS256)
 			if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+				return nil, errors.New("unexpected signing method")
 			}
 			return m.publicKey, nil
-		})
+		}, jwt.WithExpirationRequired(), jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))
 
 		if err != nil || !token.Valid {
-			http.Error(w, fmt.Sprintf(`{"error": "Unauthorized: %v"}`, err), http.StatusUnauthorized)
+			// Явно 401. Самое важное — WithExpirationRequired() в Parse гарантирует проверку exp.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","code":"unauthorized"}`))
 			return
 		}
 
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
-			http.Error(w, `{"error": "Unauthorized: invalid claims"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","code":"unauthorized"}`))
 			return
 		}
 
@@ -111,7 +122,9 @@ func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 
 		// Если ID не найден, токен не подходит для микросервиса
 		if userClaims.ID == 0 {
-			http.Error(w, `{"error": "Unauthorized: user id is missing in token"}`, http.StatusUnauthorized)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","code":"unauthorized"}`))
 			return
 		}
 
