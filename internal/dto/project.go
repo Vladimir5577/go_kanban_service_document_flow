@@ -93,16 +93,8 @@ func MapNavProjectResponse(p model.NavProject, currentUserID int64) *NavProjectR
 	isOwner := p.OwnerID == currentUserID
 	isProjectAdmin := isOwner || p.Role == "KANBAN_ADMIN"
 
-	// Create entry href: /projects/{id}
-	// By default, frontend expects it to be the project root
-	// If entry board is present, the frontend will navigate there automatically when clicking the nav item.
-	// We just provide the project base URL.
-	// Wait, the frontend code for EntryHref: entryHref: `/projects/${project.id}`
-
-	// If EntryBoardID is null, we can just leave it as null, frontend handles it.
-
-	// Helper function for float to float mapping
-	// Or we just map it.
+	// Create entry href: /kanban/projects/{id}
+	// (updated to include 'kanban' suffix to match current application URLs after extraction)
 	return &NavProjectResponse{
 		ID:             p.ID,
 		Name:           p.Name,
@@ -110,7 +102,7 @@ func MapNavProjectResponse(p model.NavProject, currentUserID int64) *NavProjectR
 		IsOwner:        isOwner,
 		IsProjectAdmin: isProjectAdmin,
 		EntryBoardId:   p.EntryBoardID,
-		EntryHref:      "/projects/" + formatID(p.ID), // we need a small helper or just fmt.Sprintf
+		EntryHref:      "/kanban/projects/" + formatID(p.ID),
 		FolderId:       p.FolderID,
 		Position:       p.Position,
 	}

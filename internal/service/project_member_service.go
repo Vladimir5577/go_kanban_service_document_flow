@@ -21,16 +21,18 @@ type ProjectMemberServiceInterface interface {
 }
 
 type ProjectMemberService struct {
-	repo     repository.ProjectMemberRepositoryInterface
-	userRepo repository.UserRepositoryInterface
-	permSvc  *PermissionService
+	repo                 repository.ProjectMemberRepositoryInterface
+	userRepo             repository.UserRepositoryInterface
+	permSvc              *PermissionService
+	notificationSvc      *KanbanNotificationService
 }
 
-func NewProjectMemberService(repo repository.ProjectMemberRepositoryInterface, userRepo repository.UserRepositoryInterface, permSvc *PermissionService) *ProjectMemberService {
+func NewProjectMemberService(repo repository.ProjectMemberRepositoryInterface, userRepo repository.UserRepositoryInterface, permSvc *PermissionService, notificationSvc *KanbanNotificationService) *ProjectMemberService {
 	return &ProjectMemberService{
-		repo:     repo,
-		userRepo: userRepo,
-		permSvc:  permSvc,
+		repo:            repo,
+		userRepo:        userRepo,
+		permSvc:         permSvc,
+		notificationSvc: notificationSvc,
 	}
 }
 
@@ -42,6 +44,13 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 	project, err := s.permSvc.projectRepo.GetProject(ctx, projectID)
 	if err != nil {
 		return err
+	}
+
+	// For notifications: remember who was already a member
+	existingMembers, _ := s.repo.GetMembers(ctx, projectID)
+	existingUserIDs := map[int64]bool{}
+	for _, m := range existingMembers {
+		existingUserIDs[m.UserID] = true
 	}
 
 	membersByUserID := make(map[int64]model.ProjectUser, len(reqs)+1)
@@ -81,7 +90,21 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 		return err
 	}
 
-	return s.repo.ReplaceMembers(ctx, projectID, members)
+	if err := s.repo.ReplaceMembers(ctx, projectID, members); err != nil {
+		return err
+	}
+
+	// Notify newly added members
+	if s.notificationSvc != nil {
+		actor, _ := middleware.GetUser(ctx)
+		for _, m := range members {
+			if !existingUserIDs[m.UserID] && m.UserID != actor.ID {
+				s.notificationSvc.NotifyProjectUserAdded(ctx, projectID, actor.ID, m.UserID, project.Name)
+			}
+		}
+	}
+
+	return nil
 }
 
 func (s *ProjectMemberService) UpdateMemberRole(ctx context.Context, projectID int64, userID int64, req dto.UpdateProjectMemberRequest) error {
@@ -136,7 +159,17 @@ func (s *ProjectMemberService) RemoveMember(ctx context.Context, projectID int64
 	if err := s.requireProjectMember(ctx, projectID, userID); err != nil {
 		return err
 	}
-	return s.repo.RemoveMember(ctx, projectID, userID)
+	if err := s.repo.RemoveMember(ctx, projectID, userID); err != nil {
+		return err
+	}
+
+	// Notify the removed user
+	if s.notificationSvc != nil {
+		actor, _ := middleware.GetUser(ctx)
+		s.notificationSvc.NotifyProjectUserRemoved(ctx, projectID, actor.ID, userID, project.Name)
+	}
+
+	return nil
 }
 
 func parseProjectMemberRole(value string) (Role, error) {

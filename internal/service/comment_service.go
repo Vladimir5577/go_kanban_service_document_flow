@@ -30,6 +30,7 @@ type CommentService struct {
 	permSvc           *PermissionService
 	userRepo          repository.UserRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
+	notificationSvc   *KanbanNotificationService
 }
 
 func NewCommentService(
@@ -37,12 +38,14 @@ func NewCommentService(
 	permSvc *PermissionService,
 	userRepo repository.UserRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
+	notificationSvc *KanbanNotificationService,
 ) *CommentService {
 	return &CommentService{
 		repo:              repo,
 		permSvc:           permSvc,
 		userRepo:          userRepo,
 		realtimePublisher: realtimePublisher,
+		notificationSvc:   notificationSvc,
 	}
 }
 
@@ -123,6 +126,14 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 			}
 			return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
 		})
+	}
+
+	// Comment notification (unified)
+	if s.notificationSvc != nil {
+		projectID, _ := s.permSvc.GetProjectIDByCard(ctx, cardID)
+		// Note: boardID would be better, for now we use a link with card param
+		actorID := currentUserID(ctx)
+		s.notificationSvc.NotifyCommentAdded(ctx, projectID, 0, cardID, derefInt64(actorID), "")
 	}
 	return created, nil
 }

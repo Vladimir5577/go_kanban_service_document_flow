@@ -17,6 +17,10 @@ type ProjectMemberRepositoryInterface interface {
 	ReplaceMembers(ctx context.Context, projectID int64, members []model.ProjectUser) error
 	UpdateMemberRole(ctx context.Context, projectID int64, userID int64, role string) error
 	RemoveMember(ctx context.Context, projectID int64, userID int64) error
+
+	// GetAdminUserIDs returns owner + users with KANBAN_ADMIN role for the project.
+	// Used for notification recipient calculation (mirrors Symfony findAdminUsersByProject).
+	GetAdminUserIDs(ctx context.Context, projectID int64) ([]int64, error)
 }
 
 type ProjectMemberRepository struct {
@@ -176,4 +180,36 @@ func (r *ProjectMemberRepository) RemoveMember(ctx context.Context, projectID in
 	}
 
 	return tx.Commit(ctx)
+}
+
+// GetAdminUserIDs returns the owner of the project plus all members with KANBAN_ADMIN role.
+func (r *ProjectMemberRepository) GetAdminUserIDs(ctx context.Context, projectID int64) ([]int64, error) {
+	var ownerID int64
+	err := r.Db.QueryRow(ctx, `SELECT owner_id FROM kanban_project WHERE id = $1 AND deleted_at IS NULL`, projectID).Scan(&ownerID)
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+
+	admins := map[int64]bool{}
+	if ownerID != 0 {
+		admins[ownerID] = true
+	}
+
+	queries := dbgen.New(r.Db)
+	members, err := queries.GetProjectMembers(ctx, int32(projectID))
+	if err != nil {
+		return nil, err
+	}
+
+	for _, m := range members {
+		if m.Role == "KANBAN_ADMIN" {
+			admins[int64(m.UserID)] = true
+		}
+	}
+
+	result := make([]int64, 0, len(admins))
+	for id := range admins {
+		result = append(result, id)
+	}
+	return result, nil
 }

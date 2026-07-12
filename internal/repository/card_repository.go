@@ -24,6 +24,10 @@ type CardRepositoryInterface interface {
 	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
 	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
 	ArchiveCard(ctx context.Context, id int64) error
+
+	// GetInvolvedUserIDsForNotifications returns distinct user IDs that are assignees on the card
+	// or assignees on any of its subtasks. Used to decide notification recipients.
+	GetInvolvedUserIDsForNotifications(ctx context.Context, cardID int64) ([]int64, error)
 }
 
 type CardRepository struct {
@@ -462,4 +466,36 @@ func (r *CardRepository) ArchiveCard(ctx context.Context, id int64) error {
 
 	_, err = r.UpdateCard(ctx, card)
 	return err
+}
+
+// GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users for a card.
+func (r *CardRepository) GetInvolvedUserIDsForNotifications(ctx context.Context, cardID int64) ([]int64, error) {
+	// Get direct assignees
+	assigneeMap, err := r.GetAssigneesByCardIDs(ctx, []int64{cardID})
+	if err != nil {
+		return nil, err
+	}
+	ids := map[int64]bool{}
+	for _, uid := range assigneeMap[cardID] {
+		ids[uid] = true
+	}
+
+	// Get subtask users (raw to avoid missing sqlc query)
+	rows, err := r.Db.Query(ctx, `SELECT user_id FROM kanban_card_subtask WHERE card_id = $1 AND user_id IS NOT NULL`, cardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var uid int64
+		if err := rows.Scan(&uid); err == nil {
+			ids[uid] = true
+		}
+	}
+
+	result := make([]int64, 0, len(ids))
+	for id := range ids {
+		result = append(result, id)
+	}
+	return result, nil
 }

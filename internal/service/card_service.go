@@ -43,6 +43,7 @@ type CardService struct {
 	projectRepo       repository.ProjectRepositoryInterface
 	projectMemberRepo repository.ProjectMemberRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
+	notificationSvc   *KanbanNotificationService
 	cfg               *config.Config
 }
 
@@ -62,6 +63,7 @@ func NewCardService(
 	projectRepo repository.ProjectRepositoryInterface,
 	projectMemberRepo repository.ProjectMemberRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
+	notificationSvc *KanbanNotificationService,
 	cfg *config.Config,
 ) *CardService {
 	return &CardService{
@@ -78,6 +80,7 @@ func NewCardService(
 		projectRepo:       projectRepo,
 		projectMemberRepo: projectMemberRepo,
 		realtimePublisher: realtimePublisher,
+		notificationSvc:   notificationSvc,
 		cfg:               cfg,
 	}
 }
@@ -142,6 +145,18 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 					realtimeSenderID(ctx),
 				)
 			})
+		}
+
+		// Notifications via unified service
+		projectID, _ := s.permSvc.GetProjectIDByColumn(ctx, req.ColumnID)
+		actorID := currentUserID(ctx)
+		if s.notificationSvc != nil {
+			boardTitle := "" // можно обогатить, если нужно точнее как в Symfony
+			s.notificationSvc.NotifyCardCreated(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), created.Title, boardTitle)
+
+			for _, aid := range created.AssigneeIDs {
+				s.notificationSvc.NotifyTaskAssigned(ctx, projectID, created.ID, derefInt64(actorID), aid, created.Title, false)
+			}
 		}
 	}
 	return created, err
@@ -534,6 +549,15 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 				return s.realtimePublisher.PublishCardPatchByID(ctx, id, patch, realtimeSenderID(ctx))
 			})
 		}
+
+		// Notify assignee
+		if s.notificationSvc != nil && len(userIDs) > 0 {
+			projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
+			card, _ := s.repo.GetCard(ctx, id)
+			actorID := currentUserID(ctx)
+			newAssignee := userIDs[0]
+			s.notificationSvc.NotifyTaskAssigned(ctx, projectID, id, derefInt64(actorID), newAssignee, card.Title, false)
+		}
 	}
 	return err
 }
@@ -625,6 +649,14 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 			return s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, patch, realtimeSenderID(ctx))
 		})
 	}
+
+	// Notify on column change (moved)
+	if columnChanged && s.notificationSvc != nil {
+		projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
+		actorID := currentUserID(ctx)
+		s.notificationSvc.NotifyTaskMoved(ctx, projectID, id, derefInt64(actorID), card.Title, sourceColumn.Title, targetColumn.Title)
+	}
+
 	return card, err
 }
 
@@ -712,6 +744,39 @@ func currentUserID(ctx context.Context) *int64 {
 	}
 	id := user.ID
 	return &id
+}
+
+// filterOutActor removes the actor from the list of user IDs.
+func filterOutActor(ids []int64, actor *int64) []int64 {
+	if actor == nil {
+		return ids
+	}
+	result := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id != *actor {
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
+func derefInt64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+func uniqueUserIDs(ids []int64) []int64 {
+	seen := map[int64]bool{}
+	result := []int64{}
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
+	}
+	return result
 }
 
 func stringPtrValue(v *string) string {

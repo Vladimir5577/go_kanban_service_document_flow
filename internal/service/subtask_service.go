@@ -25,6 +25,7 @@ type SubtaskService struct {
 	projectRepo       repository.ProjectRepositoryInterface
 	projectMemberRepo repository.ProjectMemberRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
+	notificationSvc   *KanbanNotificationService
 }
 
 func NewSubtaskService(
@@ -35,6 +36,7 @@ func NewSubtaskService(
 	projectRepo repository.ProjectRepositoryInterface,
 	projectMemberRepo repository.ProjectMemberRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
+	notificationSvc *KanbanNotificationService,
 ) *SubtaskService {
 	return &SubtaskService{
 		repo:              repo,
@@ -44,6 +46,7 @@ func NewSubtaskService(
 		projectRepo:       projectRepo,
 		projectMemberRepo: projectMemberRepo,
 		realtimePublisher: realtimePublisher,
+		notificationSvc:   notificationSvc,
 	}
 }
 
@@ -137,7 +140,11 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 	if req.Position != nil {
 		st.Position = *req.Position
 	}
-	if req.HasUserID {
+	var assigneeAddedToProject bool
+	if req.HasUserID && req.UserID != nil {
+		if _, err := s.projectMemberRepo.GetProjectMember(ctx, projectID, *req.UserID); err != nil && errors.Is(err, apperr.ErrNotFound) {
+			assigneeAddedToProject = true
+		}
 		if err := s.ensureSubtaskAssignee(ctx, projectID, req.UserID); err != nil {
 			return nil, err
 		}
@@ -175,6 +182,21 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 			if updatedSt.UserID != nil {
 				newValue := s.subtaskAssigneeActivityValue(ctx, *updatedSt.UserID, updatedSt.Title)
 				s.logActivity(ctx, updatedSt.CardID, "subtask_assigned", nil, &newValue)
+			}
+
+			// Notification for subtask assignment
+			if s.notificationSvc != nil && updatedSt.UserID != nil {
+				actorID := currentUserID(ctx)
+				s.notificationSvc.NotifySubtaskAssigned(ctx, projectID, cardID, derefInt64(actorID), *updatedSt.UserID, updatedSt.Title)
+
+				if assigneeAddedToProject {
+					proj, _ := s.projectRepo.GetProject(ctx, projectID)
+					projName := ""
+					if proj != nil {
+						projName = proj.Name
+					}
+					s.notificationSvc.NotifyProjectUserAdded(ctx, projectID, derefInt64(actorID), *updatedSt.UserID, projName)
+				}
 			}
 		}
 	}

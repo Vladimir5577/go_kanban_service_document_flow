@@ -14,6 +14,7 @@ import (
 	"go_kanban_service/internal/client"
 	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/handler"
+	"go_kanban_service/internal/messaging/events"
 	"go_kanban_service/internal/messaging/usersync"
 	"go_kanban_service/internal/middleware"
 	"go_kanban_service/internal/repository"
@@ -98,16 +99,25 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		cfg,
 	)
 
+	notificationPublisher := events.NewPublisher(cfg)
+
+	kanbanNotificationSvc := service.NewKanbanNotificationService(
+		notificationPublisher,
+		projectMemberRepo,
+		cardRepo,
+		userRepo,
+	)
+
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, activityRepo, realtimePublisher)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
-	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, projectRepo, projectMemberRepo, realtimePublisher, cfg)
+	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
 	columnHandler := handler.NewColumnHandler(columnSvc)
 
-	commentSvc := service.NewCommentService(commentRepo, permSvc, userRepo, realtimePublisher)
+	commentSvc := service.NewCommentService(commentRepo, permSvc, userRepo, realtimePublisher, kanbanNotificationSvc)
 	commentHandler := handler.NewCommentHandler(commentSvc)
 
 	labelSvc := service.NewLabelService(labelRepo, permSvc, activityRepo, boardRepo, cardRepo, columnRepo, realtimePublisher)
@@ -120,10 +130,10 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	projectSvc := service.NewProjectService(projectRepo, boardRepo, projectMemberRepo, userRepo, permSvc, cfg)
 	projectHandler := handler.NewProjectHandler(projectSvc)
 
-	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc)
+	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc, kanbanNotificationSvc)
 	projectMemberHandler := handler.NewProjectMemberHandler(projectMemberSvc, projectSvc)
 
-	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, activityRepo, userRepo, projectRepo, projectMemberRepo, realtimePublisher)
+	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, activityRepo, userRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc)
 	subtaskHandler := handler.NewSubtaskHandler(subtaskSvc)
 
 	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, subtaskRepo, commentRepo, attachmentRepo, permSvc, cfg)
