@@ -81,7 +81,7 @@ func (s *KanbanNotificationService) NotifyCardCreated(
 		return
 	}
 
-	link := fmt.Sprintf("/kanban/board/%d", boardID)
+	link := fmt.Sprintf("/projects/%d?board=%d&task=%d", projectID, boardID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "card_created",
 		ActorID:    actorID,
@@ -111,7 +111,7 @@ func (s *KanbanNotificationService) NotifyTaskAssigned(
 		return
 	}
 
-	link := fmt.Sprintf("/kanban/board?card=%d", cardID)
+	link := fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "task_assigned",
 		ActorID:    actorID,
@@ -159,7 +159,7 @@ func (s *KanbanNotificationService) NotifyTaskMoved(
 
 	authorName := s.getAuthorName(ctx, actorID)
 
-	link := fmt.Sprintf("/kanban/board?card=%d", cardID)
+	link := fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "task_moved",
 		ActorID:    actorID,
@@ -206,9 +206,9 @@ func (s *KanbanNotificationService) NotifyCommentAdded(
 		}
 	}
 
-	link := fmt.Sprintf("/kanban/board/%d?card=%d", boardID, cardID)
+	link := fmt.Sprintf("/projects/%d?board=%d&task=%d", projectID, boardID, cardID)
 	if boardID == 0 {
-		link = fmt.Sprintf("/kanban/board?card=%d", cardID)
+		link = fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
 	}
 
 	evt := events.KanbanNotificationEvent{
@@ -243,7 +243,7 @@ func (s *KanbanNotificationService) NotifySubtaskAssigned(
 		title = title + " (задача: " + card.Title + ")"
 	}
 
-	link := fmt.Sprintf("/kanban/board?card=%d", cardID)
+	link := fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "subtask_assigned",
 		ActorID:    actorID,
@@ -271,7 +271,7 @@ func (s *KanbanNotificationService) NotifyProjectUserAdded(
 		return
 	}
 
-	link := fmt.Sprintf("/kanban/projects/%d", projectID)
+	link := fmt.Sprintf("/projects/%d", projectID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "project_user_added",
 		ActorID:    actorID,
@@ -297,7 +297,7 @@ func (s *KanbanNotificationService) NotifyProjectUserRemoved(
 		return
 	}
 
-	link := fmt.Sprintf("/kanban/projects/%d", projectID)
+	link := fmt.Sprintf("/projects/%d", projectID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "project_user_removed",
 		ActorID:    actorID,
