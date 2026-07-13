@@ -8,6 +8,8 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
       POSTGRES_DB: ${DB_NAME:-kanban_db}
       PGDATA: /data/postgres
+      # Set TZ so that NOW() and system time in container is Moscow (real local time)
+      TZ: ${TZ:-Europe/Moscow}
     volumes:
       - ./../postgres_data_kanban:/data/postgres
     ports:
@@ -42,6 +44,9 @@ services:
       - RABBITMQ_TRANSPORT_DSN=amqp://guest:guest@rabbitmq:5672/
       # Mercure живёт в общей project-net сети рядом с Symfony
       - MERCURE_URL=http://mercure/.well-known/mercure
+      # TZ=Europe/Moscow so that Go's time.Now() returns Moscow wall time.
+      # Combined with DB timezone param, we store actual local time in TIMESTAMP columns.
+      - TZ=${TZ:-Europe/Moscow}
     # Не надо пробрасывать наружу. Порт пробросит сам nginx
     # ports:
     #   - "${SERVER_PORT:-8085}:8085"

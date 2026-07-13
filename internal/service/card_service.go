@@ -682,7 +682,7 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 		card.ArchivedByID = nil
 	} else {
 		card.IsArchived = true
-		now := time.Now()
+		now := s.cfg.Clock.Now()
 		card.ArchivedAt = &now
 		card.ArchivedByID = currentUserID(ctx)
 	}
@@ -714,7 +714,7 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 		card.CompletedAt = nil
 		card.CompletedByID = nil
 	} else {
-		now := time.Now()
+		now := s.cfg.Clock.Now()
 		card.CompletedAt = &now
 		card.CompletedByID = currentUserID(ctx)
 	}

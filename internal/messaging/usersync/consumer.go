@@ -11,6 +11,7 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go_kanban_service/internal/config"
+	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository"
 )
@@ -29,6 +30,7 @@ type Consumer struct {
 	repo           *repository.UserRepository
 	prefetchCount  int
 	reconnectDelay time.Duration
+	clock          helper.Clock
 }
 
 func NewConsumer(cfg *config.Config, repo *repository.UserRepository) *Consumer {
@@ -39,6 +41,7 @@ func NewConsumer(cfg *config.Config, repo *repository.UserRepository) *Consumer 
 		repo:           repo,
 		prefetchCount:  10,
 		reconnectDelay: 5 * time.Second,
+		clock:          cfg.Clock,
 	}
 }
 
@@ -203,7 +206,7 @@ func (c *Consumer) processDelivery(ctx context.Context, delivery amqp.Delivery) 
 		if deletedAt == nil {
 			fallback := delivery.Timestamp
 			if fallback.IsZero() {
-				fallback = time.Now().UTC()
+				fallback = c.clock.Now()
 			}
 			deletedAt = &fallback
 		}

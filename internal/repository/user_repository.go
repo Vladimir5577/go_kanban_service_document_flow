@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go_kanban_service/internal/client"
+	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 )
 
@@ -18,12 +19,14 @@ type UserRepositoryInterface interface {
 type UserRepository struct {
 	Db            *pgxpool.Pool
 	SymfonyClient client.SymfonyClientInterface
+	clock         helper.Clock
 }
 
-func NewUserRepository(db *pgxpool.Pool, symfonyClient client.SymfonyClientInterface) *UserRepository {
+func NewUserRepository(db *pgxpool.Pool, symfonyClient client.SymfonyClientInterface, clk helper.Clock) *UserRepository {
 	return &UserRepository{
 		Db:            db,
 		SymfonyClient: symfonyClient,
+		clock:         clk,
 	}
 }
 
@@ -127,7 +130,7 @@ func (r *UserRepository) UpsertUsers(ctx context.Context, users []model.User) er
 				u.Patronymic,
 				u.AvatarName,
 				u.DeletedAt,
-				time.Now(),
+				r.clock.Now(),
 			}, nil
 		}),
 	)

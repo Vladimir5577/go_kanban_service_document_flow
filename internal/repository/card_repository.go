@@ -2,11 +2,11 @@ package repository
 
 import (
 	"context"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -31,12 +31,14 @@ type CardRepositoryInterface interface {
 }
 
 type CardRepository struct {
-	Db *pgxpool.Pool
+	Db    *pgxpool.Pool
+	clock helper.Clock
 }
 
-func NewCardRepository(db *pgxpool.Pool) *CardRepository {
+func NewCardRepository(db *pgxpool.Pool, clk helper.Clock) *CardRepository {
 	return &CardRepository{
-		Db: db,
+		Db:    db,
+		clock: clk,
 	}
 }
 
@@ -89,8 +91,8 @@ func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) (
 			Position:   c.Position,
 			IsArchived: c.IsArchived,
 			ColumnID:   c.ColumnID,
-			CreatedAt:  c.CreatedAt.Time,
-			UpdatedAt:  c.UpdatedAt.Time,
+			CreatedAt:  r.clock.FromDB(c.CreatedAt.Time),
+			UpdatedAt:  r.clock.FromDB(c.UpdatedAt.Time),
 		}
 		if c.Description.Valid {
 			card.Description = &c.Description.String
@@ -102,17 +104,20 @@ func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) (
 			card.BorderColor = &c.BorderColor.String
 		}
 		if c.DueDate.Valid {
-			card.DueDate = &c.DueDate.Time
+			t := r.clock.FromDB(c.DueDate.Time)
+			card.DueDate = &t
 		}
 		if c.ArchivedAt.Valid {
-			card.ArchivedAt = &c.ArchivedAt.Time
+			t := r.clock.FromDB(c.ArchivedAt.Time)
+			card.ArchivedAt = &t
 		}
 		if c.ArchivedByID.Valid {
 			v := c.ArchivedByID.Int64
 			card.ArchivedByID = &v
 		}
 		if c.CompletedAt.Valid {
-			card.CompletedAt = &c.CompletedAt.Time
+			t := r.clock.FromDB(c.CompletedAt.Time)
+			card.CompletedAt = &t
 		}
 		if c.CompletedByID.Valid {
 			v := c.CompletedByID.Int64
@@ -147,8 +152,8 @@ func (r *CardRepository) GetCardsByBoard(ctx context.Context, boardID int64) ([]
 			Position:   c.Position,
 			IsArchived: c.IsArchived,
 			ColumnID:   c.ColumnID,
-			CreatedAt:  c.CreatedAt.Time,
-			UpdatedAt:  c.UpdatedAt.Time,
+			CreatedAt:  r.clock.FromDB(c.CreatedAt.Time),
+			UpdatedAt:  r.clock.FromDB(c.UpdatedAt.Time),
 		}
 		if c.Description.Valid {
 			card.Description = &c.Description.String
@@ -160,17 +165,20 @@ func (r *CardRepository) GetCardsByBoard(ctx context.Context, boardID int64) ([]
 			card.BorderColor = &c.BorderColor.String
 		}
 		if c.DueDate.Valid {
-			card.DueDate = &c.DueDate.Time
+			t := r.clock.FromDB(c.DueDate.Time)
+			card.DueDate = &t
 		}
 		if c.ArchivedAt.Valid {
-			card.ArchivedAt = &c.ArchivedAt.Time
+			t := r.clock.FromDB(c.ArchivedAt.Time)
+			card.ArchivedAt = &t
 		}
 		if c.ArchivedByID.Valid {
 			v := c.ArchivedByID.Int64
 			card.ArchivedByID = &v
 		}
 		if c.CompletedAt.Valid {
-			card.CompletedAt = &c.CompletedAt.Time
+			t := r.clock.FromDB(c.CompletedAt.Time)
+			card.CompletedAt = &t
 		}
 		if c.CompletedByID.Valid {
 			v := c.CompletedByID.Int64
@@ -254,8 +262,8 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 	}
 
 	c.ID = res.ID
-	c.CreatedAt = res.CreatedAt.Time
-	c.UpdatedAt = res.UpdatedAt.Time
+	c.CreatedAt = r.clock.FromDB(res.CreatedAt.Time)
+	c.UpdatedAt = r.clock.FromDB(res.UpdatedAt.Time)
 	return c, nil
 }
 
@@ -272,8 +280,8 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 		Position:   c.Position,
 		IsArchived: c.IsArchived,
 		ColumnID:   c.ColumnID,
-		CreatedAt:  c.CreatedAt.Time,
-		UpdatedAt:  c.UpdatedAt.Time,
+		CreatedAt:  r.clock.FromDB(c.CreatedAt.Time),
+		UpdatedAt:  r.clock.FromDB(c.UpdatedAt.Time),
 	}
 	if c.Description.Valid {
 		card.Description = &c.Description.String
@@ -285,17 +293,20 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 		card.BorderColor = &c.BorderColor.String
 	}
 	if c.DueDate.Valid {
-		card.DueDate = &c.DueDate.Time
+		t := r.clock.FromDB(c.DueDate.Time)
+		card.DueDate = &t
 	}
 	if c.ArchivedAt.Valid {
-		card.ArchivedAt = &c.ArchivedAt.Time
+		t := r.clock.FromDB(c.ArchivedAt.Time)
+		card.ArchivedAt = &t
 	}
 	if c.ArchivedByID.Valid {
 		v := c.ArchivedByID.Int64
 		card.ArchivedByID = &v
 	}
 	if c.CompletedAt.Valid {
-		card.CompletedAt = &c.CompletedAt.Time
+		t := r.clock.FromDB(c.CompletedAt.Time)
+		card.CompletedAt = &t
 	}
 	if c.CompletedByID.Valid {
 		v := c.CompletedByID.Int64
@@ -362,7 +373,7 @@ func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.
 		return nil, NormalizeError(err)
 	}
 
-	c.UpdatedAt = res.UpdatedAt.Time
+	c.UpdatedAt = r.clock.FromDB(res.UpdatedAt.Time)
 	return c, nil
 }
 
@@ -446,7 +457,7 @@ func (r *CardRepository) ArchiveCard(ctx context.Context, id int64) error {
 		card.ArchivedByID = nil
 	} else {
 		card.IsArchived = true
-		now := time.Now()
+		now := r.clock.Now()
 		card.ArchivedAt = &now
 	}
 

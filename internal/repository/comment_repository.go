@@ -5,6 +5,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -19,12 +20,14 @@ type CommentRepositoryInterface interface {
 }
 
 type CommentRepository struct {
-	Db *pgxpool.Pool
+	Db    *pgxpool.Pool
+	clock helper.Clock
 }
 
-func NewCommentRepository(db *pgxpool.Pool) *CommentRepository {
+func NewCommentRepository(db *pgxpool.Pool, clk helper.Clock) *CommentRepository {
 	return &CommentRepository{
-		Db: db,
+		Db:    db,
+		clock: clk,
 	}
 }
 
@@ -41,10 +44,11 @@ func (r *CommentRepository) GetComments(ctx context.Context, cardID int64) ([]mo
 			ID:        c.ID,
 			Body:      c.Body,
 			CardID:    c.CardID,
-			CreatedAt: c.CreatedAt.Time,
+			CreatedAt: r.clock.FromDB(c.CreatedAt.Time),
 		}
 		if c.UpdatedAt.Valid {
-			comment.UpdatedAt = &c.UpdatedAt.Time
+			t := r.clock.FromDB(c.UpdatedAt.Time)
+			comment.UpdatedAt = &t
 		}
 		comment.AuthorID = c.AuthorID
 		comments = append(comments, comment)
@@ -86,9 +90,10 @@ func (r *CommentRepository) CreateComment(ctx context.Context, cardID int64, c *
 	}
 
 	c.ID = res.ID
-	c.CreatedAt = res.CreatedAt.Time
+	c.CreatedAt = r.clock.FromDB(res.CreatedAt.Time)
 	if res.UpdatedAt.Valid {
-		c.UpdatedAt = &res.UpdatedAt.Time
+		t := r.clock.FromDB(res.UpdatedAt.Time)
+		c.UpdatedAt = &t
 	}
 	return c, nil
 }
@@ -104,10 +109,11 @@ func (r *CommentRepository) GetComment(ctx context.Context, id int64) (*model.Co
 		ID:        c.ID,
 		Body:      c.Body,
 		CardID:    c.CardID,
-		CreatedAt: c.CreatedAt.Time,
+		CreatedAt: r.clock.FromDB(c.CreatedAt.Time),
 	}
 	if c.UpdatedAt.Valid {
-		comment.UpdatedAt = &c.UpdatedAt.Time
+		t := r.clock.FromDB(c.UpdatedAt.Time)
+		comment.UpdatedAt = &t
 	}
 	comment.AuthorID = c.AuthorID
 	return comment, nil
@@ -124,7 +130,8 @@ func (r *CommentRepository) UpdateComment(ctx context.Context, c *model.Comment)
 	}
 
 	if res.UpdatedAt.Valid {
-		c.UpdatedAt = &res.UpdatedAt.Time
+		t := r.clock.FromDB(res.UpdatedAt.Time)
+		c.UpdatedAt = &t
 	}
 	return c, nil
 }

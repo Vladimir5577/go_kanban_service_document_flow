@@ -6,9 +6,12 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+
+	"go_kanban_service/internal/helper"
 )
 
 type Config struct {
@@ -42,6 +45,19 @@ type Config struct {
 	// Symfony internal API for Kanban
 	SymfonyInternalApiUrl string
 	SymfonyInternalApiKey string
+
+	// DBTimezone controls the session timezone for Postgres (affects NOW() etc.).
+	// We set it to Europe/Moscow so that "real" local time is used when storing
+	// in TIMESTAMP(0) columns. Go side also uses the same location.
+	DBTimezone string
+
+	// TimezoneLocation kept for backward compatibility.
+	TimezoneLocation *time.Location
+
+	// Clock provides helpers for storing and reading wall-clock (Moscow) time
+	// in TIMESTAMP WITHOUT TIME ZONE columns.
+	// See internal/helper/clock.go
+	Clock helper.Clock
 }
 
 func Load() *Config {
@@ -50,7 +66,7 @@ func Load() *Config {
 		slog.Warn("Предупреждение: .env файл не найден, используются системные переменные окружения")
 	}
 
-	return &Config{
+	c := &Config{
 		Env:              getEnv("ENV", "local"),
 		Port:             getEnv("SERVER_PORT", "8080"),
 		JWTPublicKeyPath: getEnv("JWT_PUBLIC_KEY_PATH", "config/jwt/public.pem"),
@@ -76,7 +92,20 @@ func Load() *Config {
 		ImgproxyBaseUrl:       getEnv("IMGPROXY_BASE_URL", "http://localhost:8082"),
 		SymfonyInternalApiUrl: getEnv("SYMFONY_INTERNAL_API_URL", ""),
 		SymfonyInternalApiKey: getEnv("SYMFONY_INTERNAL_API_KEY", ""),
+
+		DBTimezone: getEnv("DB_TIMEZONE", "Europe/Moscow"),
 	}
+
+	// Load the location once. This is central to storing "real time" (Moscow wall time).
+	loc, err := time.LoadLocation(c.DBTimezone)
+	if err != nil {
+		slog.Warn("Failed to load DBTimezone location, falling back to UTC", "timezone", c.DBTimezone, "err", err)
+		loc = time.UTC
+	}
+	c.TimezoneLocation = loc
+	c.Clock = helper.NewClock(loc)
+
+	return c
 }
 
 func getEnvAsBool(key string, fallback bool) bool {
@@ -88,13 +117,16 @@ func getEnvAsBool(key string, fallback bool) bool {
 }
 
 func ConnectDB(conf *Config) (*pgxpool.Pool, error) {
+	// Include timezone so that NOW() and timestamp literals use Moscow time on DB side.
+	// This + container TZ + Go Clock.ToWall ensures we persist real local wall time.
 	connStr := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=disable timezone=%s",
 		conf.DBHost,
 		conf.DBPort,
 		conf.DBUser,
 		conf.DBPassword,
 		conf.DBName,
+		conf.DBTimezone,
 	)
 
 	pool, err := pgxpool.New(context.Background(), connStr)
@@ -123,4 +155,14 @@ func getEnvAsInt(key string, fallback int) int {
 		return value
 	}
 	return fallback
+}
+
+// Now returns current wall-clock time in the configured timezone (Europe/Moscow).
+func (c *Config) Now() time.Time {
+	return c.Clock.Now()
+}
+
+// ToLocal converts the given time to wall time in our configured timezone.
+func (c *Config) ToLocal(t time.Time) time.Time {
+	return c.Clock.ToWall(t)
 }

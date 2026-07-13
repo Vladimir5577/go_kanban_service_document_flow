@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -19,12 +20,14 @@ type AttachmentRepositoryInterface interface {
 }
 
 type AttachmentRepository struct {
-	Db *pgxpool.Pool
+	Db    *pgxpool.Pool
+	clock helper.Clock
 }
 
-func NewAttachmentRepository(db *pgxpool.Pool) *AttachmentRepository {
+func NewAttachmentRepository(db *pgxpool.Pool, clk helper.Clock) *AttachmentRepository {
 	return &AttachmentRepository{
-		Db: db,
+		Db:    db,
+		clock: clk,
 	}
 }
 
@@ -74,7 +77,7 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 			SizeBytes:   a.SizeBytes,
 			Context:     a.Context,
 			CardID:      a.CardID,
-			CreatedAt:   a.CreatedAt.Time,
+			CreatedAt:   r.clock.FromDB(a.CreatedAt.Time),
 		}
 		if a.AuthorID.Valid {
 			v := a.AuthorID.Int64
@@ -149,7 +152,7 @@ func (r *AttachmentRepository) CreateAttachment(ctx context.Context, cardID int6
 	}
 
 	a.ID = res.ID
-	a.CreatedAt = res.CreatedAt.Time
+	a.CreatedAt = r.clock.FromDB(res.CreatedAt.Time)
 	return a, nil
 }
 

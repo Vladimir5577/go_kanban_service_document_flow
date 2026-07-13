@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -29,12 +30,14 @@ type BoardRepositoryInterface interface {
 }
 
 type BoardRepository struct {
-	Db *pgxpool.Pool
+	Db    *pgxpool.Pool
+	clock helper.Clock
 }
 
-func NewBoardRepository(db *pgxpool.Pool) *BoardRepository {
+func NewBoardRepository(db *pgxpool.Pool, clk helper.Clock) *BoardRepository {
 	return &BoardRepository{
-		Db: db,
+		Db:    db,
+		clock: clk,
 	}
 }
 
@@ -53,8 +56,8 @@ func (r *BoardRepository) GetBoardsByProject(ctx context.Context, projectID int6
 			Position:        b.Position,
 			KanbanProjectID: b.KanbanProjectID,
 			CreatedByID:     b.CreatedByID,
-			CreatedAt:       b.CreatedAt.Time,
-			UpdatedAt:       b.UpdatedAt.Time,
+			CreatedAt:       r.clock.FromDB(b.CreatedAt.Time),
+			UpdatedAt:       r.clock.FromDB(b.UpdatedAt.Time),
 		})
 	}
 	return boards, nil
@@ -72,7 +75,7 @@ func (r *BoardRepository) CreateBoard(ctx context.Context, projectID int64, b *m
 		return nil, NormalizeError(err)
 	}
 
-	mapDBBoard(&res, b)
+	mapDBBoard(&res, b, r.clock)
 	return b, nil
 }
 
@@ -99,7 +102,7 @@ func (r *BoardRepository) CreateBoardWithColumns(ctx context.Context, projectID 
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
-	mapDBBoard(&res, b)
+	mapDBBoard(&res, b, r.clock)
 
 	for i := range columns {
 		column := &columns[i]
@@ -136,8 +139,8 @@ func (r *BoardRepository) GetBoard(ctx context.Context, id int64) (*model.Board,
 		Position:        b.Position,
 		KanbanProjectID: b.KanbanProjectID,
 		CreatedByID:     b.CreatedByID,
-		CreatedAt:       b.CreatedAt.Time,
-		UpdatedAt:       b.UpdatedAt.Time,
+		CreatedAt:       r.clock.FromDB(b.CreatedAt.Time),
+		UpdatedAt:       r.clock.FromDB(b.UpdatedAt.Time),
 	}, nil
 }
 
@@ -152,7 +155,7 @@ func (r *BoardRepository) UpdateBoard(ctx context.Context, b *model.Board) (*mod
 		return nil, NormalizeError(err)
 	}
 
-	mapDBBoard(&res, b)
+	mapDBBoard(&res, b, r.clock)
 	return b, nil
 }
 
@@ -373,16 +376,18 @@ func (r *BoardRepository) NextBoardID(ctx context.Context, projectID int64, excl
 	return &id, nil
 }
 
-func mapDBBoard(b *dbgen.KanbanBoard, target *model.Board) {
+func mapDBBoard(b *dbgen.KanbanBoard, target *model.Board, clk helper.Clock) {
 	target.ID = b.ID
 	target.Title = b.Title
 	target.Position = b.Position
 	target.KanbanProjectID = b.KanbanProjectID
 	target.CreatedByID = b.CreatedByID
-	target.CreatedAt = b.CreatedAt.Time
-	target.UpdatedAt = b.UpdatedAt.Time
+	target.CreatedAt = clk.FromDB(b.CreatedAt.Time)
+	target.UpdatedAt = clk.FromDB(b.UpdatedAt.Time)
+
 	if b.DeletedAt.Valid {
-		target.DeletedAt = &b.DeletedAt.Time
+		t := clk.FromDB(b.DeletedAt.Time)
+		target.DeletedAt = &t
 	} else {
 		target.DeletedAt = nil
 	}

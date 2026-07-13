@@ -62,30 +62,30 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		return nil, fmt.Errorf("failed to init minio service: %w", err)
 	}
 
-	projectRepo := repository.NewProjectRepository(db)
+	projectRepo := repository.NewProjectRepository(db, cfg.Clock)
 	projectMemberRepo := repository.NewProjectMemberRepository(db)
 
 	permSvc := service.NewPermissionService(db, projectRepo, projectMemberRepo)
 
 	symfonyClient := client.NewSymfonyClient(cfg)
 
-	userRepo := repository.NewUserRepository(db, symfonyClient)
+	userRepo := repository.NewUserRepository(db, symfonyClient, cfg.Clock)
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
 
-	activityRepo := repository.NewActivityRepository(db)
+	activityRepo := repository.NewActivityRepository(db, cfg.Clock)
 	activitySvc := service.NewActivityService(activityRepo, permSvc)
 	activityHandler := handler.NewActivityHandler(activitySvc)
 
-	attachmentRepo := repository.NewAttachmentRepository(db)
+	attachmentRepo := repository.NewAttachmentRepository(db, cfg.Clock)
 	subtaskRepo := repository.NewSubtaskRepository(db)
-	commentRepo := repository.NewCommentRepository(db)
+	commentRepo := repository.NewCommentRepository(db, cfg.Clock)
 	labelRepo := repository.NewLabelRepository(db)
 
-	boardRepo := repository.NewBoardRepository(db)
+	boardRepo := repository.NewBoardRepository(db, cfg.Clock)
 	columnRepo := repository.NewColumnRepository(db)
 
-	cardRepo := repository.NewCardRepository(db)
+	cardRepo := repository.NewCardRepository(db, cfg.Clock)
 	realtimePublisher := service.NewKanbanRealtimePublisher(
 		cfg.MercureURL,
 		cfg.MercureJWTSecret,

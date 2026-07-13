@@ -5,6 +5,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 )
 
@@ -18,12 +19,14 @@ type ProjectRepositoryInterface interface {
 }
 
 type ProjectRepository struct {
-	Db *pgxpool.Pool
+	Db    *pgxpool.Pool
+	clock helper.Clock
 }
 
-func NewProjectRepository(db *pgxpool.Pool) *ProjectRepository {
+func NewProjectRepository(db *pgxpool.Pool, clk helper.Clock) *ProjectRepository {
 	return &ProjectRepository{
-		Db: db,
+		Db:    db,
+		clock: clk,
 	}
 }
 
