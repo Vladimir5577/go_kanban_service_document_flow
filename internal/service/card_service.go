@@ -208,6 +208,13 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 			userIDs = append(userIDs, *resp.Subtasks[i].UserID)
 		}
 	}
+	// Include creators for createdBy / completedBy enrichment
+	if card.CreatedByID != nil {
+		userIDs = append(userIDs, *card.CreatedByID)
+	}
+	if card.CompletedByID != nil {
+		userIDs = append(userIDs, *card.CompletedByID)
+	}
 
 	var allAttachments []model.Attachment
 	attsCard, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "card")
@@ -284,6 +291,11 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	if err != nil {
 		return nil, err
 	}
+
+	// Enrich with board and column info required by frontend
+	resp.BoardID = col.BoardID
+	resp.ColumnTitle = col.Title
+
 	labels, err := s.labelRepo.GetLabels(ctx, col.BoardID)
 	if err != nil {
 		return nil, err
@@ -310,6 +322,28 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 				Name:      name,
 				AvatarUrl: dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail),
 			})
+		}
+	}
+
+	// Populate rich creator objects (createdBy / completedBy)
+	if card.CreatedByID != nil {
+		if u, ok := userMap[*card.CreatedByID]; ok {
+			resp.CreatedBy = &dto.CardUserResponse{
+				ID:        u.ID,
+				Firstname: u.Firstname,
+				Lastname:  u.Lastname,
+				AvatarUrl: dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail),
+			}
+		}
+	}
+	if card.CompletedByID != nil {
+		if u, ok := userMap[*card.CompletedByID]; ok {
+			resp.CompletedBy = &dto.CardUserResponse{
+				ID:        u.ID,
+				Firstname: u.Firstname,
+				Lastname:  u.Lastname,
+				AvatarUrl: dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail),
+			}
 		}
 	}
 
@@ -727,7 +761,8 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 				return s.realtimePublisher.PublishCardPatch(ctx, updated, map[string]any{
-					"completedAt": formatRealtimeTime(updated.CompletedAt),
+					"completedAt":   formatRealtimeTime(updated.CompletedAt),
+					"completedById": updated.CompletedByID,
 				}, realtimeSenderID(ctx))
 			})
 		}

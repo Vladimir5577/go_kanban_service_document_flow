@@ -132,7 +132,7 @@ func (p *KanbanRealtimePublisher) PublishCardPatchByID(ctx context.Context, card
 }
 
 func (p *KanbanRealtimePublisher) BuildCreatedCard(card *model.Card, column *model.Column) map[string]any {
-	return map[string]any{
+	created := map[string]any{
 		"id":             card.ID,
 		"borderColor":    card.BorderColor,
 		"title":          card.Title,
@@ -147,8 +147,16 @@ func (p *KanbanRealtimePublisher) BuildCreatedCard(card *model.Card, column *mod
 		"commentsCount":  0,
 		"updatedAt":      nil,
 		"completedAt":    formatRealtimeTime(card.CompletedAt),
+		"columnId":       column.ID,
+		"boardId":        column.BoardID,
+		"createdById":    card.CreatedByID,
+		"completedById":  card.CompletedByID,
 		"status":         strconv.FormatInt(column.ID, 10),
 	}
+
+	// Note: full createdBy object would require user lookup; included IDs for now.
+	// Frontend can enrich or use detail endpoint.
+	return created
 }
 
 func (p *KanbanRealtimePublisher) BuildChecklistCounters(ctx context.Context, cardID int64) (map[string]any, error) {

@@ -145,6 +145,12 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 		labelMap[l.ID] = l
 	}
 
+	// For enriching columnTitle on cards
+	columnTitleByID := make(map[int64]string)
+	for _, col := range columns {
+		columnTitleByID[col.ID] = col.Title
+	}
+
 	// Получить все карточки доски одним запросом
 	cards, err := s.cardRepo.GetCardsByBoard(ctx, boardID)
 	if err != nil {
@@ -211,6 +217,11 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 			}
 		}
 
+		// Set column title (useful for card components)
+		if title, ok := columnTitleByID[card.ColumnID]; ok {
+			cardResp.ColumnTitle = title
+		}
+
 		// Проставить checklist counts
 		if checklist, ok := checklistsByCard[card.ID]; ok {
 			cardResp.ChecklistTotal = checklist.Total
@@ -220,9 +231,15 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 		// Проставить comments count (comments + chat attachments)
 		cardResp.CommentsCount = commentCountsByCard[card.ID] + chatCountsByCard[card.ID]
 
-		// Собрать user IDs для bulk-загрузки
+		// Собрать user IDs для bulk-загрузки (assignees + creators)
 		for _, uid := range card.AssigneeIDs {
 			allUserIDs = append(allUserIDs, uid)
+		}
+		if card.CreatedByID != nil {
+			allUserIDs = append(allUserIDs, *card.CreatedByID)
+		}
+		if card.CompletedByID != nil {
+			allUserIDs = append(allUserIDs, *card.CompletedByID)
 		}
 
 		cardsByColumn[card.ColumnID] = append(cardsByColumn[card.ColumnID], cardResp)
@@ -254,7 +271,35 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 					})
 				}
 			}
+
+			// Enrich createdBy / completedBy + boardId for cards in the board
+			if cardResp.CreatedByID != nil {
+				if u, ok := userMap[*cardResp.CreatedByID]; ok {
+					cardResp.CreatedBy = &dto.CardUserResponse{
+						ID:        u.ID,
+						Firstname: u.Firstname,
+						Lastname:  u.Lastname,
+						AvatarUrl: dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail),
+					}
+				}
+			}
+			if cardResp.CompletedByID != nil {
+				if u, ok := userMap[*cardResp.CompletedByID]; ok {
+					cardResp.CompletedBy = &dto.CardUserResponse{
+						ID:        u.ID,
+						Firstname: u.Firstname,
+						Lastname:  u.Lastname,
+						AvatarUrl: dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail),
+					}
+				}
+			}
 		}
+
+	}
+
+	// Set boardId for all cards (known from context) - always, even if no users
+	for _, cardResp := range allCards {
+		cardResp.BoardID = boardID
 	}
 
 	// Собрать колонки с карточками

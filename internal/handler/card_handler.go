@@ -32,12 +32,18 @@ func (h *CardHandler) CreateCard() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.CreateCard(r.Context(), req)
+		created, err := h.service.CreateCard(r.Context(), req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusCreated, dto.MapCardResponse(res))
+		// Return full enriched card (with boardId, createdBy, etc.)
+		detail, err := h.service.GetCardDetail(r.Context(), created.ID)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusCreated, detail)
 	}
 }
 
@@ -76,12 +82,17 @@ func (h *CardHandler) UpdateCard() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.UpdateCard(r.Context(), id, req)
+		if _, err = h.service.UpdateCard(r.Context(), id, req); err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		// Return full enriched card (with boardId, createdBy, etc.)
+		detail, err := h.service.GetCardDetail(r.Context(), id)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.MapCardResponse(res))
+		helper.WriteJSON(w, http.StatusOK, detail)
 	}
 }
 
@@ -151,12 +162,17 @@ func (h *CardHandler) MoveCard() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.MoveCard(r.Context(), id, payload.ColumnID, payload.Position)
+		if _, err = h.service.MoveCard(r.Context(), id, payload.ColumnID, payload.Position); err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		// Return full enriched card (with boardId, createdBy, etc.)
+		detail, err := h.service.GetCardDetail(r.Context(), id)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.MapCardResponse(res))
+		helper.WriteJSON(w, http.StatusOK, detail)
 	}
 }
 
@@ -193,11 +209,16 @@ func (h *CardHandler) CompleteCard() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.CompleteCard(r.Context(), id)
+		if _, err = h.service.CompleteCard(r.Context(), id); err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		// Return full enriched card (with boardId, createdBy, etc.)
+		detail, err := h.service.GetCardDetail(r.Context(), id)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.MapCardResponse(res))
+		helper.WriteJSON(w, http.StatusOK, detail)
 	}
 }

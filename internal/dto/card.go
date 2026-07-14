@@ -93,6 +93,14 @@ type CardAssigneeResponse struct {
 	AvatarUrl *string `json:"avatarUrl,omitempty"`
 }
 
+// CardUserResponse is a minimal user reference used for createdBy / completedBy in card responses.
+type CardUserResponse struct {
+	ID        int64   `json:"id"`
+	Firstname string  `json:"firstname"`
+	Lastname  string  `json:"lastname"`
+	AvatarUrl *string `json:"avatarUrl,omitempty"`
+}
+
 type CardResponse struct {
 	ID             int64                   `json:"id"`
 	Title          string                  `json:"title"`
@@ -105,8 +113,12 @@ type CardResponse struct {
 	ArchivedByID   *int64                  `json:"archivedById"`
 	CompletedAt    *time.Time              `json:"completedAt"`
 	CompletedByID  *int64                  `json:"completedById"`
+	CompletedBy    *CardUserResponse       `json:"completedBy,omitempty"`
 	ColumnID       int64                   `json:"columnId"`
+	BoardID        int64                   `json:"boardId"`
+	ColumnTitle    string                  `json:"columnTitle,omitempty"`
 	CreatedByID    *int64                  `json:"createdById"`
+	CreatedBy      *CardUserResponse       `json:"createdBy,omitempty"`
 	BorderColor    *string                 `json:"borderColor"`
 	CreatedAt      time.Time               `json:"createdAt"`
 	UpdatedAt      time.Time               `json:"updatedAt"`
