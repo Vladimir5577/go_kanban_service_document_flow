@@ -12,6 +12,7 @@ import (
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
+	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/middleware"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository"
@@ -114,7 +115,7 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 		Title:       req.Title,
 		ColumnID:    req.ColumnID,
 		Description: req.Description,
-		DueDate:     req.DueDate,
+		DueDate:     normalizeTimePtr(req.DueDate),
 		Priority:    req.Priority,
 		BorderColor: req.BorderColor,
 		AssigneeIDs: req.AssigneeIDs,
@@ -404,14 +405,14 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 		if !sameOptionalTime(c.DueDate, req.DueDate) {
 			dueChanged = true
 			if c.DueDate != nil {
-				dStr := c.DueDate.Format("02.01.2006 15:04")
+				dStr := c.DueDate.In(helper.MoscowLocation()).Format("02.01.2006 15:04")
 				oldDue = &dStr
 			}
 			if req.DueDate != nil {
-				dStr := req.DueDate.Format("02.01.2006 15:04")
+				dStr := req.DueDate.In(helper.MoscowLocation()).Format("02.01.2006 15:04")
 				newDue = &dStr
 			}
-			c.DueDate = req.DueDate
+			c.DueDate = normalizeTimePtr(req.DueDate)
 		}
 	}
 
@@ -884,4 +885,14 @@ func formatPriority(priority *string) string {
 	default:
 		return *priority
 	}
+}
+
+// normalizeTimePtr brings an incoming time (from client, usually with offset) to UTC
+// and truncates to seconds for consistency with TIMESTAMPTZ(0).
+func normalizeTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	normalized := t.UTC().Truncate(time.Second)
+	return &normalized
 }

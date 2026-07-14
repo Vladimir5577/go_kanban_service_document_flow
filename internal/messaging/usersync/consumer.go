@@ -352,7 +352,7 @@ func parseTime(value string) (time.Time, error) {
 	for _, layout := range layouts {
 		parsed, err := time.Parse(layout, value)
 		if err == nil {
-			return parsed, nil
+			return parsed.UTC().Truncate(time.Second), nil
 		}
 		lastErr = err
 	}

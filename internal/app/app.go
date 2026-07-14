@@ -62,7 +62,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		return nil, fmt.Errorf("failed to init minio service: %w", err)
 	}
 
-	projectRepo := repository.NewProjectRepository(db, cfg.Clock)
+	projectRepo := repository.NewProjectRepository(db)
 	projectMemberRepo := repository.NewProjectMemberRepository(db)
 
 	permSvc := service.NewPermissionService(db, projectRepo, projectMemberRepo)
@@ -73,19 +73,19 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
 
-	activityRepo := repository.NewActivityRepository(db, cfg.Clock)
+	activityRepo := repository.NewActivityRepository(db)
 	activitySvc := service.NewActivityService(activityRepo, permSvc)
 	activityHandler := handler.NewActivityHandler(activitySvc)
 
-	attachmentRepo := repository.NewAttachmentRepository(db, cfg.Clock)
+	attachmentRepo := repository.NewAttachmentRepository(db)
 	subtaskRepo := repository.NewSubtaskRepository(db)
-	commentRepo := repository.NewCommentRepository(db, cfg.Clock)
+	commentRepo := repository.NewCommentRepository(db)
 	labelRepo := repository.NewLabelRepository(db)
 
-	boardRepo := repository.NewBoardRepository(db, cfg.Clock)
+	boardRepo := repository.NewBoardRepository(db)
 	columnRepo := repository.NewColumnRepository(db)
 
-	cardRepo := repository.NewCardRepository(db, cfg.Clock)
+	cardRepo := repository.NewCardRepository(db)
 	realtimePublisher := service.NewKanbanRealtimePublisher(
 		cfg.MercureURL,
 		cfg.MercureJWTSecret,

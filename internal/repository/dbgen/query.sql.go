@@ -196,14 +196,14 @@ RETURNING id, title, description, position, due_date, priority, is_archived, arc
 `
 
 type CreateCardParams struct {
-	Title       string           `json:"title"`
-	Description pgtype.Text      `json:"description"`
-	Position    float64          `json:"position"`
-	DueDate     pgtype.Timestamp `json:"due_date"`
-	Priority    pgtype.Text      `json:"priority"`
-	ColumnID    int64            `json:"column_id"`
-	CreatedByID pgtype.Int8      `json:"created_by_id"`
-	BorderColor pgtype.Text      `json:"border_color"`
+	Title       string             `json:"title"`
+	Description pgtype.Text        `json:"description"`
+	Position    float64            `json:"position"`
+	DueDate     pgtype.Timestamptz `json:"due_date"`
+	Priority    pgtype.Text        `json:"priority"`
+	ColumnID    int64              `json:"column_id"`
+	CreatedByID pgtype.Int8        `json:"created_by_id"`
+	BorderColor pgtype.Text        `json:"border_color"`
 }
 
 func (q *Queries) CreateCard(ctx context.Context, arg CreateCardParams) (KanbanCard, error) {
@@ -1559,19 +1559,19 @@ RETURNING id, title, description, position, due_date, priority, is_archived, arc
 `
 
 type UpdateCardParams struct {
-	Title         string           `json:"title"`
-	Description   pgtype.Text      `json:"description"`
-	Position      float64          `json:"position"`
-	DueDate       pgtype.Timestamp `json:"due_date"`
-	Priority      pgtype.Text      `json:"priority"`
-	IsArchived    bool             `json:"is_archived"`
-	ArchivedAt    pgtype.Timestamp `json:"archived_at"`
-	ArchivedByID  pgtype.Int8      `json:"archived_by_id"`
-	CompletedAt   pgtype.Timestamp `json:"completed_at"`
-	CompletedByID pgtype.Int8      `json:"completed_by_id"`
-	ColumnID      int64            `json:"column_id"`
-	BorderColor   pgtype.Text      `json:"border_color"`
-	ID            int64            `json:"id"`
+	Title         string             `json:"title"`
+	Description   pgtype.Text        `json:"description"`
+	Position      float64            `json:"position"`
+	DueDate       pgtype.Timestamptz `json:"due_date"`
+	Priority      pgtype.Text        `json:"priority"`
+	IsArchived    bool               `json:"is_archived"`
+	ArchivedAt    pgtype.Timestamptz `json:"archived_at"`
+	ArchivedByID  pgtype.Int8        `json:"archived_by_id"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	CompletedByID pgtype.Int8        `json:"completed_by_id"`
+	ColumnID      int64              `json:"column_id"`
+	BorderColor   pgtype.Text        `json:"border_color"`
+	ID            int64              `json:"id"`
 }
 
 func (q *Queries) UpdateCard(ctx context.Context, arg UpdateCardParams) (KanbanCard, error) {

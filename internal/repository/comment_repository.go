@@ -5,7 +5,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -20,14 +19,12 @@ type CommentRepositoryInterface interface {
 }
 
 type CommentRepository struct {
-	Db    *pgxpool.Pool
-	clock helper.Clock
+	Db *pgxpool.Pool
 }
 
-func NewCommentRepository(db *pgxpool.Pool, clk helper.Clock) *CommentRepository {
+func NewCommentRepository(db *pgxpool.Pool) *CommentRepository {
 	return &CommentRepository{
-		Db:    db,
-		clock: clk,
+		Db: db,
 	}
 }
 
@@ -44,10 +41,10 @@ func (r *CommentRepository) GetComments(ctx context.Context, cardID int64) ([]mo
 			ID:        c.ID,
 			Body:      c.Body,
 			CardID:    c.CardID,
-			CreatedAt: r.clock.FromDB(c.CreatedAt.Time),
+			CreatedAt: c.CreatedAt.Time,
 		}
 		if c.UpdatedAt.Valid {
-			t := r.clock.FromDB(c.UpdatedAt.Time)
+			t := c.UpdatedAt.Time
 			comment.UpdatedAt = &t
 		}
 		comment.AuthorID = c.AuthorID
@@ -90,9 +87,9 @@ func (r *CommentRepository) CreateComment(ctx context.Context, cardID int64, c *
 	}
 
 	c.ID = res.ID
-	c.CreatedAt = r.clock.FromDB(res.CreatedAt.Time)
+	c.CreatedAt = res.CreatedAt.Time
 	if res.UpdatedAt.Valid {
-		t := r.clock.FromDB(res.UpdatedAt.Time)
+		t := res.UpdatedAt.Time
 		c.UpdatedAt = &t
 	}
 	return c, nil
@@ -109,10 +106,10 @@ func (r *CommentRepository) GetComment(ctx context.Context, id int64) (*model.Co
 		ID:        c.ID,
 		Body:      c.Body,
 		CardID:    c.CardID,
-		CreatedAt: r.clock.FromDB(c.CreatedAt.Time),
+		CreatedAt: c.CreatedAt.Time,
 	}
 	if c.UpdatedAt.Valid {
-		t := r.clock.FromDB(c.UpdatedAt.Time)
+		t := c.UpdatedAt.Time
 		comment.UpdatedAt = &t
 	}
 	comment.AuthorID = c.AuthorID
@@ -130,7 +127,7 @@ func (r *CommentRepository) UpdateComment(ctx context.Context, c *model.Comment)
 	}
 
 	if res.UpdatedAt.Valid {
-		t := r.clock.FromDB(res.UpdatedAt.Time)
+		t := res.UpdatedAt.Time
 		c.UpdatedAt = &t
 	}
 	return c, nil

@@ -6,7 +6,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -23,7 +22,6 @@ type CardRepositoryInterface interface {
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
 	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
-	ArchiveCard(ctx context.Context, id int64) error
 
 	// GetInvolvedUserIDsForNotifications returns distinct user IDs that are assignees on the card
 	// or assignees on any of its subtasks. Used to decide notification recipients.
@@ -31,14 +29,12 @@ type CardRepositoryInterface interface {
 }
 
 type CardRepository struct {
-	Db    *pgxpool.Pool
-	clock helper.Clock
+	Db *pgxpool.Pool
 }
 
-func NewCardRepository(db *pgxpool.Pool, clk helper.Clock) *CardRepository {
+func NewCardRepository(db *pgxpool.Pool) *CardRepository {
 	return &CardRepository{
-		Db:    db,
-		clock: clk,
+		Db: db,
 	}
 }
 
@@ -91,8 +87,8 @@ func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) (
 			Position:   c.Position,
 			IsArchived: c.IsArchived,
 			ColumnID:   c.ColumnID,
-			CreatedAt:  r.clock.FromDB(c.CreatedAt.Time),
-			UpdatedAt:  r.clock.FromDB(c.UpdatedAt.Time),
+			CreatedAt:  c.CreatedAt.Time,
+			UpdatedAt:  c.UpdatedAt.Time,
 		}
 		if c.Description.Valid {
 			card.Description = &c.Description.String
@@ -104,11 +100,11 @@ func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) (
 			card.BorderColor = &c.BorderColor.String
 		}
 		if c.DueDate.Valid {
-			t := r.clock.FromDB(c.DueDate.Time)
+			t := c.DueDate.Time
 			card.DueDate = &t
 		}
 		if c.ArchivedAt.Valid {
-			t := r.clock.FromDB(c.ArchivedAt.Time)
+			t := c.ArchivedAt.Time
 			card.ArchivedAt = &t
 		}
 		if c.ArchivedByID.Valid {
@@ -116,7 +112,7 @@ func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) (
 			card.ArchivedByID = &v
 		}
 		if c.CompletedAt.Valid {
-			t := r.clock.FromDB(c.CompletedAt.Time)
+			t := c.CompletedAt.Time
 			card.CompletedAt = &t
 		}
 		if c.CompletedByID.Valid {
@@ -152,8 +148,8 @@ func (r *CardRepository) GetCardsByBoard(ctx context.Context, boardID int64) ([]
 			Position:   c.Position,
 			IsArchived: c.IsArchived,
 			ColumnID:   c.ColumnID,
-			CreatedAt:  r.clock.FromDB(c.CreatedAt.Time),
-			UpdatedAt:  r.clock.FromDB(c.UpdatedAt.Time),
+			CreatedAt:  c.CreatedAt.Time,
+			UpdatedAt:  c.UpdatedAt.Time,
 		}
 		if c.Description.Valid {
 			card.Description = &c.Description.String
@@ -165,11 +161,11 @@ func (r *CardRepository) GetCardsByBoard(ctx context.Context, boardID int64) ([]
 			card.BorderColor = &c.BorderColor.String
 		}
 		if c.DueDate.Valid {
-			t := r.clock.FromDB(c.DueDate.Time)
+			t := c.DueDate.Time
 			card.DueDate = &t
 		}
 		if c.ArchivedAt.Valid {
-			t := r.clock.FromDB(c.ArchivedAt.Time)
+			t := c.ArchivedAt.Time
 			card.ArchivedAt = &t
 		}
 		if c.ArchivedByID.Valid {
@@ -177,7 +173,7 @@ func (r *CardRepository) GetCardsByBoard(ctx context.Context, boardID int64) ([]
 			card.ArchivedByID = &v
 		}
 		if c.CompletedAt.Valid {
-			t := r.clock.FromDB(c.CompletedAt.Time)
+			t := c.CompletedAt.Time
 			card.CompletedAt = &t
 		}
 		if c.CompletedByID.Valid {
@@ -244,7 +240,7 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 		params.Description = pgtype.Text{String: *c.Description, Valid: true}
 	}
 	if c.DueDate != nil {
-		params.DueDate = pgtype.Timestamp{Time: *c.DueDate, Valid: true}
+		params.DueDate = pgtype.Timestamptz{Time: *c.DueDate, Valid: true}
 	}
 	if c.Priority != nil {
 		params.Priority = pgtype.Text{String: *c.Priority, Valid: true}
@@ -262,8 +258,8 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 	}
 
 	c.ID = res.ID
-	c.CreatedAt = r.clock.FromDB(res.CreatedAt.Time)
-	c.UpdatedAt = r.clock.FromDB(res.UpdatedAt.Time)
+	c.CreatedAt = res.CreatedAt.Time
+	c.UpdatedAt = res.UpdatedAt.Time
 	return c, nil
 }
 
@@ -280,8 +276,8 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 		Position:   c.Position,
 		IsArchived: c.IsArchived,
 		ColumnID:   c.ColumnID,
-		CreatedAt:  r.clock.FromDB(c.CreatedAt.Time),
-		UpdatedAt:  r.clock.FromDB(c.UpdatedAt.Time),
+		CreatedAt:  c.CreatedAt.Time,
+		UpdatedAt:  c.UpdatedAt.Time,
 	}
 	if c.Description.Valid {
 		card.Description = &c.Description.String
@@ -293,11 +289,11 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 		card.BorderColor = &c.BorderColor.String
 	}
 	if c.DueDate.Valid {
-		t := r.clock.FromDB(c.DueDate.Time)
+		t := c.DueDate.Time
 		card.DueDate = &t
 	}
 	if c.ArchivedAt.Valid {
-		t := r.clock.FromDB(c.ArchivedAt.Time)
+		t := c.ArchivedAt.Time
 		card.ArchivedAt = &t
 	}
 	if c.ArchivedByID.Valid {
@@ -305,7 +301,7 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 		card.ArchivedByID = &v
 	}
 	if c.CompletedAt.Valid {
-		t := r.clock.FromDB(c.CompletedAt.Time)
+		t := c.CompletedAt.Time
 		card.CompletedAt = &t
 	}
 	if c.CompletedByID.Valid {
@@ -347,7 +343,7 @@ func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.
 		params.Description = pgtype.Text{String: *c.Description, Valid: true}
 	}
 	if c.DueDate != nil {
-		params.DueDate = pgtype.Timestamp{Time: *c.DueDate, Valid: true}
+		params.DueDate = pgtype.Timestamptz{Time: *c.DueDate, Valid: true}
 	}
 	if c.Priority != nil {
 		params.Priority = pgtype.Text{String: *c.Priority, Valid: true}
@@ -356,13 +352,13 @@ func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.
 		params.BorderColor = pgtype.Text{String: *c.BorderColor, Valid: true}
 	}
 	if c.ArchivedAt != nil {
-		params.ArchivedAt = pgtype.Timestamp{Time: *c.ArchivedAt, Valid: true}
+		params.ArchivedAt = pgtype.Timestamptz{Time: *c.ArchivedAt, Valid: true}
 	}
 	if c.ArchivedByID != nil {
 		params.ArchivedByID = pgtype.Int8{Int64: *c.ArchivedByID, Valid: true}
 	}
 	if c.CompletedAt != nil {
-		params.CompletedAt = pgtype.Timestamp{Time: *c.CompletedAt, Valid: true}
+		params.CompletedAt = pgtype.Timestamptz{Time: *c.CompletedAt, Valid: true}
 	}
 	if c.CompletedByID != nil {
 		params.CompletedByID = pgtype.Int8{Int64: *c.CompletedByID, Valid: true}
@@ -373,7 +369,7 @@ func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.
 		return nil, NormalizeError(err)
 	}
 
-	c.UpdatedAt = r.clock.FromDB(res.UpdatedAt.Time)
+	c.UpdatedAt = res.UpdatedAt.Time
 	return c, nil
 }
 
@@ -443,26 +439,6 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 	}
 
 	return updatedCard, nil
-}
-
-func (r *CardRepository) ArchiveCard(ctx context.Context, id int64) error {
-	card, err := r.GetCard(ctx, id)
-	if err != nil {
-		return err
-	}
-
-	if card.IsArchived {
-		card.IsArchived = false
-		card.ArchivedAt = nil
-		card.ArchivedByID = nil
-	} else {
-		card.IsArchived = true
-		now := r.clock.Now()
-		card.ArchivedAt = &now
-	}
-
-	_, err = r.UpdateCard(ctx, card)
-	return err
 }
 
 // GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users for a card.

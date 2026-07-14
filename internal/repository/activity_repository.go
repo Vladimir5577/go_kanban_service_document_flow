@@ -6,7 +6,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -17,14 +16,12 @@ type ActivityRepositoryInterface interface {
 }
 
 type ActivityRepository struct {
-	Db    *pgxpool.Pool
-	clock helper.Clock
+	Db *pgxpool.Pool
 }
 
-func NewActivityRepository(db *pgxpool.Pool, clk helper.Clock) *ActivityRepository {
+func NewActivityRepository(db *pgxpool.Pool) *ActivityRepository {
 	return &ActivityRepository{
-		Db:    db,
-		clock: clk,
+		Db: db,
 	}
 }
 
@@ -41,7 +38,7 @@ func (r *ActivityRepository) GetActivities(ctx context.Context, cardID int64) ([
 			ID:        a.ID,
 			CardID:    a.CardID,
 			Type:      a.Type,
-			CreatedAt: r.clock.FromDB(a.CreatedAt.Time),
+			CreatedAt: a.CreatedAt.Time,
 		}
 		if a.UserID.Valid {
 			uid := a.UserID.Int64

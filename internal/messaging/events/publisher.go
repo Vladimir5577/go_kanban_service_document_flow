@@ -72,7 +72,7 @@ func (p *Publisher) Publish(ctx context.Context, routingKey string, payload any)
 		amqp.Publishing{
 			ContentType:  "application/json",
 			Body:         body,
-			Timestamp:    time.Now().UTC(),
+			Timestamp:    time.Now().UTC().Truncate(time.Second),
 			DeliveryMode: amqp.Persistent,
 		},
 	)

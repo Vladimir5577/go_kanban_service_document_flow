@@ -17,8 +17,8 @@ CREATE TABLE users (
     firstname   VARCHAR(50) NOT NULL,
     patronymic  VARCHAR(50),
     avatar_name VARCHAR(255),
-    deleted_at  TIMESTAMP(0),
-    synced_at   TIMESTAMP(0) NOT NULL DEFAULT NOW()
+    deleted_at  TIMESTAMPTZ(0),
+    synced_at   TIMESTAMPTZ(0) NOT NULL DEFAULT NOW()
 );
 
 -- Проекты канбана
@@ -28,9 +28,9 @@ CREATE TABLE kanban_project (
     description   TEXT,
     owner_id      BIGINT NOT NULL,
     created_by_id BIGINT,
-    created_at    TIMESTAMP(0) NOT NULL DEFAULT NOW(),
-    updated_at    TIMESTAMP(0) NOT NULL DEFAULT NOW(),
-    deleted_at    TIMESTAMP(0)
+    created_at    TIMESTAMPTZ(0) NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ(0) NOT NULL DEFAULT NOW(),
+    deleted_at    TIMESTAMPTZ(0)
 );
 CREATE INDEX idx_kanban_project_owner_id ON kanban_project (owner_id);
 CREATE INDEX idx_kanban_project_created_by_id ON kanban_project (created_by_id);
@@ -41,8 +41,8 @@ CREATE TABLE kanban_project_user_folder (
     name       VARCHAR(255) NOT NULL,
     user_id    BIGINT NOT NULL,
     position   DOUBLE PRECISION NOT NULL DEFAULT 0,
-    created_at TIMESTAMP(0) NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP(0) NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ(0) NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ(0) NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_kanban_project_user_folder_user_id ON kanban_project_user_folder (user_id);
 CREATE INDEX idx_folder_user_position ON kanban_project_user_folder (user_id, position);
@@ -69,9 +69,9 @@ CREATE TABLE kanban_board (
     position          DOUBLE PRECISION NOT NULL DEFAULT 0,
     kanban_project_id BIGINT NOT NULL REFERENCES kanban_project(id) ON DELETE RESTRICT,
     created_by_id     BIGINT NOT NULL,
-    created_at        TIMESTAMP(0) NOT NULL DEFAULT NOW(),
-    updated_at        TIMESTAMP(0) NOT NULL DEFAULT NOW(),
-    deleted_at        TIMESTAMP(0)
+    created_at        TIMESTAMPTZ(0) NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ(0) NOT NULL DEFAULT NOW(),
+    deleted_at        TIMESTAMPTZ(0)
 );
 CREATE INDEX idx_kanban_board_project_id ON kanban_board (kanban_project_id);
 CREATE INDEX idx_kanban_board_created_by_id ON kanban_board (created_by_id);
@@ -92,18 +92,18 @@ CREATE TABLE kanban_card (
     title           VARCHAR(500) NOT NULL,
     description     TEXT,
     position        DOUBLE PRECISION NOT NULL DEFAULT 0,
-    due_date        TIMESTAMP(0),
+    due_date        TIMESTAMPTZ(0),
     priority        VARCHAR(20),
     is_archived     BOOLEAN NOT NULL DEFAULT FALSE,
-    archived_at     TIMESTAMP(0),
+    archived_at     TIMESTAMPTZ(0),
     archived_by_id  BIGINT,
-    completed_at    TIMESTAMP(0),
+    completed_at    TIMESTAMPTZ(0),
     completed_by_id BIGINT,
     column_id       BIGINT NOT NULL REFERENCES kanban_column(id) ON DELETE RESTRICT,
     created_by_id   BIGINT,
     border_color    VARCHAR(20),
-    created_at      TIMESTAMP(0) NOT NULL DEFAULT NOW(),
-    updated_at      TIMESTAMP(0) NOT NULL DEFAULT NOW()
+    created_at      TIMESTAMPTZ(0) NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ(0) NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_kanban_card_column_id ON kanban_card (column_id);
 CREATE INDEX idx_kanban_card_created_by_id ON kanban_card (created_by_id);
@@ -156,8 +156,8 @@ CREATE TABLE kanban_card_comment (
     body       TEXT NOT NULL,
     card_id    BIGINT NOT NULL REFERENCES kanban_card(id) ON DELETE CASCADE,
     author_id  BIGINT NOT NULL,
-    created_at TIMESTAMP(0) NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP(0)
+    created_at TIMESTAMPTZ(0) NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ(0)
 );
 CREATE INDEX idx_kanban_card_comment_card_id ON kanban_card_comment (card_id);
 CREATE INDEX idx_kanban_card_comment_author_id ON kanban_card_comment (author_id);
@@ -170,7 +170,7 @@ CREATE TABLE kanban_card_activity (
     type       VARCHAR(40) NOT NULL,
     old_value  TEXT,
     new_value  TEXT,
-    created_at TIMESTAMP(0) NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ(0) NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_kanban_card_activity_card_id ON kanban_card_activity (card_id);
 CREATE INDEX idx_card_activity_card_created ON kanban_card_activity (card_id, created_at);
@@ -186,7 +186,7 @@ CREATE TABLE kanban_attachment (
     card_id      BIGINT NOT NULL REFERENCES kanban_card(id) ON DELETE RESTRICT,
     context      VARCHAR(20) NOT NULL DEFAULT 'info',
     author_id    BIGINT,
-    created_at   TIMESTAMP(0) NOT NULL DEFAULT NOW()
+    created_at   TIMESTAMPTZ(0) NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_kanban_attachment_card_id ON kanban_attachment (card_id);
 CREATE INDEX idx_kanban_attachment_author_id ON kanban_attachment (author_id);

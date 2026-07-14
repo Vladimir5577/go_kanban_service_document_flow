@@ -9,55 +9,55 @@ import (
 )
 
 type KanbanAttachment struct {
-	ID          int64            `json:"id"`
-	Filename    string           `json:"filename"`
-	StorageKey  string           `json:"storage_key"`
-	ContentType string           `json:"content_type"`
-	SizeBytes   int64            `json:"size_bytes"`
-	CardID      int64            `json:"card_id"`
-	Context     string           `json:"context"`
-	AuthorID    pgtype.Int8      `json:"author_id"`
-	CreatedAt   pgtype.Timestamp `json:"created_at"`
+	ID          int64              `json:"id"`
+	Filename    string             `json:"filename"`
+	StorageKey  string             `json:"storage_key"`
+	ContentType string             `json:"content_type"`
+	SizeBytes   int64              `json:"size_bytes"`
+	CardID      int64              `json:"card_id"`
+	Context     string             `json:"context"`
+	AuthorID    pgtype.Int8        `json:"author_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type KanbanBoard struct {
-	ID              int64            `json:"id"`
-	Title           string           `json:"title"`
-	Position        float64          `json:"position"`
-	KanbanProjectID int64            `json:"kanban_project_id"`
-	CreatedByID     int64            `json:"created_by_id"`
-	CreatedAt       pgtype.Timestamp `json:"created_at"`
-	UpdatedAt       pgtype.Timestamp `json:"updated_at"`
-	DeletedAt       pgtype.Timestamp `json:"deleted_at"`
+	ID              int64              `json:"id"`
+	Title           string             `json:"title"`
+	Position        float64            `json:"position"`
+	KanbanProjectID int64              `json:"kanban_project_id"`
+	CreatedByID     int64              `json:"created_by_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type KanbanCard struct {
-	ID            int64            `json:"id"`
-	Title         string           `json:"title"`
-	Description   pgtype.Text      `json:"description"`
-	Position      float64          `json:"position"`
-	DueDate       pgtype.Timestamp `json:"due_date"`
-	Priority      pgtype.Text      `json:"priority"`
-	IsArchived    bool             `json:"is_archived"`
-	ArchivedAt    pgtype.Timestamp `json:"archived_at"`
-	ArchivedByID  pgtype.Int8      `json:"archived_by_id"`
-	CompletedAt   pgtype.Timestamp `json:"completed_at"`
-	CompletedByID pgtype.Int8      `json:"completed_by_id"`
-	ColumnID      int64            `json:"column_id"`
-	CreatedByID   pgtype.Int8      `json:"created_by_id"`
-	BorderColor   pgtype.Text      `json:"border_color"`
-	CreatedAt     pgtype.Timestamp `json:"created_at"`
-	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+	ID            int64              `json:"id"`
+	Title         string             `json:"title"`
+	Description   pgtype.Text        `json:"description"`
+	Position      float64            `json:"position"`
+	DueDate       pgtype.Timestamptz `json:"due_date"`
+	Priority      pgtype.Text        `json:"priority"`
+	IsArchived    bool               `json:"is_archived"`
+	ArchivedAt    pgtype.Timestamptz `json:"archived_at"`
+	ArchivedByID  pgtype.Int8        `json:"archived_by_id"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	CompletedByID pgtype.Int8        `json:"completed_by_id"`
+	ColumnID      int64              `json:"column_id"`
+	CreatedByID   pgtype.Int8        `json:"created_by_id"`
+	BorderColor   pgtype.Text        `json:"border_color"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 type KanbanCardActivity struct {
-	ID        int64            `json:"id"`
-	CardID    int64            `json:"card_id"`
-	UserID    pgtype.Int8      `json:"user_id"`
-	Type      string           `json:"type"`
-	OldValue  pgtype.Text      `json:"old_value"`
-	NewValue  pgtype.Text      `json:"new_value"`
-	CreatedAt pgtype.Timestamp `json:"created_at"`
+	ID        int64              `json:"id"`
+	CardID    int64              `json:"card_id"`
+	UserID    pgtype.Int8        `json:"user_id"`
+	Type      string             `json:"type"`
+	OldValue  pgtype.Text        `json:"old_value"`
+	NewValue  pgtype.Text        `json:"new_value"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
 type KanbanCardAssignee struct {
@@ -66,12 +66,12 @@ type KanbanCardAssignee struct {
 }
 
 type KanbanCardComment struct {
-	ID        int64            `json:"id"`
-	Body      string           `json:"body"`
-	CardID    int64            `json:"card_id"`
-	AuthorID  int64            `json:"author_id"`
-	CreatedAt pgtype.Timestamp `json:"created_at"`
-	UpdatedAt pgtype.Timestamp `json:"updated_at"`
+	ID        int64              `json:"id"`
+	Body      string             `json:"body"`
+	CardID    int64              `json:"card_id"`
+	AuthorID  int64              `json:"author_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type KanbanCardLabel struct {
@@ -104,14 +104,14 @@ type KanbanLabel struct {
 }
 
 type KanbanProject struct {
-	ID          int64            `json:"id"`
-	Name        string           `json:"name"`
-	Description pgtype.Text      `json:"description"`
-	OwnerID     int64            `json:"owner_id"`
-	CreatedByID pgtype.Int8      `json:"created_by_id"`
-	CreatedAt   pgtype.Timestamp `json:"created_at"`
-	UpdatedAt   pgtype.Timestamp `json:"updated_at"`
-	DeletedAt   pgtype.Timestamp `json:"deleted_at"`
+	ID          int64              `json:"id"`
+	Name        string             `json:"name"`
+	Description pgtype.Text        `json:"description"`
+	OwnerID     int64              `json:"owner_id"`
+	CreatedByID pgtype.Int8        `json:"created_by_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt   pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type KanbanProjectUser struct {
@@ -124,21 +124,21 @@ type KanbanProjectUser struct {
 }
 
 type KanbanProjectUserFolder struct {
-	ID        int64            `json:"id"`
-	Name      string           `json:"name"`
-	UserID    int64            `json:"user_id"`
-	Position  float64          `json:"position"`
-	CreatedAt pgtype.Timestamp `json:"created_at"`
-	UpdatedAt pgtype.Timestamp `json:"updated_at"`
+	ID        int64              `json:"id"`
+	Name      string             `json:"name"`
+	UserID    int64              `json:"user_id"`
+	Position  float64            `json:"position"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type User struct {
-	ID         int64            `json:"id"`
-	Login      string           `json:"login"`
-	Lastname   string           `json:"lastname"`
-	Firstname  string           `json:"firstname"`
-	Patronymic pgtype.Text      `json:"patronymic"`
-	AvatarName pgtype.Text      `json:"avatar_name"`
-	DeletedAt  pgtype.Timestamp `json:"deleted_at"`
-	SyncedAt   pgtype.Timestamp `json:"synced_at"`
+	ID         int64              `json:"id"`
+	Login      string             `json:"login"`
+	Lastname   string             `json:"lastname"`
+	Firstname  string             `json:"firstname"`
+	Patronymic pgtype.Text        `json:"patronymic"`
+	AvatarName pgtype.Text        `json:"avatar_name"`
+	DeletedAt  pgtype.Timestamptz `json:"deleted_at"`
+	SyncedAt   pgtype.Timestamptz `json:"synced_at"`
 }
