@@ -128,7 +128,8 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	} else {
 		cards, _ := s.repo.GetCardsByColumn(ctx, req.ColumnID)
 		if len(cards) > 0 {
-			c.Position = cards[len(cards)-1].Position + 65536.0
+			// Prepend new cards at the top of the column (smallest position first)
+			c.Position = cards[0].Position - 65536.0
 		} else {
 			c.Position = 65536.0
 		}
@@ -151,11 +152,10 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 		projectID, _ := s.permSvc.GetProjectIDByColumn(ctx, req.ColumnID)
 		actorID := currentUserID(ctx)
 		if s.notificationSvc != nil {
-			boardTitle := "" // можно обогатить, если нужно точнее как в Symfony
-			s.notificationSvc.NotifyCardCreated(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), created.Title, boardTitle)
+			s.notificationSvc.NotifyCardCreated(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), created.Title)
 
 			for _, aid := range created.AssigneeIDs {
-				s.notificationSvc.NotifyTaskAssigned(ctx, projectID, created.ID, derefInt64(actorID), aid, created.Title, false)
+				s.notificationSvc.NotifyTaskAssigned(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), aid, created.Title, false)
 			}
 		}
 	}
@@ -556,7 +556,8 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 			card, _ := s.repo.GetCard(ctx, id)
 			actorID := currentUserID(ctx)
 			newAssignee := userIDs[0]
-			s.notificationSvc.NotifyTaskAssigned(ctx, projectID, id, derefInt64(actorID), newAssignee, card.Title, false)
+			// board may be resolved inside if not passed; here we don't have column loaded cheaply
+			s.notificationSvc.NotifyTaskAssigned(ctx, projectID, 0, id, derefInt64(actorID), newAssignee, card.Title, false)
 		}
 	}
 	return err
@@ -654,7 +655,8 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 	if columnChanged && s.notificationSvc != nil {
 		projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
 		actorID := currentUserID(ctx)
-		s.notificationSvc.NotifyTaskMoved(ctx, projectID, id, derefInt64(actorID), card.Title, sourceColumn.Title, targetColumn.Title)
+		// source and target are guaranteed to be on the same board
+		s.notificationSvc.NotifyTaskMoved(ctx, projectID, sourceColumn.BoardID, id, derefInt64(actorID), card.Title, sourceColumn.Title, targetColumn.Title)
 	}
 
 	return card, err

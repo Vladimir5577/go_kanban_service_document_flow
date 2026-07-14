@@ -106,6 +106,8 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		projectMemberRepo,
 		cardRepo,
 		userRepo,
+		boardRepo,
+		columnRepo,
 	)
 
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, activityRepo, realtimePublisher)

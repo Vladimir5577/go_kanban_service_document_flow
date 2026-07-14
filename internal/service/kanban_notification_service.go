@@ -21,6 +21,8 @@ type KanbanNotificationService struct {
 	projectMemberRepo repository.ProjectMemberRepositoryInterface
 	cardRepo          repository.CardRepositoryInterface
 	userRepo          repository.UserRepositoryInterface
+	boardRepo         repository.BoardRepositoryInterface
+	columnRepo        repository.ColumnRepositoryInterface
 }
 
 func NewKanbanNotificationService(
@@ -28,12 +30,16 @@ func NewKanbanNotificationService(
 	projectMemberRepo repository.ProjectMemberRepositoryInterface,
 	cardRepo repository.CardRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
+	boardRepo repository.BoardRepositoryInterface,
+	columnRepo repository.ColumnRepositoryInterface,
 ) *KanbanNotificationService {
 	return &KanbanNotificationService{
 		publisher:         publisher,
 		projectMemberRepo: projectMemberRepo,
 		cardRepo:          cardRepo,
 		userRepo:          userRepo,
+		boardRepo:         boardRepo,
+		columnRepo:        columnRepo,
 	}
 }
 
@@ -58,12 +64,68 @@ func (s *KanbanNotificationService) getAuthorName(ctx context.Context, actorID i
 	return name
 }
 
+// getBoardTitle returns the human-readable title of a board.
+// Mirrors the enrichment style of getAuthorName.
+func (s *KanbanNotificationService) getBoardTitle(ctx context.Context, boardID int64) string {
+	if boardID == 0 || s.boardRepo == nil {
+		return ""
+	}
+
+	board, err := s.boardRepo.GetBoard(ctx, boardID)
+	if err != nil || board == nil {
+		return ""
+	}
+	return board.Title
+}
+
+// getBoardTitleForCard resolves the board title for a card by walking
+// card -> column -> board. Used as a fallback when boardID is not directly available.
+func (s *KanbanNotificationService) getBoardTitleForCard(ctx context.Context, cardID int64) string {
+	if cardID == 0 || s.cardRepo == nil || s.columnRepo == nil {
+		return ""
+	}
+
+	card, err := s.cardRepo.GetCard(ctx, cardID)
+	if err != nil || card == nil {
+		return ""
+	}
+
+	column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
+	if err != nil || column == nil {
+		return ""
+	}
+
+	return s.getBoardTitle(ctx, column.BoardID)
+}
+
+// resolveBoardID returns the best available boardID.
+// Prefers the explicitly passed boardID, otherwise resolves it from the card.
+func (s *KanbanNotificationService) resolveBoardID(ctx context.Context, boardID, cardID int64) int64 {
+	if boardID != 0 {
+		return boardID
+	}
+	if cardID == 0 || s.cardRepo == nil || s.columnRepo == nil {
+		return 0
+	}
+
+	card, err := s.cardRepo.GetCard(ctx, cardID)
+	if err != nil || card == nil {
+		return 0
+	}
+
+	column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
+	if err != nil || column == nil {
+		return 0
+	}
+	return column.BoardID
+}
+
 // NotifyCardCreated notifies project admins about a new card (except the actor).
 func (s *KanbanNotificationService) NotifyCardCreated(
 	ctx context.Context,
 	projectID, boardID, cardID int64,
 	actorID int64,
-	title, boardTitle string,
+	title string,
 ) {
 	if s.publisher == nil {
 		return
@@ -80,6 +142,8 @@ func (s *KanbanNotificationService) NotifyCardCreated(
 	if len(recipients) == 0 {
 		return
 	}
+
+	boardTitle := s.getBoardTitle(ctx, boardID)
 
 	link := fmt.Sprintf("/projects/%d?board=%d&task=%d", projectID, boardID, cardID)
 	evt := events.KanbanNotificationEvent{
@@ -102,7 +166,7 @@ func (s *KanbanNotificationService) NotifyCardCreated(
 // NotifyTaskAssigned notifies a user that a task (or subtask) was assigned to them.
 func (s *KanbanNotificationService) NotifyTaskAssigned(
 	ctx context.Context,
-	projectID, cardID int64,
+	projectID, boardID, cardID int64,
 	actorID, assigneeID int64,
 	title string,
 	isSubtask bool,
@@ -111,17 +175,22 @@ func (s *KanbanNotificationService) NotifyTaskAssigned(
 		return
 	}
 
+	resolvedBoardID := s.resolveBoardID(ctx, boardID, cardID)
+	boardTitle := s.getBoardTitle(ctx, resolvedBoardID)
+
 	link := fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "task_assigned",
 		ActorID:    actorID,
 		ProjectID:  projectID,
+		BoardID:    int64Ptr(resolvedBoardID),
 		CardID:     &cardID,
 		Recipients: []int64{assigneeID},
 		Data: map[string]any{
-			"title":     title,
-			"isSubtask": isSubtask,
-			"link":      link,
+			"title":      title,
+			"boardTitle": boardTitle,
+			"isSubtask":  isSubtask,
+			"link":       link,
 		},
 	}
 
@@ -131,7 +200,7 @@ func (s *KanbanNotificationService) NotifyTaskAssigned(
 // NotifyTaskMoved notifies relevant users when a card is moved to another column.
 func (s *KanbanNotificationService) NotifyTaskMoved(
 	ctx context.Context,
-	projectID, cardID int64,
+	projectID, boardID, cardID int64,
 	actorID int64,
 	title, fromColumn, toColumn string,
 ) {
@@ -158,17 +227,21 @@ func (s *KanbanNotificationService) NotifyTaskMoved(
 	}
 
 	authorName := s.getAuthorName(ctx, actorID)
+	resolvedBoardID := s.resolveBoardID(ctx, boardID, cardID)
+	boardTitle := s.getBoardTitle(ctx, resolvedBoardID)
 
 	link := fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "task_moved",
 		ActorID:    actorID,
 		ProjectID:  projectID,
+		BoardID:    int64Ptr(resolvedBoardID),
 		CardID:     &cardID,
 		Recipients: recipients,
 		Data: map[string]any{
 			"taskTitle":       title,
 			"authorName":      authorName,
+			"boardTitle":      boardTitle,
 			"fromColumnTitle": fromColumn,
 			"toColumnTitle":   toColumn,
 			"link":            link,
@@ -206,8 +279,11 @@ func (s *KanbanNotificationService) NotifyCommentAdded(
 		}
 	}
 
-	link := fmt.Sprintf("/projects/%d?board=%d&task=%d", projectID, boardID, cardID)
-	if boardID == 0 {
+	effectiveBoardID := s.resolveBoardID(ctx, boardID, cardID)
+	boardTitle := s.getBoardTitle(ctx, effectiveBoardID)
+
+	link := fmt.Sprintf("/projects/%d?board=%d&task=%d", projectID, effectiveBoardID, cardID)
+	if effectiveBoardID == 0 {
 		link = fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
 	}
 
@@ -215,10 +291,12 @@ func (s *KanbanNotificationService) NotifyCommentAdded(
 		Type:       "comment_added",
 		ActorID:    actorID,
 		ProjectID:  projectID,
+		BoardID:    int64Ptr(effectiveBoardID),
 		CardID:     &cardID,
 		Recipients: recipients,
 		Data: map[string]any{
 			"taskTitle":  taskTitle,
+			"boardTitle": boardTitle,
 			"authorName": authorName,
 			"link":       link,
 		},
@@ -243,17 +321,22 @@ func (s *KanbanNotificationService) NotifySubtaskAssigned(
 		title = title + " (задача: " + card.Title + ")"
 	}
 
+	boardID := s.resolveBoardID(ctx, 0, cardID)
+	boardTitle := s.getBoardTitle(ctx, boardID)
+
 	link := fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "subtask_assigned",
 		ActorID:    actorID,
 		ProjectID:  projectID,
+		BoardID:    int64Ptr(boardID),
 		CardID:     &cardID,
 		Recipients: []int64{assigneeID},
 		Data: map[string]any{
-			"title":     title,
-			"isSubtask": true,
-			"link":      link,
+			"title":      title,
+			"boardTitle": boardTitle,
+			"isSubtask":  true,
+			"link":       link,
 		},
 	}
 

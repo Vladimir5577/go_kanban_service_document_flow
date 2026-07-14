@@ -131,8 +131,8 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 	// Comment notification (unified)
 	if s.notificationSvc != nil {
 		projectID, _ := s.permSvc.GetProjectIDByCard(ctx, cardID)
-		// Note: boardID would be better, for now we use a link with card param
 		actorID := currentUserID(ctx)
+		// boardID may be resolved inside the notification service via the card
 		s.notificationSvc.NotifyCommentAdded(ctx, projectID, 0, cardID, derefInt64(actorID), "")
 	}
 	return created, nil

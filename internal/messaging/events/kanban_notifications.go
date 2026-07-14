@@ -37,7 +37,11 @@ type KanbanNotificationEvent struct {
 
 	// Additional data needed to render the notification message.
 	// Contents depend on Type. Common fields:
-	//   title, boardTitle, authorName, fromColumn, toColumn, projectName, isSubtask, etc.
+	//   cardTitle, taskTitle, title, boardTitle, authorName,
+	//   fromColumnTitle, toColumnTitle, projectName, isSubtask, link, etc.
+	//
+	// boardTitle is enriched by KanbanNotificationService when board context
+	// is available (via explicit boardID or resolved from card -> column).
 	//
 	// authorName is enriched here (lastname + firstname or login) to match
 	// exactly how Symfony computes it before calling NotificationService:
