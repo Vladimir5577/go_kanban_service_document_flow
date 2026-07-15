@@ -8,6 +8,7 @@ type Subtask struct {
 	Position float64 `json:"position"`
 	CardID   int64   `json:"card_id"`
 	UserID   *int64  `json:"user_id,omitempty"`
+	UserName *string `json:"user_name,omitempty"`
 }
 
 // ChecklistCount содержит агрегатные данные по чеклисту карточки.

@@ -58,7 +58,14 @@ func (s *SubtaskService) GetSubtasks(ctx context.Context, cardID int64) ([]model
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
-	return s.repo.GetSubtasks(ctx, cardID)
+	subtasks, err := s.repo.GetSubtasks(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.populateSubtaskUserNames(ctx, subtasks); err != nil {
+		return nil, err
+	}
+	return subtasks, nil
 }
 
 func (s *SubtaskService) CreateSubtask(ctx context.Context, cardID int64, req dto.CreateSubtaskRequest) (*model.Subtask, error) {
@@ -152,6 +159,11 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 	}
 	updatedSt, err := s.repo.UpdateSubtask(ctx, subtaskID, st)
 	if err == nil && updatedSt != nil {
+		if err := s.populateSubtaskUserName(ctx, updatedSt); err != nil {
+			return nil, err
+		}
+	}
+	if err == nil && updatedSt != nil {
 		var newIsCompleted bool
 		if updatedSt.Status == "done" {
 			newIsCompleted = true
@@ -234,6 +246,62 @@ func (s *SubtaskService) DeleteSubtask(ctx context.Context, cardID int64, subtas
 		}
 	}
 	return err
+}
+
+func (s *SubtaskService) populateSubtaskUserNames(ctx context.Context, subtasks []model.Subtask) error {
+	userIDs := make([]int64, 0, len(subtasks))
+	for i := range subtasks {
+		if subtasks[i].UserID != nil {
+			userIDs = append(userIDs, *subtasks[i].UserID)
+		}
+	}
+	if len(userIDs) == 0 {
+		return nil
+	}
+
+	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
+	if err != nil {
+		return err
+	}
+	userMap := make(map[int64]*model.User, len(users))
+	for i := range users {
+		userMap[users[i].ID] = &users[i]
+	}
+	for i := range subtasks {
+		if subtasks[i].UserID == nil {
+			continue
+		}
+		if u, ok := userMap[*subtasks[i].UserID]; ok {
+			name := u.Firstname
+			if u.Lastname != "" {
+				name += " " + u.Lastname
+			}
+			subtasks[i].UserName = &name
+		}
+	}
+
+	return nil
+}
+
+func (s *SubtaskService) populateSubtaskUserName(ctx context.Context, subtask *model.Subtask) error {
+	if subtask == nil || subtask.UserID == nil {
+		return nil
+	}
+
+	users, err := s.userRepo.GetUsersByIDs(ctx, []int64{*subtask.UserID})
+	if err != nil {
+		return err
+	}
+	if len(users) == 0 {
+		return nil
+	}
+
+	name := users[0].Firstname
+	if users[0].Lastname != "" {
+		name += " " + users[0].Lastname
+	}
+	subtask.UserName = &name
+	return nil
 }
 
 func (s *SubtaskService) ensureSubtaskAssignee(ctx context.Context, projectID int64, userID *int64) error {

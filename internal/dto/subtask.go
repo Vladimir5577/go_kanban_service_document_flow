@@ -62,6 +62,7 @@ func MapSubtaskResponse(s *model.Subtask) *SubtaskResponse {
 		Position:    s.Position,
 		CardID:      s.CardID,
 		UserID:      s.UserID,
+		UserName:    s.UserName,
 	}
 }
 
