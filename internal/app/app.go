@@ -129,7 +129,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	projectFolderSvc := service.NewProjectFolderService(projectFolderRepo, permSvc)
 	projectFolderHandler := handler.NewProjectFolderHandler(projectFolderSvc)
 
-	projectSvc := service.NewProjectService(projectRepo, boardRepo, projectMemberRepo, userRepo, permSvc, cfg)
+	projectSvc := service.NewProjectService(projectRepo, boardRepo, projectMemberRepo, projectFolderRepo, userRepo, permSvc, cfg)
 	projectHandler := handler.NewProjectHandler(projectSvc)
 
 	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc, kanbanNotificationSvc)

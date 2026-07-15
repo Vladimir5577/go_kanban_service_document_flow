@@ -109,6 +109,34 @@ func (h *ProjectHandler) UpdateProject() http.HandlerFunc {
 	}
 }
 
+func (h *ProjectHandler) MoveProject() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		var req dto.MoveProjectRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			return
+		}
+
+		if err := validator.Validate.Struct(req); err != nil {
+			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			return
+		}
+
+		moved, err := h.service.MoveProject(r.Context(), id, req)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusOK, moved)
+	}
+}
+
 func (h *ProjectHandler) DeleteProject() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := helper.IDParam(r, "id")

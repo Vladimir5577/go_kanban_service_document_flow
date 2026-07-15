@@ -21,6 +21,7 @@ type ProjectServiceInterface interface {
 	CreateProject(ctx context.Context, req dto.CreateProjectRequest) (*model.Project, error)
 	GetProject(ctx context.Context, id int64) (*dto.ProjectResponse, error)
 	UpdateProject(ctx context.Context, id int64, req dto.UpdateProjectRequest) (*model.Project, error)
+	MoveProject(ctx context.Context, id int64, req dto.MoveProjectRequest) (*dto.MoveProjectResponse, error)
 	DeleteProject(ctx context.Context, id int64) error
 	GetNavProjectsForUser(ctx context.Context) ([]*dto.NavProjectResponse, error)
 }
@@ -29,6 +30,7 @@ type ProjectService struct {
 	repo       repository.ProjectRepositoryInterface
 	boardRepo  repository.BoardRepositoryInterface
 	memberRepo repository.ProjectMemberRepositoryInterface
+	folderRepo repository.ProjectFolderRepositoryInterface
 	userRepo   repository.UserRepositoryInterface
 	permSvc    *PermissionService
 	cfg        *config.Config
@@ -38,6 +40,7 @@ func NewProjectService(
 	repo repository.ProjectRepositoryInterface,
 	boardRepo repository.BoardRepositoryInterface,
 	memberRepo repository.ProjectMemberRepositoryInterface,
+	folderRepo repository.ProjectFolderRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
 	permSvc *PermissionService,
 	cfg *config.Config,
@@ -46,6 +49,7 @@ func NewProjectService(
 		repo:       repo,
 		boardRepo:  boardRepo,
 		memberRepo: memberRepo,
+		folderRepo: folderRepo,
 		userRepo:   userRepo,
 		permSvc:    permSvc,
 		cfg:        cfg,
@@ -214,6 +218,83 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.Up
 		p.Description = req.Description
 	}
 	return s.repo.UpdateProject(ctx, p)
+}
+
+func (s *ProjectService) MoveProject(ctx context.Context, id int64, req dto.MoveProjectRequest) (*dto.MoveProjectResponse, error) {
+	user, ok := middleware.GetUser(ctx)
+	if !ok {
+		return nil, apperr.ErrForbidden
+	}
+	if req.Position == nil {
+		return nil, apperr.New(apperr.CodeValidation, "position required")
+	}
+	if req.FolderID != nil && *req.FolderID <= 0 {
+		return nil, apperr.New(apperr.CodeValidation, "invalid folderId")
+	}
+
+	project, err := s.repo.GetProject(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.FolderID != nil {
+		folder, err := s.folderRepo.GetProjectFolder(ctx, *req.FolderID)
+		if err != nil {
+			return nil, err
+		}
+		if folder.UserID != user.ID {
+			return nil, apperr.ErrForbidden
+		}
+	}
+
+	member, err := s.memberRepo.GetProjectMember(ctx, id, user.ID)
+	if err != nil {
+		if !errors.Is(err, apperr.ErrNotFound) {
+			return nil, err
+		}
+		if project.OwnerID != user.ID {
+			return nil, apperr.ErrForbidden
+		}
+		if err := s.memberRepo.AddMember(ctx, id, model.ProjectUser{
+			KanbanProjectID: id,
+			UserID:          user.ID,
+			Role:            string(RoleAdmin),
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	member, err = s.memberRepo.UpdateProjectPlacement(ctx, id, user.ID, req.FolderID, *req.Position)
+	if err != nil {
+		return nil, err
+	}
+
+	rebalanced, err := s.memberRepo.RebalanceProjectPositions(ctx, user.ID, req.FolderID)
+	if err != nil {
+		return nil, err
+	}
+	var rebalancedProjects []*dto.NavProjectResponse
+	if rebalanced {
+		member, err = s.memberRepo.GetProjectMember(ctx, id, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		navProjects, err := s.repo.GetNavProjectsForUser(ctx, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		rebalancedProjects = make([]*dto.NavProjectResponse, 0, len(navProjects))
+		for _, p := range navProjects {
+			rebalancedProjects = append(rebalancedProjects, dto.MapNavProjectResponse(p, user.ID))
+		}
+	}
+
+	return &dto.MoveProjectResponse{
+		ID:                 project.ID,
+		FolderID:           member.FolderID,
+		Position:           member.Position,
+		RebalancedProjects: rebalancedProjects,
+	}, nil
 }
 
 func (s *ProjectService) DeleteProject(ctx context.Context, id int64) error {

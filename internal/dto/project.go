@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -17,6 +18,37 @@ type CreateProjectRequest struct {
 type UpdateProjectRequest struct {
 	Name        *string `json:"name,omitempty" validate:"omitempty,min=3,max=255"`
 	Description *string `json:"description,omitempty" validate:"omitempty,max=1000"`
+}
+
+// MoveProjectRequest DTO для персонального перемещения проекта в сайдбаре.
+type MoveProjectRequest struct {
+	FolderID *int64   `json:"folderId,omitempty"`
+	Position *float64 `json:"position" validate:"required"`
+}
+
+func (r *MoveProjectRequest) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		FolderID      *int64   `json:"folderId"`
+		FolderIDSnake *int64   `json:"folder_id"`
+		Position      *float64 `json:"position"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	r.FolderID = raw.FolderID
+	if r.FolderID == nil {
+		r.FolderID = raw.FolderIDSnake
+	}
+	r.Position = raw.Position
+	return nil
+}
+
+type MoveProjectResponse struct {
+	ID                 int64                 `json:"id"`
+	FolderID           *int64                `json:"folderId"`
+	Position           float64               `json:"position"`
+	RebalancedProjects []*NavProjectResponse `json:"rebalancedProjects"`
 }
 
 // MemberResponse DTO для участника проекта
