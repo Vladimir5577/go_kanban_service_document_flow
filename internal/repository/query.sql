@@ -404,3 +404,146 @@ WHERE card.id = $1;
 -- name: RemoveProjectMember :exec
 DELETE FROM kanban_project_user
 WHERE kanban_project_id = $1 AND user_id = $2;
+
+
+-- ==============================
+-- ASSIGNED TO ME (мои задачи / подзадачи)
+-- ==============================
+
+-- name: GetAssignedCardsOpen :many
+SELECT
+    p.id            AS project_id,
+    p.name          AS project_name,
+    b.id            AS board_id,
+    b.title         AS board_title,
+    b.position      AS board_position,
+    col.id          AS column_id,
+    col.title       AS column_title,
+    col.position    AS column_position,
+    c.id            AS card_id,
+    c.title         AS card_title,
+    c.priority      AS card_priority,
+    c.due_date      AS card_due_date,
+    c.border_color  AS card_border_color,
+    c.position      AS card_position
+FROM kanban_card_assignee ca
+JOIN kanban_card    c   ON c.id  = ca.card_id
+JOIN kanban_column  col ON col.id = c.column_id
+JOIN kanban_board   b   ON b.id  = col.board_id
+JOIN kanban_project p   ON p.id  = b.kanban_project_id
+WHERE ca.user_id = $1
+  AND c.completed_at IS NULL
+  AND c.is_archived = FALSE
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1
+      )
+  )
+ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id;
+
+-- name: GetAssignedCardsClosed :many
+SELECT
+    p.id            AS project_id,
+    p.name          AS project_name,
+    b.id            AS board_id,
+    b.title         AS board_title,
+    b.position      AS board_position,
+    col.id          AS column_id,
+    col.title       AS column_title,
+    col.position    AS column_position,
+    c.id            AS card_id,
+    c.title         AS card_title,
+    c.priority      AS card_priority,
+    c.due_date      AS card_due_date,
+    c.border_color  AS card_border_color,
+    c.position      AS card_position
+FROM kanban_card_assignee ca
+JOIN kanban_card    c   ON c.id  = ca.card_id
+JOIN kanban_column  col ON col.id = c.column_id
+JOIN kanban_board   b   ON b.id  = col.board_id
+JOIN kanban_project p   ON p.id  = b.kanban_project_id
+WHERE ca.user_id = $1
+  AND c.completed_at IS NOT NULL
+  AND c.is_archived = FALSE
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1
+      )
+  )
+ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id;
+
+-- name: GetAssignedSubtasksOpen :many
+SELECT
+    s.id       AS subtask_id,
+    s.title    AS subtask_title,
+    s.status   AS subtask_status,
+    s.position AS subtask_position,
+    c.id       AS card_id,
+    c.title    AS card_title,
+    col.id     AS column_id,
+    col.title  AS column_title,
+    b.id       AS board_id,
+    b.title    AS board_title,
+    p.id       AS project_id,
+    p.name     AS project_name
+FROM kanban_card_subtask s
+JOIN kanban_card    c   ON c.id  = s.card_id
+JOIN kanban_column  col ON col.id = c.column_id
+JOIN kanban_board   b   ON b.id  = col.board_id
+JOIN kanban_project p   ON p.id  = b.kanban_project_id
+WHERE s.user_id = $1::bigint
+  AND s.status <> 'done'
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1::bigint
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1::bigint
+      )
+  )
+ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id, s.position, s.id;
+
+-- name: GetAssignedSubtasksClosed :many
+SELECT
+    s.id       AS subtask_id,
+    s.title    AS subtask_title,
+    s.status   AS subtask_status,
+    s.position AS subtask_position,
+    c.id       AS card_id,
+    c.title    AS card_title,
+    col.id     AS column_id,
+    col.title  AS column_title,
+    b.id       AS board_id,
+    b.title    AS board_title,
+    p.id       AS project_id,
+    p.name     AS project_name
+FROM kanban_card_subtask s
+JOIN kanban_card    c   ON c.id  = s.card_id
+JOIN kanban_column  col ON col.id = c.column_id
+JOIN kanban_board   b   ON b.id  = col.board_id
+JOIN kanban_project p   ON p.id  = b.kanban_project_id
+WHERE s.user_id = $1::bigint
+  AND s.status = 'done'
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1::bigint
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1::bigint
+      )
+  )
+ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id, s.position, s.id;

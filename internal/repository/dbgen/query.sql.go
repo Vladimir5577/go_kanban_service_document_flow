@@ -579,6 +579,352 @@ func (q *Queries) GetAllProjects(ctx context.Context) ([]KanbanProject, error) {
 	return items, nil
 }
 
+const getAssignedCardsClosed = `-- name: GetAssignedCardsClosed :many
+SELECT
+    p.id            AS project_id,
+    p.name          AS project_name,
+    b.id            AS board_id,
+    b.title         AS board_title,
+    b.position      AS board_position,
+    col.id          AS column_id,
+    col.title       AS column_title,
+    col.position    AS column_position,
+    c.id            AS card_id,
+    c.title         AS card_title,
+    c.priority      AS card_priority,
+    c.due_date      AS card_due_date,
+    c.border_color  AS card_border_color,
+    c.position      AS card_position
+FROM kanban_card_assignee ca
+JOIN kanban_card    c   ON c.id  = ca.card_id
+JOIN kanban_column  col ON col.id = c.column_id
+JOIN kanban_board   b   ON b.id  = col.board_id
+JOIN kanban_project p   ON p.id  = b.kanban_project_id
+WHERE ca.user_id = $1
+  AND c.completed_at IS NOT NULL
+  AND c.is_archived = FALSE
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1
+      )
+  )
+ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id
+`
+
+type GetAssignedCardsClosedRow struct {
+	ProjectID       int64              `json:"project_id"`
+	ProjectName     string             `json:"project_name"`
+	BoardID         int64              `json:"board_id"`
+	BoardTitle      string             `json:"board_title"`
+	BoardPosition   float64            `json:"board_position"`
+	ColumnID        int64              `json:"column_id"`
+	ColumnTitle     string             `json:"column_title"`
+	ColumnPosition  float64            `json:"column_position"`
+	CardID          int64              `json:"card_id"`
+	CardTitle       string             `json:"card_title"`
+	CardPriority    pgtype.Text        `json:"card_priority"`
+	CardDueDate     pgtype.Timestamptz `json:"card_due_date"`
+	CardBorderColor pgtype.Text        `json:"card_border_color"`
+	CardPosition    float64            `json:"card_position"`
+}
+
+func (q *Queries) GetAssignedCardsClosed(ctx context.Context, userID int64) ([]GetAssignedCardsClosedRow, error) {
+	rows, err := q.db.Query(ctx, getAssignedCardsClosed, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAssignedCardsClosedRow{}
+	for rows.Next() {
+		var i GetAssignedCardsClosedRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.ProjectName,
+			&i.BoardID,
+			&i.BoardTitle,
+			&i.BoardPosition,
+			&i.ColumnID,
+			&i.ColumnTitle,
+			&i.ColumnPosition,
+			&i.CardID,
+			&i.CardTitle,
+			&i.CardPriority,
+			&i.CardDueDate,
+			&i.CardBorderColor,
+			&i.CardPosition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getAssignedCardsOpen = `-- name: GetAssignedCardsOpen :many
+
+SELECT
+    p.id            AS project_id,
+    p.name          AS project_name,
+    b.id            AS board_id,
+    b.title         AS board_title,
+    b.position      AS board_position,
+    col.id          AS column_id,
+    col.title       AS column_title,
+    col.position    AS column_position,
+    c.id            AS card_id,
+    c.title         AS card_title,
+    c.priority      AS card_priority,
+    c.due_date      AS card_due_date,
+    c.border_color  AS card_border_color,
+    c.position      AS card_position
+FROM kanban_card_assignee ca
+JOIN kanban_card    c   ON c.id  = ca.card_id
+JOIN kanban_column  col ON col.id = c.column_id
+JOIN kanban_board   b   ON b.id  = col.board_id
+JOIN kanban_project p   ON p.id  = b.kanban_project_id
+WHERE ca.user_id = $1
+  AND c.completed_at IS NULL
+  AND c.is_archived = FALSE
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1
+      )
+  )
+ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id
+`
+
+type GetAssignedCardsOpenRow struct {
+	ProjectID       int64              `json:"project_id"`
+	ProjectName     string             `json:"project_name"`
+	BoardID         int64              `json:"board_id"`
+	BoardTitle      string             `json:"board_title"`
+	BoardPosition   float64            `json:"board_position"`
+	ColumnID        int64              `json:"column_id"`
+	ColumnTitle     string             `json:"column_title"`
+	ColumnPosition  float64            `json:"column_position"`
+	CardID          int64              `json:"card_id"`
+	CardTitle       string             `json:"card_title"`
+	CardPriority    pgtype.Text        `json:"card_priority"`
+	CardDueDate     pgtype.Timestamptz `json:"card_due_date"`
+	CardBorderColor pgtype.Text        `json:"card_border_color"`
+	CardPosition    float64            `json:"card_position"`
+}
+
+// ==============================
+// ASSIGNED TO ME (мои задачи / подзадачи)
+// ==============================
+func (q *Queries) GetAssignedCardsOpen(ctx context.Context, userID int64) ([]GetAssignedCardsOpenRow, error) {
+	rows, err := q.db.Query(ctx, getAssignedCardsOpen, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAssignedCardsOpenRow{}
+	for rows.Next() {
+		var i GetAssignedCardsOpenRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.ProjectName,
+			&i.BoardID,
+			&i.BoardTitle,
+			&i.BoardPosition,
+			&i.ColumnID,
+			&i.ColumnTitle,
+			&i.ColumnPosition,
+			&i.CardID,
+			&i.CardTitle,
+			&i.CardPriority,
+			&i.CardDueDate,
+			&i.CardBorderColor,
+			&i.CardPosition,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getAssignedSubtasksClosed = `-- name: GetAssignedSubtasksClosed :many
+SELECT
+    s.id       AS subtask_id,
+    s.title    AS subtask_title,
+    s.status   AS subtask_status,
+    s.position AS subtask_position,
+    c.id       AS card_id,
+    c.title    AS card_title,
+    col.id     AS column_id,
+    col.title  AS column_title,
+    b.id       AS board_id,
+    b.title    AS board_title,
+    p.id       AS project_id,
+    p.name     AS project_name
+FROM kanban_card_subtask s
+JOIN kanban_card    c   ON c.id  = s.card_id
+JOIN kanban_column  col ON col.id = c.column_id
+JOIN kanban_board   b   ON b.id  = col.board_id
+JOIN kanban_project p   ON p.id  = b.kanban_project_id
+WHERE s.user_id = $1::bigint
+  AND s.status = 'done'
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1::bigint
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1::bigint
+      )
+  )
+ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id, s.position, s.id
+`
+
+type GetAssignedSubtasksClosedRow struct {
+	SubtaskID       int64   `json:"subtask_id"`
+	SubtaskTitle    string  `json:"subtask_title"`
+	SubtaskStatus   string  `json:"subtask_status"`
+	SubtaskPosition float64 `json:"subtask_position"`
+	CardID          int64   `json:"card_id"`
+	CardTitle       string  `json:"card_title"`
+	ColumnID        int64   `json:"column_id"`
+	ColumnTitle     string  `json:"column_title"`
+	BoardID         int64   `json:"board_id"`
+	BoardTitle      string  `json:"board_title"`
+	ProjectID       int64   `json:"project_id"`
+	ProjectName     string  `json:"project_name"`
+}
+
+func (q *Queries) GetAssignedSubtasksClosed(ctx context.Context, dollar_1 int64) ([]GetAssignedSubtasksClosedRow, error) {
+	rows, err := q.db.Query(ctx, getAssignedSubtasksClosed, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAssignedSubtasksClosedRow{}
+	for rows.Next() {
+		var i GetAssignedSubtasksClosedRow
+		if err := rows.Scan(
+			&i.SubtaskID,
+			&i.SubtaskTitle,
+			&i.SubtaskStatus,
+			&i.SubtaskPosition,
+			&i.CardID,
+			&i.CardTitle,
+			&i.ColumnID,
+			&i.ColumnTitle,
+			&i.BoardID,
+			&i.BoardTitle,
+			&i.ProjectID,
+			&i.ProjectName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getAssignedSubtasksOpen = `-- name: GetAssignedSubtasksOpen :many
+SELECT
+    s.id       AS subtask_id,
+    s.title    AS subtask_title,
+    s.status   AS subtask_status,
+    s.position AS subtask_position,
+    c.id       AS card_id,
+    c.title    AS card_title,
+    col.id     AS column_id,
+    col.title  AS column_title,
+    b.id       AS board_id,
+    b.title    AS board_title,
+    p.id       AS project_id,
+    p.name     AS project_name
+FROM kanban_card_subtask s
+JOIN kanban_card    c   ON c.id  = s.card_id
+JOIN kanban_column  col ON col.id = c.column_id
+JOIN kanban_board   b   ON b.id  = col.board_id
+JOIN kanban_project p   ON p.id  = b.kanban_project_id
+WHERE s.user_id = $1::bigint
+  AND s.status <> 'done'
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1::bigint
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1::bigint
+      )
+  )
+ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id, s.position, s.id
+`
+
+type GetAssignedSubtasksOpenRow struct {
+	SubtaskID       int64   `json:"subtask_id"`
+	SubtaskTitle    string  `json:"subtask_title"`
+	SubtaskStatus   string  `json:"subtask_status"`
+	SubtaskPosition float64 `json:"subtask_position"`
+	CardID          int64   `json:"card_id"`
+	CardTitle       string  `json:"card_title"`
+	ColumnID        int64   `json:"column_id"`
+	ColumnTitle     string  `json:"column_title"`
+	BoardID         int64   `json:"board_id"`
+	BoardTitle      string  `json:"board_title"`
+	ProjectID       int64   `json:"project_id"`
+	ProjectName     string  `json:"project_name"`
+}
+
+func (q *Queries) GetAssignedSubtasksOpen(ctx context.Context, dollar_1 int64) ([]GetAssignedSubtasksOpenRow, error) {
+	rows, err := q.db.Query(ctx, getAssignedSubtasksOpen, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetAssignedSubtasksOpenRow{}
+	for rows.Next() {
+		var i GetAssignedSubtasksOpenRow
+		if err := rows.Scan(
+			&i.SubtaskID,
+			&i.SubtaskTitle,
+			&i.SubtaskStatus,
+			&i.SubtaskPosition,
+			&i.CardID,
+			&i.CardTitle,
+			&i.ColumnID,
+			&i.ColumnTitle,
+			&i.BoardID,
+			&i.BoardTitle,
+			&i.ProjectID,
+			&i.ProjectName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getAttachment = `-- name: GetAttachment :one
 
 SELECT id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at FROM kanban_attachment

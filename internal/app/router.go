@@ -28,6 +28,7 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 		r.Use(authMw.Handler)
 
 		r.Get("/spa/api/kanban/me", h.User.LoginCheck())
+		r.Get("/spa/api/kanban/assigned-to-me", h.Card.AssignedToMe())
 
 		// PROJECTS (ProjectController)
 		r.Route("/spa/api/kanban/projects", func(r chi.Router) {

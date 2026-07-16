@@ -2,10 +2,12 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -15,6 +17,8 @@ type CardRepositoryInterface interface {
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error)
 	GetCardsByBoard(ctx context.Context, boardID int64) ([]model.Card, error)
+	GetAssignedCards(ctx context.Context, userID int64, status string) ([]AssignedCardRow, error)
+	GetAssignedSubtasks(ctx context.Context, userID int64, status string) ([]AssignedSubtaskRow, error)
 	CountActiveCardsByBoard(ctx context.Context, boardID int64) (int, error)
 	GetAssigneesByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
 	GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
@@ -32,10 +36,176 @@ type CardRepository struct {
 	Db *pgxpool.Pool
 }
 
+type AssignedCardRow struct {
+	ProjectID   int64
+	ProjectName string
+	BoardID     int64
+	BoardTitle  string
+	ColumnID    int64
+	ColumnTitle string
+	CardID      int64
+	CardTitle   string
+	Priority    *string
+	DueDate     *time.Time
+	BorderColor *string
+}
+
+type AssignedSubtaskRow struct {
+	SubtaskID     int64
+	SubtaskTitle  string
+	SubtaskStatus string
+	CardID        int64
+	CardTitle     string
+	ColumnID      int64
+	ColumnTitle   string
+	BoardID       int64
+	BoardTitle    string
+	ProjectID     int64
+	ProjectName   string
+}
+
 func NewCardRepository(db *pgxpool.Pool) *CardRepository {
 	return &CardRepository{
 		Db: db,
 	}
+}
+
+func (r *CardRepository) GetAssignedCards(ctx context.Context, userID int64, status string) ([]AssignedCardRow, error) {
+	queries := dbgen.New(r.Db)
+
+	switch status {
+	case "open":
+		rows, err := queries.GetAssignedCardsOpen(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]AssignedCardRow, 0, len(rows))
+		for _, row := range rows {
+			result = append(result, assignedCardRowFromOpen(row))
+		}
+		return result, nil
+	case "closed":
+		rows, err := queries.GetAssignedCardsClosed(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]AssignedCardRow, 0, len(rows))
+		for _, row := range rows {
+			result = append(result, assignedCardRowFromClosed(row))
+		}
+		return result, nil
+	default:
+		return nil, apperr.New(apperr.CodeValidation, "invalid status filter")
+	}
+}
+
+func (r *CardRepository) GetAssignedSubtasks(ctx context.Context, userID int64, status string) ([]AssignedSubtaskRow, error) {
+	queries := dbgen.New(r.Db)
+
+	switch status {
+	case "open":
+		rows, err := queries.GetAssignedSubtasksOpen(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]AssignedSubtaskRow, 0, len(rows))
+		for _, row := range rows {
+			result = append(result, assignedSubtaskRowFromOpen(row))
+		}
+		return result, nil
+	case "closed":
+		rows, err := queries.GetAssignedSubtasksClosed(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]AssignedSubtaskRow, 0, len(rows))
+		for _, row := range rows {
+			result = append(result, assignedSubtaskRowFromClosed(row))
+		}
+		return result, nil
+	default:
+		return nil, apperr.New(apperr.CodeValidation, "invalid status filter")
+	}
+}
+
+func assignedCardRowFromOpen(row dbgen.GetAssignedCardsOpenRow) AssignedCardRow {
+	return AssignedCardRow{
+		ProjectID:   row.ProjectID,
+		ProjectName: row.ProjectName,
+		BoardID:     row.BoardID,
+		BoardTitle:  row.BoardTitle,
+		ColumnID:    row.ColumnID,
+		ColumnTitle: row.ColumnTitle,
+		CardID:      row.CardID,
+		CardTitle:   row.CardTitle,
+		Priority:    textPtr(row.CardPriority),
+		DueDate:     timestamptzPtr(row.CardDueDate),
+		BorderColor: textPtr(row.CardBorderColor),
+	}
+}
+
+func assignedCardRowFromClosed(row dbgen.GetAssignedCardsClosedRow) AssignedCardRow {
+	return AssignedCardRow{
+		ProjectID:   row.ProjectID,
+		ProjectName: row.ProjectName,
+		BoardID:     row.BoardID,
+		BoardTitle:  row.BoardTitle,
+		ColumnID:    row.ColumnID,
+		ColumnTitle: row.ColumnTitle,
+		CardID:      row.CardID,
+		CardTitle:   row.CardTitle,
+		Priority:    textPtr(row.CardPriority),
+		DueDate:     timestamptzPtr(row.CardDueDate),
+		BorderColor: textPtr(row.CardBorderColor),
+	}
+}
+
+func assignedSubtaskRowFromOpen(row dbgen.GetAssignedSubtasksOpenRow) AssignedSubtaskRow {
+	return AssignedSubtaskRow{
+		SubtaskID:     row.SubtaskID,
+		SubtaskTitle:  row.SubtaskTitle,
+		SubtaskStatus: row.SubtaskStatus,
+		CardID:        row.CardID,
+		CardTitle:     row.CardTitle,
+		ColumnID:      row.ColumnID,
+		ColumnTitle:   row.ColumnTitle,
+		BoardID:       row.BoardID,
+		BoardTitle:    row.BoardTitle,
+		ProjectID:     row.ProjectID,
+		ProjectName:   row.ProjectName,
+	}
+}
+
+func assignedSubtaskRowFromClosed(row dbgen.GetAssignedSubtasksClosedRow) AssignedSubtaskRow {
+	return AssignedSubtaskRow{
+		SubtaskID:     row.SubtaskID,
+		SubtaskTitle:  row.SubtaskTitle,
+		SubtaskStatus: row.SubtaskStatus,
+		CardID:        row.CardID,
+		CardTitle:     row.CardTitle,
+		ColumnID:      row.ColumnID,
+		ColumnTitle:   row.ColumnTitle,
+		BoardID:       row.BoardID,
+		BoardTitle:    row.BoardTitle,
+		ProjectID:     row.ProjectID,
+		ProjectName:   row.ProjectName,
+	}
+}
+
+func textPtr(v pgtype.Text) *string {
+	if !v.Valid {
+		return nil
+	}
+	value := v.String
+	return &value
+}
+
+func timestamptzPtr(v pgtype.Timestamptz) *time.Time {
+	if !v.Valid {
+		return nil
+	}
+	value := v.Time
+	return &value
 }
 
 func (r *CardRepository) CountActiveCardsByBoard(ctx context.Context, boardID int64) (int, error) {

@@ -22,6 +22,7 @@ type CardServiceInterface interface {
 	CreateCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error)
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error)
+	GetAssignedToMe(ctx context.Context, status string) (*dto.AssignedToMeResponse, error)
 	UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error
@@ -351,6 +352,27 @@ func (s *CardService) GetCard(ctx context.Context, id int64) (*model.Card, error
 		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 	return card, nil
+}
+
+func (s *CardService) GetAssignedToMe(ctx context.Context, status string) (*dto.AssignedToMeResponse, error) {
+	userID := currentUserID(ctx)
+	if userID == nil {
+		return nil, apperr.ErrUnauthorized
+	}
+
+	cardRows, err := s.repo.GetAssignedCards(ctx, *userID, status)
+	if err != nil {
+		return nil, err
+	}
+	subtaskRows, err := s.repo.GetAssignedSubtasks(ctx, *userID, status)
+	if err != nil {
+		return nil, err
+	}
+
+	return &dto.AssignedToMeResponse{
+		AssignedCards:    buildAssignedTree(cardRows),
+		AssignedSubtasks: mapAssignedSubtasks(subtaskRows),
+	}, nil
 }
 
 func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error) {

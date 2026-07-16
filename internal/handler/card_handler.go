@@ -66,6 +66,26 @@ func (h *CardHandler) GetCard() http.HandlerFunc {
 	}
 }
 
+func (h *CardHandler) AssignedToMe() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		status := r.URL.Query().Get("status")
+		if status == "" {
+			status = "open"
+		}
+		if status != "open" && status != "closed" {
+			helper.WriteError(w, apperr.New(apperr.CodeValidation, "invalid status filter"))
+			return
+		}
+
+		res, err := h.service.GetAssignedToMe(r.Context(), status)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusOK, res)
+	}
+}
+
 func (h *CardHandler) UpdateCard() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := helper.IDParam(r, "id")
