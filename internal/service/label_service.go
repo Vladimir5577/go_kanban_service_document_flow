@@ -162,10 +162,10 @@ func (s *LabelService) publishLabelsPatch(ctx context.Context, cardID int64) {
 func (s *LabelService) resolveBoard(ctx context.Context, projectID int64, boardID int64) (*model.Board, error) {
 	board, err := s.boardRepo.GetBoard(ctx, boardID)
 	if err != nil {
-		return nil, mapNoRowsToNotFound(err)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeBoardNotFound)
 	}
 	if board.KanbanProjectID != projectID {
-		return nil, apperr.ErrNotFound
+		return nil, apperr.New(apperr.CodeBoardNotFound, "board not found")
 	}
 	return board, nil
 }
@@ -173,10 +173,10 @@ func (s *LabelService) resolveBoard(ctx context.Context, projectID int64, boardI
 func (s *LabelService) getLabelInBoard(ctx context.Context, boardID int64, labelID int64) (*model.Label, error) {
 	label, err := s.repo.GetLabel(ctx, labelID)
 	if err != nil {
-		return nil, mapNoRowsToNotFound(err)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeLabelNotFound)
 	}
 	if label.BoardID != boardID {
-		return nil, apperr.ErrNotFound
+		return nil, apperr.New(apperr.CodeLabelNotFound, "label not found")
 	}
 	return label, nil
 }
@@ -184,14 +184,14 @@ func (s *LabelService) getLabelInBoard(ctx context.Context, boardID int64, label
 func (s *LabelService) ensureCardInBoard(ctx context.Context, boardID int64, cardID int64) error {
 	card, err := s.cardRepo.GetCard(ctx, cardID)
 	if err != nil {
-		return mapNoRowsToNotFound(err)
+		return withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeCardNotFound)
 	}
 	column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
 	if err != nil {
-		return mapNoRowsToNotFound(err)
+		return withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	if column.BoardID != boardID {
-		return apperr.ErrNotFound
+		return apperr.New(apperr.CodeCardNotFound, "card not found")
 	}
 	return nil
 }
@@ -199,7 +199,7 @@ func (s *LabelService) ensureCardInBoard(ctx context.Context, boardID int64, car
 func normalizeLabelName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return "", apperr.New(apperr.CodeValidation, "label name required")
+		return "", apperr.New(apperr.CodeLabelNameRequired, "label name required")
 	}
 	return name, nil
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -63,7 +64,7 @@ func (s *ProjectService) GetAllProjects(ctx context.Context) ([]model.Project, e
 func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjectRequest) (*model.Project, error) {
 	user, ok := middleware.GetUser(ctx)
 	if !ok {
-		return nil, apperr.ErrForbidden
+		return nil, accessDenied()
 	}
 
 	p := &model.Project{
@@ -74,7 +75,7 @@ func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjec
 	}
 	created, err := s.repo.CreateProject(ctx, p)
 	if err != nil {
-		return nil, err
+		return nil, apperr.New(apperr.CodeProjectCreateFailed, "project create failed")
 	}
 
 	err = s.memberRepo.ReplaceMembers(ctx, created.ID, []model.ProjectUser{
@@ -85,12 +86,12 @@ func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjec
 		},
 	})
 	if err != nil {
-		return nil, err
+		return nil, apperr.New(apperr.CodeProjectCreateFailed, "project create failed")
 	}
 
 	board, err := s.createDefaultBoard(ctx, created.ID, user.ID)
 	if err != nil {
-		return nil, err
+		return nil, apperr.New(apperr.CodeProjectCreateFailed, "project create failed")
 	}
 	created.EntryBoardID = &board.ID
 	return created, nil
@@ -209,9 +210,15 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.Up
 
 	p, err := s.repo.GetProject(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeProjectNotFound)
+	}
+	if req.Name == nil && req.Description == nil {
+		return nil, apperr.New(apperr.CodeUpdateFieldsRequired, "update fields required")
 	}
 	if req.Name != nil {
+		if strings.TrimSpace(*req.Name) == "" {
+			return nil, apperr.New(apperr.CodeProjectNameRequired, "project name required")
+		}
 		p.Name = *req.Name
 	}
 	if req.Description != nil {
@@ -223,27 +230,27 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.Up
 func (s *ProjectService) MoveProject(ctx context.Context, id int64, req dto.MoveProjectRequest) (*dto.MoveProjectResponse, error) {
 	user, ok := middleware.GetUser(ctx)
 	if !ok {
-		return nil, apperr.ErrForbidden
+		return nil, accessDenied()
 	}
 	if req.Position == nil {
-		return nil, apperr.New(apperr.CodeValidation, "position required")
+		return nil, apperr.New(apperr.CodeInvalidJSON, "position required")
 	}
 	if req.FolderID != nil && *req.FolderID <= 0 {
-		return nil, apperr.New(apperr.CodeValidation, "invalid folderId")
+		return nil, apperr.New(apperr.CodeFolderNotFound, "folder not found")
 	}
 
 	project, err := s.repo.GetProject(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeProjectNotFound)
 	}
 
 	if req.FolderID != nil {
 		folder, err := s.folderRepo.GetProjectFolder(ctx, *req.FolderID)
 		if err != nil {
-			return nil, err
+			return nil, withNotFoundCode(err, apperr.CodeFolderNotFound)
 		}
 		if folder.UserID != user.ID {
-			return nil, apperr.ErrForbidden
+			return nil, accessDenied()
 		}
 	}
 
@@ -253,7 +260,7 @@ func (s *ProjectService) MoveProject(ctx context.Context, id int64, req dto.Move
 			return nil, err
 		}
 		if project.OwnerID != user.ID {
-			return nil, apperr.ErrForbidden
+			return nil, accessDenied()
 		}
 		if err := s.memberRepo.AddMember(ctx, id, model.ProjectUser{
 			KanbanProjectID: id,
@@ -305,7 +312,7 @@ func (s *ProjectService) DeleteProject(ctx context.Context, id int64) error {
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return apperr.New(apperr.CodeValidation, "Нельзя удалить проект, пока в нем есть доски или участники.")
+			return apperr.New(apperr.CodeValidation, "project has related records")
 		}
 		return err
 	}
@@ -329,7 +336,7 @@ func ensureOwnerMember(members []model.ProjectUser, ownerID int64, projectID int
 func (s *ProjectService) GetNavProjectsForUser(ctx context.Context) ([]*dto.NavProjectResponse, error) {
 	user, ok := middleware.GetUser(ctx)
 	if !ok {
-		return nil, apperr.ErrForbidden
+		return nil, accessDenied()
 	}
 
 	navProjects, err := s.repo.GetNavProjectsForUser(ctx, user.ID)

@@ -21,10 +21,10 @@ type ProjectMemberServiceInterface interface {
 }
 
 type ProjectMemberService struct {
-	repo                 repository.ProjectMemberRepositoryInterface
-	userRepo             repository.UserRepositoryInterface
-	permSvc              *PermissionService
-	notificationSvc      *KanbanNotificationService
+	repo            repository.ProjectMemberRepositoryInterface
+	userRepo        repository.UserRepositoryInterface
+	permSvc         *PermissionService
+	notificationSvc *KanbanNotificationService
 }
 
 func NewProjectMemberService(repo repository.ProjectMemberRepositoryInterface, userRepo repository.UserRepositoryInterface, permSvc *PermissionService, notificationSvc *KanbanNotificationService) *ProjectMemberService {
@@ -43,7 +43,7 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 
 	project, err := s.permSvc.projectRepo.GetProject(ctx, projectID)
 	if err != nil {
-		return err
+		return withNotFoundCode(err, apperr.CodeProjectNotFound)
 	}
 
 	// For notifications: remember who was already a member
@@ -63,7 +63,7 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 		if req.UserID != project.OwnerID {
 			parsedRole, err := parseProjectMemberRole(req.Role)
 			if err != nil {
-				return apperr.New(apperr.CodeValidation, fmt.Sprintf("invalid role for user %d", req.UserID))
+				return apperr.New(apperr.CodeInvalidRoleForUser, fmt.Sprintf("invalid role for user %d", req.UserID))
 			}
 			role = parsedRole
 		}
@@ -84,7 +84,7 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 
 	members := sortedProjectMembers(membersByUserID)
 	if len(members) == 0 {
-		return apperr.New(apperr.CodeValidation, "members list empty")
+		return apperr.New(apperr.CodeMembersListEmpty, "members list empty")
 	}
 	if err := s.requireExistingUsers(ctx, members); err != nil {
 		return err
@@ -114,10 +114,10 @@ func (s *ProjectMemberService) UpdateMemberRole(ctx context.Context, projectID i
 
 	project, err := s.permSvc.projectRepo.GetProject(ctx, projectID)
 	if err != nil {
-		return err
+		return withNotFoundCode(err, apperr.CodeProjectNotFound)
 	}
 	if userID == project.OwnerID {
-		return apperr.New(apperr.CodeValidation, "owner role immutable")
+		return apperr.New(apperr.CodeOwnerRoleImmutable, "owner role immutable")
 	}
 
 	roleValue := ""
@@ -145,15 +145,15 @@ func (s *ProjectMemberService) RemoveMember(ctx context.Context, projectID int64
 		return apperr.ErrUnauthorized
 	}
 	if userID == currentUser.ID {
-		return apperr.New(apperr.CodeValidation, "cannot remove self")
+		return apperr.New(apperr.CodeCannotRemoveSelf, "cannot remove self")
 	}
 
 	project, err := s.permSvc.projectRepo.GetProject(ctx, projectID)
 	if err != nil {
-		return err
+		return withNotFoundCode(err, apperr.CodeProjectNotFound)
 	}
 	if userID == project.OwnerID {
-		return apperr.New(apperr.CodeValidation, "cannot remove owner")
+		return apperr.New(apperr.CodeCannotRemoveOwner, "cannot remove owner")
 	}
 
 	if err := s.requireProjectMember(ctx, projectID, userID); err != nil {
@@ -178,7 +178,7 @@ func parseProjectMemberRole(value string) (Role, error) {
 	case RoleViewer, RoleEditor, RoleAdmin:
 		return role, nil
 	default:
-		return "", apperr.New(apperr.CodeValidation, "invalid role")
+		return "", apperr.New(apperr.CodeInvalidRole, "invalid role")
 	}
 }
 
@@ -215,7 +215,7 @@ func (s *ProjectMemberService) requireExistingUsers(ctx context.Context, members
 
 	for _, userID := range userIDs {
 		if _, ok := existing[userID]; !ok {
-			return apperr.New(apperr.CodeValidation, fmt.Sprintf("user not found: %d", userID))
+			return apperr.New(apperr.CodeUserNotFound, fmt.Sprintf("user not found: %d", userID))
 		}
 	}
 	return nil
@@ -224,7 +224,7 @@ func (s *ProjectMemberService) requireExistingUsers(ctx context.Context, members
 func (s *ProjectMemberService) requireProjectMember(ctx context.Context, projectID int64, userID int64) error {
 	if _, err := s.repo.GetProjectMember(ctx, projectID, userID); err != nil {
 		if errors.Is(err, apperr.ErrNotFound) {
-			return apperr.ErrNotFound
+			return apperr.New(apperr.CodeMemberNotFound, "member not found")
 		}
 		return err
 	}

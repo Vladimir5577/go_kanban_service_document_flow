@@ -96,7 +96,7 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	}
 	column, err := s.columnRepo.GetColumn(ctx, req.ColumnID)
 	if err != nil {
-		return nil, mapNoRowsToNotFound(err)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 
 	activeCardsCount, err := s.repo.CountActiveCardsByBoard(ctx, column.BoardID)
@@ -104,7 +104,7 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 		return nil, err
 	}
 	if activeCardsCount >= maxActiveCardsPerBoard {
-		return nil, apperr.New(apperr.CodeConflict, "maximum number of cards (300) on board reached")
+		return nil, apperr.New(apperr.CodeBoardCardLimitReached, "maximum number of cards (300) on board reached")
 	}
 
 	if len(req.AssigneeIDs) > 1 {
@@ -166,14 +166,14 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error) {
 	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
 	card, err := s.repo.GetCard(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 
 	resp := dto.MapCardResponse(card)
@@ -254,11 +254,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 
 	for i := range comments {
 		if u, ok := userMap[comments[i].AuthorID]; ok {
-			name := u.Firstname
-			if u.Lastname != "" {
-				name += " " + u.Lastname
-			}
-			comments[i].AuthorName = name
+			comments[i].AuthorName = dto.UserDisplayName(*u)
 		}
 	}
 	resp.Comments = dto.MapCommentsResponse(comments)
@@ -267,10 +263,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	for i, att := range resp.Attachments {
 		if att.AuthorID != nil {
 			if u, ok := userMap[*att.AuthorID]; ok {
-				name := u.Firstname
-				if u.Lastname != "" {
-					name += " " + u.Lastname
-				}
+				name := dto.UserDisplayName(*u)
 				resp.Attachments[i].AuthorName = &name
 			}
 		}
@@ -279,10 +272,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	for _, st := range resp.Subtasks {
 		if st.UserID != nil {
 			if u, ok := userMap[*st.UserID]; ok {
-				name := u.Firstname
-				if u.Lastname != "" {
-					name += " " + u.Lastname
-				}
+				name := dto.UserDisplayName(*u)
 				st.UserName = &name
 			}
 		}
@@ -314,10 +304,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 
 	for _, uid := range card.AssigneeIDs {
 		if u, ok := userMap[uid]; ok {
-			name := u.Firstname
-			if u.Lastname != "" {
-				name += " " + u.Lastname
-			}
+			name := dto.UserDisplayName(*u)
 			resp.Assignees = append(resp.Assignees, &dto.CardAssigneeResponse{
 				ID:        u.ID,
 				Name:      name,
@@ -359,7 +346,11 @@ func (s *CardService) GetCard(ctx context.Context, id int64) (*model.Card, error
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
-	return s.repo.GetCard(ctx, id)
+	card, err := s.repo.GetCard(ctx, id)
+	if err != nil {
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+	}
+	return card, nil
 }
 
 func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error) {
@@ -373,7 +364,7 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 
 	c, err := s.repo.GetCard(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 
 	var titleChanged, descChanged, dueChanged, priorityChanged, colorChanged bool
@@ -501,11 +492,11 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 	}
 	card, err := s.repo.GetCard(ctx, id)
 	if err != nil {
-		return err
+		return withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 	column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
 	if err != nil {
-		return mapNoRowsToNotFound(err)
+		return withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 
 	// Получаем все вложения для удаления файлов из MinIO
@@ -552,7 +543,7 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 	card, _ := s.repo.GetCard(ctx, id)
 	if card != nil && len(card.AssigneeIDs) > 0 {
 		if users, _ := s.userRepo.GetUsersByIDs(ctx, []int64{card.AssigneeIDs[0]}); len(users) > 0 {
-			n := users[0].Firstname + " " + users[0].Lastname
+			n := dto.UserDisplayName(users[0])
 			oldValue = &n
 		}
 	}
@@ -560,7 +551,7 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 	var newValue *string
 	if len(userIDs) > 0 {
 		if users, _ := s.userRepo.GetUsersByIDs(ctx, []int64{userIDs[0]}); len(users) > 0 {
-			n := users[0].Firstname + " " + users[0].Lastname
+			n := dto.UserDisplayName(users[0])
 			newValue = &n
 		}
 	}
@@ -608,7 +599,7 @@ func (s *CardService) validateProjectAssignees(ctx context.Context, projectID in
 		return err
 	}
 	if len(users) != len(userIDs) {
-		return apperr.ErrNotFound
+		return apperr.New(apperr.CodeUserNotFound, "user not found")
 	}
 
 	project, err := s.projectRepo.GetProject(ctx, projectID)
@@ -621,7 +612,7 @@ func (s *CardService) validateProjectAssignees(ctx context.Context, projectID in
 		}
 		if _, err := s.projectMemberRepo.GetProjectMember(ctx, projectID, userID); err != nil {
 			if errors.Is(err, apperr.ErrNotFound) {
-				return apperr.New(apperr.CodeValidation, "user is not project member")
+				return apperr.New(apperr.CodeUserNotProjectMember, "user is not project member")
 			}
 			return err
 		}
@@ -630,6 +621,10 @@ func (s *CardService) validateProjectAssignees(ctx context.Context, projectID in
 }
 
 func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
+	if columnID == 0 {
+		return nil, apperr.New(apperr.CodeColumnIDAndPositionRequired, "column_id and position required")
+	}
+
 	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
 	if err != nil {
 		return nil, err
@@ -640,18 +635,18 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 
 	cardBefore, err := s.repo.GetCard(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 	sourceColumn, err := s.columnRepo.GetColumn(ctx, cardBefore.ColumnID)
 	if err != nil {
-		return nil, mapNoRowsToNotFound(err)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	targetColumn, err := s.columnRepo.GetColumn(ctx, columnID)
 	if err != nil {
-		return nil, mapNoRowsToNotFound(err)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	if targetColumn.BoardID != sourceColumn.BoardID {
-		return nil, apperr.ErrNotFound
+		return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
 	}
 
 	columnChanged := cardBefore.ColumnID != columnID
@@ -708,7 +703,7 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 
 	card, err := s.repo.GetCard(ctx, id)
 	if err != nil {
-		return err
+		return withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 
 	activityType := "archived"
@@ -742,7 +737,7 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 
 	card, err := s.repo.GetCard(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 
 	activityType := "completed"

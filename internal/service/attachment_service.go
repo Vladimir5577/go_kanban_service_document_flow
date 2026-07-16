@@ -60,10 +60,10 @@ func (s *AttachmentService) GetAttachment(ctx context.Context, cardID, id int64,
 
 	att, err := s.repo.GetAttachment(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeAttachmentNotFound)
 	}
 	if att.CardID != cardID {
-		return nil, apperr.ErrNotFound
+		return nil, apperr.New(apperr.CodeAttachmentNotFound, "attachment not found")
 	}
 	return att, nil
 }
@@ -79,7 +79,7 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 
 	attachments, err := s.repo.GetAttachmentsByCard(ctx, cardID, req.Context)
 	if err == nil && len(attachments) >= 16 {
-		return nil, apperr.New(apperr.CodeValidation, "maximum number of attachments (16) per context reached")
+		return nil, apperr.New(apperr.CodeAttachmentLimitReached, "maximum number of attachments (16) per context reached")
 	}
 
 	var authorID *int64
@@ -115,7 +115,7 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 
 func (s *AttachmentService) DeleteAttachment(ctx context.Context, attachment *model.Attachment) error {
 	if attachment == nil {
-		return apperr.ErrNotFound
+		return apperr.New(apperr.CodeAttachmentNotFound, "attachment not found")
 	}
 	projectID, err := s.permSvc.GetProjectIDByCard(ctx, attachment.CardID)
 	if err != nil {

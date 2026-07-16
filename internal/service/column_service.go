@@ -107,7 +107,7 @@ func (s *ColumnService) UpdateColumn(ctx context.Context, projectID int64, board
 	hasHeaderColor := req.HeaderColor != nil
 	hasPosition := req.Position != nil
 	if !hasTitle && !hasHeaderColor && !hasPosition {
-		return nil, apperr.New(apperr.CodeValidation, "update fields required")
+		return nil, apperr.New(apperr.CodeUpdateFieldsRequired, "update fields required")
 	}
 
 	if hasTitle {
@@ -140,14 +140,14 @@ func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, board
 		return err
 	}
 	if hasCards {
-		return apperr.New(apperr.CodeConflict, "cannot delete column with active cards")
+		return apperr.New(apperr.CodeColumnHasCards, "cannot delete column with active cards")
 	}
 
 	err = s.repo.DeleteColumn(ctx, columnID)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return apperr.New(apperr.CodeValidation, "Нельзя удалить колонку, пока в ней есть задачи (включая архивные).")
+			return apperr.New(apperr.CodeColumnHasCards, "cannot delete column with cards")
 		}
 		return err
 	}
@@ -157,10 +157,10 @@ func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, board
 func (s *ColumnService) resolveBoard(ctx context.Context, projectID int64, boardID int64) (*model.Board, error) {
 	board, err := s.boardRepo.GetBoard(ctx, boardID)
 	if err != nil {
-		return nil, mapNoRowsToNotFound(err)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeBoardNotFound)
 	}
 	if board.KanbanProjectID != projectID {
-		return nil, apperr.ErrNotFound
+		return nil, apperr.New(apperr.CodeBoardNotFound, "board not found")
 	}
 	return board, nil
 }
@@ -168,10 +168,10 @@ func (s *ColumnService) resolveBoard(ctx context.Context, projectID int64, board
 func (s *ColumnService) getColumnInBoard(ctx context.Context, boardID int64, columnID int64) (*model.Column, error) {
 	column, err := s.repo.GetColumn(ctx, columnID)
 	if err != nil {
-		return nil, mapNoRowsToNotFound(err)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	if column.BoardID != boardID {
-		return nil, apperr.ErrNotFound
+		return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
 	}
 	return column, nil
 }
@@ -191,7 +191,7 @@ func (s *ColumnService) nextColumnPosition(ctx context.Context, boardID int64) (
 func normalizeColumnTitle(title string) (string, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
-		return "", apperr.New(apperr.CodeValidation, "column title required")
+		return "", apperr.New(apperr.CodeColumnTitleRequired, "column title required")
 	}
 	return title, nil
 }

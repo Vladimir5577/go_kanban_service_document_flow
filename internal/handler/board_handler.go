@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -32,11 +31,13 @@ func (h *BoardHandler) CreateBoard() http.HandlerFunc {
 
 		var req dto.CreateBoardRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
+				{Field: "Title", Tag: "required"}: apperr.CodeBoardTitleRequired,
+			}))
 			return
 		}
 
@@ -88,11 +89,11 @@ func (h *BoardHandler) UpdateBoard() http.HandlerFunc {
 
 		var req dto.UpdateBoardRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, nil))
 			return
 		}
 

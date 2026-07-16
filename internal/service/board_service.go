@@ -260,7 +260,7 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 		for _, cardResp := range allCards {
 			for _, uid := range cardResp.AssigneeIDs {
 				if u, ok := userMap[uid]; ok {
-					name := strings.TrimSpace(u.Lastname + " " + u.Firstname)
+					name := dto.UserDisplayName(u)
 					if name == "" {
 						name = strings.TrimSpace(u.Firstname)
 					}
@@ -329,7 +329,7 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 		title := strings.TrimSpace(*req.Title)
 		if title != "" {
 			if utf8.RuneCountInString(title) > maxBoardTitleLength {
-				return nil, apperr.New(apperr.CodeValidation, "board title too long")
+				return nil, apperr.New(apperr.CodeBoardTitleTooLong, "board title too long")
 			}
 			b.Title = title
 			changed = true
@@ -359,7 +359,7 @@ func (s *BoardService) DeleteBoard(ctx context.Context, projectID int64, boardID
 		return nil, err
 	}
 	if hasActiveCards {
-		return nil, apperr.New(apperr.CodeConflict, "cannot delete board with active cards")
+		return nil, apperr.New(apperr.CodeBoardHasCards, "cannot delete board with active cards")
 	}
 
 	nextBoardID, err := s.repo.NextBoardID(ctx, projectID, boardID)
@@ -369,7 +369,7 @@ func (s *BoardService) DeleteBoard(ctx context.Context, projectID int64, boardID
 	if err := s.repo.DeleteBoard(ctx, boardID); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return nil, apperr.New(apperr.CodeValidation, "Нельзя удалить доску, пока на ней есть задачи (включая архивные).")
+			return nil, apperr.New(apperr.CodeBoardHasCards, "cannot delete board with cards")
 		}
 		return nil, err
 	}
@@ -395,10 +395,10 @@ func (s *BoardService) GetBoardArchive(ctx context.Context, projectID int64, boa
 func (s *BoardService) resolveBoard(ctx context.Context, projectID int64, boardID int64) (*model.Board, error) {
 	board, err := s.repo.GetBoard(ctx, boardID)
 	if err != nil {
-		return nil, mapNoRowsToNotFound(err)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeBoardNotFound)
 	}
 	if board.KanbanProjectID != projectID {
-		return nil, apperr.ErrNotFound
+		return nil, apperr.New(apperr.CodeBoardNotFound, "board not found")
 	}
 	return board, nil
 }
@@ -418,10 +418,10 @@ func (s *BoardService) nextBoardPosition(ctx context.Context, projectID int64) (
 func normalizeBoardTitle(title string) (string, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
-		return "", apperr.New(apperr.CodeValidation, "board title required")
+		return "", apperr.New(apperr.CodeBoardTitleRequired, "board title required")
 	}
 	if utf8.RuneCountInString(title) > maxBoardTitleLength {
-		return "", apperr.New(apperr.CodeValidation, "board title too long")
+		return "", apperr.New(apperr.CodeBoardTitleTooLong, "board title too long")
 	}
 	return title, nil
 }

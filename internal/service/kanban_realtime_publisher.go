@@ -310,7 +310,7 @@ func (p *KanbanRealtimePublisher) publisherToken() (string, error) {
 }
 
 func formatRealtimeAssignee(cfg *config.Config, user model.User) map[string]any {
-	name := strings.TrimSpace(user.Lastname + " " + user.Firstname)
+	name := dto.UserDisplayName(user)
 	if name == "" {
 		name = strconv.FormatInt(user.ID, 10)
 	}

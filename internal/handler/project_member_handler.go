@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"go_kanban_service/internal/apperr"
@@ -30,7 +29,7 @@ func (h *ProjectMemberHandler) ReplaceMembers() http.HandlerFunc {
 
 		var raw json.RawMessage
 		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 
@@ -65,7 +64,7 @@ func decodeReplaceMembersRequest(raw json.RawMessage) ([]dto.AddProjectMemberReq
 		return reqs, nil
 	}
 
-	return nil, apperr.New(apperr.CodeValidation, "members array expected")
+	return nil, apperr.New(apperr.CodeMembersArrayExpected, "members array expected")
 }
 
 func (h *ProjectMemberHandler) UpdateMemberRole() http.HandlerFunc {
@@ -84,7 +83,7 @@ func (h *ProjectMemberHandler) UpdateMemberRole() http.HandlerFunc {
 
 		var req dto.UpdateProjectMemberRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 

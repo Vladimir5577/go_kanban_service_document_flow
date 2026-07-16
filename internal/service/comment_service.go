@@ -68,7 +68,7 @@ func (s *CommentService) GetComments(ctx context.Context, cardID int64) ([]model
 func (s *CommentService) GetComment(ctx context.Context, commentID int64) (*model.Comment, error) {
 	c, err := s.repo.GetComment(ctx, commentID)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeCommentNotFound)
 	}
 	projectID, err := s.permSvc.GetProjectIDByCard(ctx, c.CardID)
 	if err != nil {
@@ -102,7 +102,7 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 
 	comments, err := s.repo.GetComments(ctx, cardID)
 	if err == nil && len(comments) >= maxCommentsPerCard {
-		return nil, apperr.New(apperr.CodeConflict, "maximum number of comments (300) per card reached")
+		return nil, apperr.New(apperr.CodeCommentLimitReached, "maximum number of comments (300) per card reached")
 	}
 	if err != nil {
 		return nil, err
@@ -149,10 +149,10 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 
 	c, err := s.repo.GetComment(ctx, commentID)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeCommentNotFound)
 	}
 	if c.CardID != cardID {
-		return nil, apperr.ErrNotFound
+		return nil, apperr.New(apperr.CodeCommentNotFound, "comment not found")
 	}
 
 	user, ok := middleware.GetUser(ctx)
@@ -160,11 +160,11 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 		return nil, apperr.ErrUnauthorized
 	}
 	if c.AuthorID != user.ID {
-		return nil, apperr.ErrForbidden
+		return nil, apperr.New(apperr.CodeCommentAuthorOnly, "comment author only")
 	}
 
 	if req.Body == nil {
-		return nil, apperr.New(apperr.CodeValidation, "comment body required")
+		return nil, apperr.New(apperr.CodeCommentBodyRequired, "comment body required")
 	}
 	body, err := normalizeCommentBody(*req.Body)
 	if err != nil {
@@ -191,10 +191,10 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 
 	c, err := s.repo.GetComment(ctx, commentID)
 	if err != nil {
-		return err
+		return withNotFoundCode(err, apperr.CodeCommentNotFound)
 	}
 	if c.CardID != cardID {
-		return apperr.ErrNotFound
+		return apperr.New(apperr.CodeCommentNotFound, "comment not found")
 	}
 
 	user, ok := middleware.GetUser(ctx)
@@ -202,7 +202,7 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 		return apperr.ErrUnauthorized
 	}
 	if c.AuthorID != user.ID {
-		return apperr.ErrForbidden
+		return apperr.New(apperr.CodeCommentAuthorOnly, "comment author only")
 	}
 
 	if err := s.repo.DeleteComment(ctx, commentID); err != nil {
@@ -223,10 +223,10 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 func normalizeCommentBody(body string) (string, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return "", apperr.New(apperr.CodeValidation, "comment body required")
+		return "", apperr.New(apperr.CodeCommentBodyRequired, "comment body required")
 	}
 	if utf8.RuneCountInString(body) > maxCommentBodyLength {
-		return "", apperr.New(apperr.CodeValidation, "comment body too long")
+		return "", apperr.New(apperr.CodeCommentBodyTooLong, "comment body too long")
 	}
 	return body, nil
 }
@@ -266,5 +266,5 @@ func (s *CommentService) populateAuthorNames(ctx context.Context, comments []mod
 }
 
 func commentAuthorName(u *model.User) string {
-	return strings.TrimSpace(u.Lastname + " " + u.Firstname)
+	return dto.UserDisplayName(*u)
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/helper"
@@ -38,13 +39,13 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 
 		err = r.ParseMultipartForm(50 << 20) // 50 MB
 		if err != nil {
-			helper.WriteError(w, err)
+			helper.WriteError(w, apperr.New(apperr.CodeFileNotProvided, "file not provided"))
 			return
 		}
 
 		file, header, err := r.FormFile("file")
 		if err != nil {
-			helper.WriteError(w, err)
+			helper.WriteError(w, apperr.New(apperr.CodeFileNotProvided, "file not provided"))
 			return
 		}
 		defer file.Close()
@@ -104,7 +105,7 @@ func (h *AttachmentHandler) DownloadAttachment() http.HandlerFunc {
 
 		obj, err := h.minioSvc.GetObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
 		if err != nil {
-			helper.WriteError(w, err)
+			helper.WriteError(w, apperr.New(apperr.CodeFileNotFoundOnDisk, "file not found on disk"))
 			return
 		}
 		defer obj.Close()
@@ -136,7 +137,7 @@ func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
 
 		obj, err := h.minioSvc.GetObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
 		if err != nil {
-			helper.WriteError(w, err)
+			helper.WriteError(w, apperr.New(apperr.CodeFileNotFoundOnDisk, "file not found on disk"))
 			return
 		}
 		defer obj.Close()

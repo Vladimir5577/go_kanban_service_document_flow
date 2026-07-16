@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"go_kanban_service/internal/apperr"
@@ -59,11 +58,13 @@ func (h *LabelHandler) CreateLabel() http.HandlerFunc {
 
 		var req dto.CreateLabelRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
+				{Field: "Name", Tag: "required"}: apperr.CodeLabelNameRequired,
+			}))
 			return
 		}
 

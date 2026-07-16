@@ -31,46 +31,31 @@ func WriteError(w http.ResponseWriter, err error) {
 	var appErr *apperr.Error
 	if errors.As(err, &appErr) {
 		code = string(appErr.Code)
-		switch appErr.Code {
-		case apperr.CodeNotFound:
-			status = http.StatusNotFound
-			message = "not found"
-		case apperr.CodeForbidden:
-			status = http.StatusForbidden
-			message = "forbidden"
-		case apperr.CodeUnauthorized:
-			status = http.StatusUnauthorized
-			message = "unauthorized"
-		case apperr.CodeConflict:
-			status = http.StatusConflict
-			message = "conflict"
-		case apperr.CodeValidation:
-			status = http.StatusBadRequest
-			message = err.Error()
-		}
+		message = code
+		status = statusForErrorCode(appErr.Code)
 	} else {
 		// Fallback for wrapped basic errors (if they somehow exist)
 		switch {
 		case errors.Is(err, apperr.ErrNotFound):
 			status = http.StatusNotFound
-			message = "not found"
 			code = string(apperr.CodeNotFound)
+			message = code
 		case errors.Is(err, apperr.ErrForbidden):
 			status = http.StatusForbidden
-			message = "forbidden"
 			code = string(apperr.CodeForbidden)
+			message = code
 		case errors.Is(err, apperr.ErrUnauthorized):
 			status = http.StatusUnauthorized
-			message = "unauthorized"
 			code = string(apperr.CodeUnauthorized)
+			message = code
 		case errors.Is(err, apperr.ErrConflict):
 			status = http.StatusConflict
-			message = "conflict"
 			code = string(apperr.CodeConflict)
+			message = code
 		case errors.Is(err, apperr.ErrValidation):
 			status = http.StatusBadRequest
-			message = err.Error()
 			code = string(apperr.CodeValidation)
+			message = code
 		}
 	}
 
@@ -78,4 +63,71 @@ func WriteError(w http.ResponseWriter, err error) {
 		"error": message,
 		"code":  code,
 	})
+}
+
+func statusForErrorCode(code apperr.ErrorCode) int {
+	switch code {
+	case apperr.CodeNotFound,
+		apperr.CodeAttachmentNotFound,
+		apperr.CodeAttachmentNotPreviewable,
+		apperr.CodeBoardNotFound,
+		apperr.CodeCardNotFound,
+		apperr.CodeColumnNotFound,
+		apperr.CodeCommentNotFound,
+		apperr.CodeFileNotFoundOnDisk,
+		apperr.CodeFolderNotFound,
+		apperr.CodeLabelNotFound,
+		apperr.CodeMemberNotFound,
+		apperr.CodeProjectNotFound,
+		apperr.CodeSubtaskNotFound,
+		apperr.CodeUserNotFound:
+		return http.StatusNotFound
+	case apperr.CodeForbidden,
+		apperr.CodeAccessDenied,
+		apperr.CodeCommentAuthorOnly,
+		apperr.CodeInsufficientPermissions,
+		apperr.CodeProjectAccessDenied:
+		return http.StatusForbidden
+	case apperr.CodeUnauthorized:
+		return http.StatusUnauthorized
+	case apperr.CodeConflict,
+		apperr.CodeBoardCardLimitReached,
+		apperr.CodeBoardHasCards,
+		apperr.CodeColumnHasCards,
+		apperr.CodeCommentLimitReached:
+		return http.StatusConflict
+	case apperr.CodeValidation,
+		apperr.CodeAttachmentLimitReached,
+		apperr.CodeBoardHasNoProject,
+		apperr.CodeBoardTitleRequired,
+		apperr.CodeBoardTitleTooLong,
+		apperr.CodeCannotRemoveOwner,
+		apperr.CodeCannotRemoveSelf,
+		apperr.CodeColumnIDAndPositionRequired,
+		apperr.CodeColumnIDAndTitleRequired,
+		apperr.CodeColumnTitleRequired,
+		apperr.CodeCommentBodyRequired,
+		apperr.CodeCommentBodyTooLong,
+		apperr.CodeDescriptionInvalidType,
+		apperr.CodeFileNotProvided,
+		apperr.CodeFolderNameRequired,
+		apperr.CodeFolderNameTooLong,
+		apperr.CodeInvalidJSON,
+		apperr.CodeInvalidRole,
+		apperr.CodeInvalidRoleForUser,
+		apperr.CodeLabelNameRequired,
+		apperr.CodeMembersArrayExpected,
+		apperr.CodeMembersListEmpty,
+		apperr.CodeOwnerRoleImmutable,
+		apperr.CodeProjectNameRequired,
+		apperr.CodeProjectNameTooLong,
+		apperr.CodeSubtaskTitleRequired,
+		apperr.CodeUpdateFieldsRequired,
+		apperr.CodeUserNotProjectMember:
+		return http.StatusBadRequest
+	case apperr.CodeProjectCreateFailed:
+		return http.StatusInternalServerError
+	default:
+		return http.StatusInternalServerError
+	}
 }

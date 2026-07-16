@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"go_kanban_service/internal/apperr"
@@ -46,12 +45,15 @@ func (h *ProjectHandler) CreateProject() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req dto.CreateProjectRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
+				{Field: "Name", Tag: "required"}: apperr.CodeProjectNameRequired,
+				{Field: "Name", Tag: "max"}:      apperr.CodeProjectNameTooLong,
+			}))
 			return
 		}
 
@@ -91,12 +93,14 @@ func (h *ProjectHandler) UpdateProject() http.HandlerFunc {
 
 		var req dto.UpdateProjectRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
+				{Field: "Name", Tag: "max"}: apperr.CodeProjectNameTooLong,
+			}))
 			return
 		}
 
@@ -119,12 +123,12 @@ func (h *ProjectHandler) MoveProject() http.HandlerFunc {
 
 		var req dto.MoveProjectRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, nil))
 			return
 		}
 

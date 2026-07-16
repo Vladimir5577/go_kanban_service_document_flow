@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 
@@ -48,11 +47,13 @@ func (h *SubtaskHandler) CreateSubtask() http.HandlerFunc {
 
 		var req dto.CreateSubtaskRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
+				{Field: "Title", Tag: "required"}: apperr.CodeSubtaskTitleRequired,
+			}))
 			return
 		}
 
@@ -81,13 +82,13 @@ func (h *SubtaskHandler) UpdateSubtask() http.HandlerFunc {
 
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: cannot read body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 
 		var req dto.UpdateSubtaskRequest
 		if err := json.Unmarshal(bodyBytes, &req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 
@@ -100,7 +101,7 @@ func (h *SubtaskHandler) UpdateSubtask() http.HandlerFunc {
 			req.HasUserID = true
 		}
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, nil))
 			return
 		}
 

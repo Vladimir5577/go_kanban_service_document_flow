@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 
+	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/messaging/events"
 	"go_kanban_service/internal/repository"
 )
@@ -57,7 +57,7 @@ func (s *KanbanNotificationService) getAuthorName(ctx context.Context, actorID i
 	}
 
 	u := users[0]
-	name := strings.TrimSpace(u.Lastname + " " + u.Firstname)
+	name := dto.UserDisplayName(u)
 	if name == "" {
 		return u.Login
 	}

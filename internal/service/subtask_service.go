@@ -119,10 +119,10 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 
 	st, err := s.repo.GetSubtask(ctx, subtaskID)
 	if err != nil {
-		return nil, err
+		return nil, withNotFoundCode(err, apperr.CodeSubtaskNotFound)
 	}
 	if st.CardID != cardID {
-		return nil, apperr.ErrNotFound
+		return nil, apperr.New(apperr.CodeSubtaskNotFound, "subtask not found")
 	}
 
 	var oldIsCompleted bool
@@ -226,10 +226,10 @@ func (s *SubtaskService) DeleteSubtask(ctx context.Context, cardID int64, subtas
 
 	st, err := s.repo.GetSubtask(ctx, subtaskID)
 	if err != nil {
-		return err
+		return withNotFoundCode(err, apperr.CodeSubtaskNotFound)
 	}
 	if st.CardID != cardID {
-		return apperr.ErrNotFound
+		return apperr.New(apperr.CodeSubtaskNotFound, "subtask not found")
 	}
 
 	err = s.repo.DeleteSubtask(ctx, subtaskID)
@@ -272,10 +272,7 @@ func (s *SubtaskService) populateSubtaskUserNames(ctx context.Context, subtasks 
 			continue
 		}
 		if u, ok := userMap[*subtasks[i].UserID]; ok {
-			name := u.Firstname
-			if u.Lastname != "" {
-				name += " " + u.Lastname
-			}
+			name := dto.UserDisplayName(*u)
 			subtasks[i].UserName = &name
 		}
 	}
@@ -296,10 +293,7 @@ func (s *SubtaskService) populateSubtaskUserName(ctx context.Context, subtask *m
 		return nil
 	}
 
-	name := users[0].Firstname
-	if users[0].Lastname != "" {
-		name += " " + users[0].Lastname
-	}
+	name := dto.UserDisplayName(users[0])
 	subtask.UserName = &name
 	return nil
 }
@@ -314,7 +308,7 @@ func (s *SubtaskService) ensureSubtaskAssignee(ctx context.Context, projectID in
 		return err
 	}
 	if len(users) == 0 {
-		return apperr.ErrNotFound
+		return apperr.New(apperr.CodeUserNotFound, "user not found")
 	}
 
 	project, err := s.projectRepo.GetProject(ctx, projectID)
@@ -346,13 +340,7 @@ func (s *SubtaskService) logActivity(ctx context.Context, cardID int64, action s
 func (s *SubtaskService) subtaskAssigneeActivityValue(ctx context.Context, userID int64, subtaskTitle string) string {
 	name := ""
 	if users, err := s.userRepo.GetUsersByIDs(ctx, []int64{userID}); err == nil && len(users) > 0 {
-		name = users[0].Firstname
-		if users[0].Lastname != "" {
-			if name != "" {
-				name += " "
-			}
-			name += users[0].Lastname
-		}
+		name = dto.UserDisplayName(users[0])
 	}
 	if name == "" {
 		name = "Пользователь"

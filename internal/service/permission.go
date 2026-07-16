@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"fmt"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/middleware"
@@ -50,7 +49,7 @@ func (s *PermissionService) GetMemberRole(ctx context.Context, projectID int64) 
 	// 1. Владелец проекта всегда ADMIN
 	project, err := s.projectRepo.GetProject(ctx, projectID)
 	if err != nil {
-		return "", err
+		return "", withNotFoundCode(err, apperr.CodeProjectNotFound)
 	}
 	if project.OwnerID == user.ID {
 		return RoleAdmin, nil
@@ -60,7 +59,7 @@ func (s *PermissionService) GetMemberRole(ctx context.Context, projectID int64) 
 	member, err := s.memberRepo.GetProjectMember(ctx, projectID, user.ID)
 	if err != nil {
 		// Если не найден в БД - значит доступа нет
-		return "", apperr.ErrForbidden
+		return "", accessDenied()
 	}
 
 	return Role(member.Role), nil
@@ -75,16 +74,16 @@ func (s *PermissionService) RequireRole(ctx context.Context, projectID int64, mi
 
 	requiredLevel, ok := roleLevels[minRole]
 	if !ok {
-		return apperr.ErrForbidden
+		return accessDenied()
 	}
 
 	userLevel, ok := roleLevels[userRole]
 	if !ok {
-		return apperr.ErrForbidden
+		return accessDenied()
 	}
 
 	if userLevel < requiredLevel {
-		return apperr.ErrForbidden
+		return accessDenied()
 	}
 
 	return nil
@@ -94,7 +93,7 @@ func (s *PermissionService) GetProjectIDByBoard(ctx context.Context, boardID int
 	queries := dbgen.New(s.db)
 	b, err := queries.GetBoard(ctx, boardID)
 	if err != nil {
-		return 0, repository.NormalizeError(err)
+		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeBoardNotFound)
 	}
 	return b.KanbanProjectID, nil
 }
@@ -103,7 +102,7 @@ func (s *PermissionService) GetProjectIDByColumn(ctx context.Context, columnID i
 	queries := dbgen.New(s.db)
 	projectID, err := queries.GetProjectIDByColumn(ctx, columnID)
 	if err != nil {
-		return 0, repository.NormalizeError(err)
+		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeColumnNotFound)
 	}
 	return projectID, nil
 }
@@ -112,7 +111,7 @@ func (s *PermissionService) GetProjectIDByCard(ctx context.Context, cardID int64
 	queries := dbgen.New(s.db)
 	projectID, err := queries.GetProjectIDByCard(ctx, cardID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get project_id by card: %w", repository.NormalizeError(err))
+		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeCardNotFound)
 	}
 	return projectID, nil
 }
@@ -121,7 +120,7 @@ func (s *PermissionService) GetProjectIDBySubtask(ctx context.Context, subtaskID
 	queries := dbgen.New(s.db)
 	projectID, err := queries.GetProjectIDBySubtask(ctx, subtaskID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get project_id by subtask: %w", repository.NormalizeError(err))
+		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeSubtaskNotFound)
 	}
 	return projectID, nil
 }
@@ -130,7 +129,7 @@ func (s *PermissionService) GetProjectIDByLabel(ctx context.Context, labelID int
 	queries := dbgen.New(s.db)
 	projectID, err := queries.GetProjectIDByLabel(ctx, labelID)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get project_id by label: %w", repository.NormalizeError(err))
+		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeLabelNotFound)
 	}
 	return projectID, nil
 }

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"go_kanban_service/internal/apperr"
@@ -24,11 +23,14 @@ func (h *CardHandler) CreateCard() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req dto.CreateCardRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
+				{Field: "Title", Tag: "required"}:    apperr.CodeColumnIDAndTitleRequired,
+				{Field: "ColumnID", Tag: "required"}: apperr.CodeColumnIDAndTitleRequired,
+			}))
 			return
 		}
 
@@ -74,11 +76,11 @@ func (h *CardHandler) UpdateCard() http.HandlerFunc {
 
 		var req dto.UpdateCardRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: validation error: %v", apperr.ErrValidation, err))
+			helper.WriteError(w, validationError(err, nil))
 			return
 		}
 
@@ -124,7 +126,7 @@ func (h *CardHandler) UpdateAssignees() http.HandlerFunc {
 			UserIDs []int64 `json:"user_ids"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 
@@ -158,7 +160,7 @@ func (h *CardHandler) MoveCard() http.HandlerFunc {
 			Position float64 `json:"position"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			helper.WriteError(w, fmt.Errorf("%w: malformed JSON body", apperr.ErrValidation))
+			helper.WriteError(w, invalidJSONError())
 			return
 		}
 

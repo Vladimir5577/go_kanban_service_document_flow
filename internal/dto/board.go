@@ -3,7 +3,6 @@ package dto
 import (
 	"encoding/json"
 	"strconv"
-	"strings"
 	"time"
 
 	"go_kanban_service/internal/config"
@@ -186,7 +185,7 @@ func mapArchivedByUser(cfg *config.Config, user *model.User) *CardAssigneeRespon
 		return nil
 	}
 
-	name := strings.TrimSpace(user.Lastname + " " + user.Firstname)
+	name := UserDisplayName(*user)
 	if name == "" {
 		name = strconv.FormatInt(user.ID, 10)
 	}
