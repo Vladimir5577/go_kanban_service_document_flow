@@ -15,9 +15,9 @@ func TestUserDisplayName(t *testing.T) {
 		want string
 	}{
 		{
-			name: "lastname firstname patronymic",
+			name: "ignores patronymic",
 			user: model.User{Lastname: "Иванов", Firstname: "Иван", Patronymic: &patronymic},
-			want: "Иванов Иван Петрович",
+			want: "Иванов Иван",
 		},
 		{
 			name: "without patronymic",
@@ -27,7 +27,7 @@ func TestUserDisplayName(t *testing.T) {
 		{
 			name: "skips blank parts",
 			user: model.User{Firstname: "Иван", Patronymic: &patronymic},
-			want: "Иван Петрович",
+			want: "Иван",
 		},
 	}
 

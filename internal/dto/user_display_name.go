@@ -11,9 +11,6 @@ func UserDisplayName(user model.User) string {
 		strings.TrimSpace(user.Lastname),
 		strings.TrimSpace(user.Firstname),
 	}
-	if user.Patronymic != nil {
-		parts = append(parts, strings.TrimSpace(*user.Patronymic))
-	}
 
 	return strings.Join(compactStrings(parts), " ")
 }
