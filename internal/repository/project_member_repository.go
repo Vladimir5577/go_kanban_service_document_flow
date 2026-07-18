@@ -77,7 +77,6 @@ func (r *ProjectMemberRepository) AddMember(ctx context.Context, projectID int64
 		KanbanProjectID: projectID,
 		UserID:          member.UserID,
 		Role:            member.Role,
-		Position:        member.Position,
 	}
 	if member.FolderID != nil {
 		params.FolderID = pgtype.Int8{Int64: *member.FolderID, Valid: true}
@@ -87,7 +86,14 @@ func (r *ProjectMemberRepository) AddMember(ctx context.Context, projectID int64
 
 func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID int64, members []model.ProjectUser) error {
 	return ExecTx(ctx, r.Db, func(q *dbgen.Queries) error {
-		if err := q.ReplaceProjectMembers(ctx, projectID); err != nil {
+		keepUserIDs := make([]int64, 0, len(members))
+		for _, m := range members {
+			keepUserIDs = append(keepUserIDs, m.UserID)
+		}
+		if err := q.DeleteProjectMembersExcept(ctx, dbgen.DeleteProjectMembersExceptParams{
+			KanbanProjectID: projectID,
+			KeepUserIds:     keepUserIDs,
+		}); err != nil {
 			return err
 		}
 
@@ -96,7 +102,6 @@ func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID 
 				KanbanProjectID: projectID,
 				UserID:          m.UserID,
 				Role:            m.Role,
-				Position:        m.Position,
 			}
 			if m.FolderID != nil {
 				params.FolderID = pgtype.Int8{Int64: *m.FolderID, Valid: true}

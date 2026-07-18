@@ -22,6 +22,7 @@ type AttachmentService struct {
 	permSvc           *PermissionService
 	activityRepo      repository.ActivityRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
+	userRepo          repository.UserRepositoryInterface
 }
 
 func NewAttachmentService(
@@ -29,12 +30,14 @@ func NewAttachmentService(
 	permSvc *PermissionService,
 	activityRepo repository.ActivityRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
+	userRepo repository.UserRepositoryInterface,
 ) *AttachmentService {
 	return &AttachmentService{
 		repo:              repo,
 		permSvc:           permSvc,
 		activityRepo:      activityRepo,
 		realtimePublisher: realtimePublisher,
+		userRepo:          userRepo,
 	}
 }
 
@@ -98,6 +101,9 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 		CardID:      cardID,
 	}
 	created, err := s.repo.CreateAttachment(ctx, cardID, a)
+	if err == nil && created != nil {
+		s.populateAuthorName(ctx, created)
+	}
 	if err == nil && created != nil && created.Context != "chat" {
 		s.logActivity(ctx, cardID, "attachment_added", nil, &created.Filename)
 	}
@@ -143,4 +149,16 @@ func (s *AttachmentService) DeleteAttachment(ctx context.Context, attachment *mo
 
 func (s *AttachmentService) logActivity(ctx context.Context, cardID int64, action string, oldValue, newValue *string) {
 	_ = s.activityRepo.LogActivity(ctx, cardID, currentUserID(ctx), action, oldValue, newValue)
+}
+
+func (s *AttachmentService) populateAuthorName(ctx context.Context, a *model.Attachment) {
+	if a.AuthorID == nil {
+		return
+	}
+	users, err := s.userRepo.GetUsersByIDs(ctx, []int64{*a.AuthorID})
+	if err != nil || len(users) == 0 {
+		return
+	}
+	name := dto.UserDisplayName(users[0])
+	a.AuthorName = &name
 }

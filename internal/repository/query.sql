@@ -357,15 +357,22 @@ WHERE id = $1;
 SELECT * FROM kanban_project_user
 WHERE kanban_project_id = $1;
 
--- name: ReplaceProjectMembers :exec
+-- name: DeleteProjectMembersExcept :exec
 DELETE FROM kanban_project_user
-WHERE kanban_project_id = $1;
+WHERE kanban_project_id = $1 AND NOT (user_id = ANY(sqlc.arg(keep_user_ids)::bigint[]));
 
+-- Новая строка участника всегда встаёт в конец личного списка (MAX+1 по user_id/folder_id).
+-- Перемещение существующей строки — только через UpdateProjectPlacement.
+-- ponytail: конкурентные вставки одного пользователя могут получить одинаковую позицию;
+-- порядок добьёт tie-break по id и RebalanceProjectPositions при первом перетаскивании.
 -- name: AddProjectMember :exec
 INSERT INTO kanban_project_user (kanban_project_id, user_id, role, folder_id, position)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (kanban_project_id, user_id) DO UPDATE 
-SET role = EXCLUDED.role, folder_id = EXCLUDED.folder_id, position = EXCLUDED.position;
+VALUES ($1, $2, $3, $4, COALESCE((
+    SELECT MAX(p.position) FROM kanban_project_user p
+    WHERE p.user_id = $2 AND p.folder_id IS NOT DISTINCT FROM $4
+), 0) + 1)
+ON CONFLICT (kanban_project_id, user_id) DO UPDATE
+SET role = EXCLUDED.role;
 
 -- name: UpdateProjectMemberRole :exec
 UPDATE kanban_project_user

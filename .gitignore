@@ -24,6 +24,7 @@ main
 # IDE and OS specific files
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~

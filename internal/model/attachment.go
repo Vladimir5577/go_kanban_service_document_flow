@@ -13,5 +13,6 @@ type Attachment struct {
 	CardID      int64     `json:"card_id"`
 	Context     string    `json:"context"`
 	AuthorID    *int64    `json:"author_id,omitempty"`
+	AuthorName  *string   `json:"author_name,omitempty"` // не хранится в БД, обогащается из реплики пользователей
 	CreatedAt   time.Time `json:"created_at"`
 }

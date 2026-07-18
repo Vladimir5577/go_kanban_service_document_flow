@@ -45,9 +45,12 @@ func (q *Queries) AddCardLabel(ctx context.Context, arg AddCardLabelParams) erro
 
 const addProjectMember = `-- name: AddProjectMember :exec
 INSERT INTO kanban_project_user (kanban_project_id, user_id, role, folder_id, position)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (kanban_project_id, user_id) DO UPDATE 
-SET role = EXCLUDED.role, folder_id = EXCLUDED.folder_id, position = EXCLUDED.position
+VALUES ($1, $2, $3, $4, COALESCE((
+    SELECT MAX(p.position) FROM kanban_project_user p
+    WHERE p.user_id = $2 AND p.folder_id IS NOT DISTINCT FROM $4
+), 0) + 1)
+ON CONFLICT (kanban_project_id, user_id) DO UPDATE
+SET role = EXCLUDED.role
 `
 
 type AddProjectMemberParams struct {
@@ -55,16 +58,18 @@ type AddProjectMemberParams struct {
 	UserID          int64       `json:"user_id"`
 	Role            string      `json:"role"`
 	FolderID        pgtype.Int8 `json:"folder_id"`
-	Position        float64     `json:"position"`
 }
 
+// Новая строка участника всегда встаёт в конец личного списка (MAX+1 по user_id/folder_id).
+// Перемещение существующей строки — только через UpdateProjectPlacement.
+// ponytail: конкурентные вставки одного пользователя могут получить одинаковую позицию;
+// порядок добьёт tie-break по id и RebalanceProjectPositions при первом перетаскивании.
 func (q *Queries) AddProjectMember(ctx context.Context, arg AddProjectMemberParams) error {
 	_, err := q.db.Exec(ctx, addProjectMember,
 		arg.KanbanProjectID,
 		arg.UserID,
 		arg.Role,
 		arg.FolderID,
-		arg.Position,
 	)
 	return err
 }
@@ -493,6 +498,21 @@ WHERE id = $1
 
 func (q *Queries) DeleteProjectFolder(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteProjectFolder, id)
+	return err
+}
+
+const deleteProjectMembersExcept = `-- name: DeleteProjectMembersExcept :exec
+DELETE FROM kanban_project_user
+WHERE kanban_project_id = $1 AND NOT (user_id = ANY($2::bigint[]))
+`
+
+type DeleteProjectMembersExceptParams struct {
+	KanbanProjectID int64   `json:"kanban_project_id"`
+	KeepUserIds     []int64 `json:"keep_user_ids"`
+}
+
+func (q *Queries) DeleteProjectMembersExcept(ctx context.Context, arg DeleteProjectMembersExceptParams) error {
+	_, err := q.db.Exec(ctx, deleteProjectMembersExcept, arg.KanbanProjectID, arg.KeepUserIds)
 	return err
 }
 
@@ -1855,16 +1875,6 @@ type RemoveProjectMemberParams struct {
 
 func (q *Queries) RemoveProjectMember(ctx context.Context, arg RemoveProjectMemberParams) error {
 	_, err := q.db.Exec(ctx, removeProjectMember, arg.KanbanProjectID, arg.UserID)
-	return err
-}
-
-const replaceProjectMembers = `-- name: ReplaceProjectMembers :exec
-DELETE FROM kanban_project_user
-WHERE kanban_project_id = $1
-`
-
-func (q *Queries) ReplaceProjectMembers(ctx context.Context, kanbanProjectID int64) error {
-	_, err := q.db.Exec(ctx, replaceProjectMembers, kanbanProjectID)
 	return err
 }
 

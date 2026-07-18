@@ -52,6 +52,7 @@ func MapAttachmentResponse(cfg *config.Config, a model.Attachment) *AttachmentRe
 		CardID:      a.CardID,
 		Context:     a.Context,
 		AuthorID:    a.AuthorID,
+		AuthorName:  a.AuthorName,
 		PreviewUrl:  &previewUrl,
 		CreatedAt:   a.CreatedAt,
 	}
