@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	amqp "github.com/rabbitmq/amqp091-go"
+
 	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
@@ -165,17 +167,21 @@ func (c *Consumer) consume(ctx context.Context) error {
 func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
 	requeue, err := c.processDelivery(ctx, delivery)
 	if err != nil {
-		if requeue {
-			slog.Error("Не удалось обработать событие синхронизации пользователя", "routing_key", delivery.RoutingKey, "error", err)
+		// Повторяем только реально временные ошибки (например, БД недоступна).
+		// Постоянные (битый JSON, слишком длинное значение, нарушение constraint)
+		// повтором не лечатся — requeue такого сообщения зациклит consumer, ровно
+		// это и роняло сервис. Снимаем с очереди (в DLQ, если задана политика).
+		if requeue && !isPermanent(err) {
+			slog.Error("Событие синхронизации пользователя: временная ошибка, будет повторено", "routing_key", delivery.RoutingKey, "error", err)
 			if ackErr := delivery.Nack(false, true); ackErr != nil {
 				slog.Error("Не удалось вернуть сообщение в RabbitMQ", "error", ackErr)
 			}
 			return
 		}
 
-		slog.Warn("Некорректное событие синхронизации пользователя пропущено", "routing_key", delivery.RoutingKey, "error", err)
-		if ackErr := delivery.Ack(false); ackErr != nil {
-			slog.Error("Не удалось подтвердить некорректное сообщение RabbitMQ", "error", ackErr)
+		slog.Warn("Событие синхронизации пользователя снято с очереди", "routing_key", delivery.RoutingKey, "error", err)
+		if ackErr := delivery.Nack(false, false); ackErr != nil {
+			slog.Error("Не удалось снять сообщение с очереди RabbitMQ", "error", ackErr)
 		}
 		return
 	}
@@ -183,6 +189,23 @@ func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
 	if err := delivery.Ack(false); err != nil {
 		slog.Error("Не удалось подтвердить сообщение RabbitMQ", "error", err)
 	}
+}
+
+// isPermanent сообщает, что повтор бесполезен: сообщение отравленное и должно
+// уйти из очереди, а не крутиться в ней.
+func isPermanent(err error) bool {
+	if errors.Is(err, errInvalidMessage) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && len(pgErr.Code) >= 2 {
+		switch pgErr.Code[:2] {
+		case "22", // data exception (22001 value too long, 22P02 invalid text, ...)
+			"23": // integrity constraint violation (not-null, unique, check, fk)
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Consumer) processDelivery(ctx context.Context, delivery amqp.Delivery) (bool, error) {

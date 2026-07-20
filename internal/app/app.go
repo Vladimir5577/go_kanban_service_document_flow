@@ -28,6 +28,7 @@ type App struct {
 	router           *chi.Mux
 	cfg              *config.Config
 	userSyncConsumer *usersync.Consumer
+	publisher        *events.Publisher
 }
 
 type Handlers struct {
@@ -162,6 +163,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		router:           r,
 		cfg:              cfg,
 		userSyncConsumer: usersync.NewConsumer(cfg, userRepo),
+		publisher:        notificationPublisher,
 	}, nil
 }
 
@@ -222,6 +224,10 @@ func (a *App) Run() error {
 	case <-backgroundDone:
 	case <-ctx.Done():
 		slog.Warn("Не все фоновые процессы завершились до таймаута")
+	}
+
+	if a.publisher != nil {
+		a.publisher.Close()
 	}
 
 	slog.Info("HTTP-сервер успешно остановлен")
