@@ -130,8 +130,8 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	} else {
 		cards, _ := s.repo.GetCardsByColumn(ctx, req.ColumnID)
 		if len(cards) > 0 {
-			// Prepend new cards at the top of the column (smallest position first)
-			c.Position = cards[0].Position - 65536.0
+			// Append new cards at the bottom of the column (like the monolith: MAX(position)+step)
+			c.Position = cards[len(cards)-1].Position + 65536.0
 		} else {
 			c.Position = 65536.0
 		}
