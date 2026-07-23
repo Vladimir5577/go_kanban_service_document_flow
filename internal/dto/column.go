@@ -7,7 +7,7 @@ import (
 )
 
 type CreateColumnRequest struct {
-	Title       string   `json:"title" validate:"required,min=1,max=100"`
+	Title       string   `json:"title" validate:"required,min=1,max=70"`
 	HeaderColor *string  `json:"headerColor,omitempty"`
 	Position    *float64 `json:"position,omitempty"`
 }
@@ -33,7 +33,7 @@ func (r *CreateColumnRequest) UnmarshalJSON(data []byte) error {
 }
 
 type UpdateColumnRequest struct {
-	Title       *string  `json:"title,omitempty" validate:"omitempty,max=100"`
+	Title       *string  `json:"title,omitempty" validate:"omitempty,max=70"`
 	HeaderColor *string  `json:"headerColor,omitempty"`
 	Position    *float64 `json:"position,omitempty"`
 }

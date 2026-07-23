@@ -30,6 +30,7 @@ const (
 	CodeColumnHasCards              ErrorCode = "column_has_cards"
 	CodeColumnIDAndPositionRequired ErrorCode = "column_id_and_position_required"
 	CodeColumnIDAndTitleRequired    ErrorCode = "column_id_and_title_required"
+	CodeColumnNameTooLong           ErrorCode = "column_name_too_long"
 	CodeColumnNotFound              ErrorCode = "column_not_found"
 	CodeColumnTitleRequired         ErrorCode = "column_title_required"
 	CodeCommentAuthorOnly           ErrorCode = "comment_author_only"
@@ -131,6 +132,7 @@ func categoryCode(code ErrorCode) ErrorCode {
 		CodeCannotRemoveSelf,
 		CodeColumnIDAndPositionRequired,
 		CodeColumnIDAndTitleRequired,
+		CodeColumnNameTooLong,
 		CodeColumnTitleRequired,
 		CodeCommentBodyRequired,
 		CodeCommentBodyTooLong,

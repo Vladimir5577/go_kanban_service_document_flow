@@ -41,6 +41,7 @@ func (h *ColumnHandler) CreateColumn() http.HandlerFunc {
 		if err := validator.Validate.Struct(req); err != nil {
 			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
 				{Field: "Title", Tag: "required"}: apperr.CodeColumnTitleRequired,
+				{Field: "Title", Tag: "max"}:      apperr.CodeColumnNameTooLong,
 			}))
 			return
 		}
@@ -80,7 +81,9 @@ func (h *ColumnHandler) UpdateColumn() http.HandlerFunc {
 			return
 		}
 		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, validationError(err, nil))
+			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
+				{Field: "Title", Tag: "max"}: apperr.CodeColumnNameTooLong,
+			}))
 			return
 		}
 
