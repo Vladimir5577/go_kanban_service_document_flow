@@ -5,6 +5,7 @@ package helper
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"go_kanban_service/internal/apperr"
@@ -57,6 +58,13 @@ func WriteError(w http.ResponseWriter, err error) {
 			code = string(apperr.CodeValidation)
 			message = code
 		}
+	}
+
+	// 5xx маскируются generic-телом ("internal_error"), поэтому исходную ошибку
+	// логируем здесь централизованно — иначе она пропадает бесследно (ровно это
+	// прятало причину падения загрузки вложений).
+	if status >= http.StatusInternalServerError {
+		slog.Error("request failed", "code", code, "error", err)
 	}
 
 	WriteJSON(w, status, map[string]string{

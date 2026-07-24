@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 
 	"github.com/google/uuid"
 
@@ -51,7 +52,16 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 		defer file.Close()
 
 		ctxVal := normalizeAttachmentContext(r.FormValue("context"))
-		objectName := fmt.Sprintf("%d/%s-%s", cardID, uuid.New().String(), header.Filename)
+		// Ключ объекта НЕ должен содержать исходное имя файла: MinIO хранит объекты
+		// как файлы, а сегмент пути в ФС ограничен 255 байтами. Имя >218 символов
+		// раньше падало с "Object name contains unsupported characters" → 500.
+		// Уникальность даёт uuid, расширение сохраняем для content-type/preview.
+		// Читаемое имя живёт в БД (att.Filename) и отдаётся в Content-Disposition.
+		ext := filepath.Ext(header.Filename)
+		if len(ext) > 16 { // защита от патологического "расширения"
+			ext = ""
+		}
+		objectName := fmt.Sprintf("%d/%s%s", cardID, uuid.New().String(), ext)
 
 		err = h.minioSvc.UploadFile(r.Context(), h.cfg.MinioBucket, objectName, file, header.Size, header.Header.Get("Content-Type"))
 		if err != nil {
