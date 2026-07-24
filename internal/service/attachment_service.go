@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"unicode/utf8"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
@@ -9,6 +10,9 @@ import (
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository"
 )
+
+// maxAttachmentFilenameLength matches the filename column width (VARCHAR(512)).
+const maxAttachmentFilenameLength = 512
 
 type AttachmentServiceInterface interface {
 	GetAttachments(ctx context.Context, cardID int64, contextStr string) ([]model.Attachment, error)
@@ -78,6 +82,10 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return nil, err
+	}
+
+	if utf8.RuneCountInString(req.Filename) > maxAttachmentFilenameLength {
+		return nil, apperr.New(apperr.CodeFilenameTooLong, "filename too long")
 	}
 
 	attachments, err := s.repo.GetAttachmentsByCard(ctx, cardID, req.Context)

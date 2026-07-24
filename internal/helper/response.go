@@ -110,6 +110,7 @@ func statusForErrorCode(code apperr.ErrorCode) int {
 		apperr.CodeCommentBodyTooLong,
 		apperr.CodeDescriptionInvalidType,
 		apperr.CodeFileNotProvided,
+		apperr.CodeFilenameTooLong,
 		apperr.CodeFolderNameRequired,
 		apperr.CodeFolderNameTooLong,
 		apperr.CodeInvalidJSON,

@@ -40,6 +40,7 @@ const (
 	CodeDescriptionInvalidType      ErrorCode = "description_invalid_type"
 	CodeFileNotFoundOnDisk          ErrorCode = "file_not_found_on_disk"
 	CodeFileNotProvided             ErrorCode = "file_not_provided"
+	CodeFilenameTooLong             ErrorCode = "filename_too_long"
 	CodeFolderNameRequired          ErrorCode = "folder_name_required"
 	CodeFolderNameTooLong           ErrorCode = "folder_name_too_long"
 	CodeFolderNotFound              ErrorCode = "folder_not_found"
@@ -136,6 +137,7 @@ func categoryCode(code ErrorCode) ErrorCode {
 		CodeCommentBodyTooLong,
 		CodeDescriptionInvalidType,
 		CodeFileNotProvided,
+		CodeFilenameTooLong,
 		CodeFolderNameRequired,
 		CodeFolderNameTooLong,
 		CodeInvalidJSON,
