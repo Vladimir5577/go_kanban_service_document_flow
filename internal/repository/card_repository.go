@@ -27,8 +27,8 @@ type CardRepositoryInterface interface {
 	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
 	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
 
-	// GetInvolvedUserIDsForNotifications returns distinct user IDs that are assignees on the card
-	// or assignees on any of its subtasks. Used to decide notification recipients.
+	// GetInvolvedUserIDsForNotifications returns distinct user IDs that are assignees on the card,
+	// assignees on any of its subtasks, or the card's author. Used to decide notification recipients.
 	GetInvolvedUserIDsForNotifications(ctx context.Context, cardID int64) ([]int64, error)
 }
 
@@ -611,7 +611,7 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 	return updatedCard, nil
 }
 
-// GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users for a card.
+// GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users + card author.
 func (r *CardRepository) GetInvolvedUserIDsForNotifications(ctx context.Context, cardID int64) ([]int64, error) {
 	// Get direct assignees
 	assigneeMap, err := r.GetAssigneesByCardIDs(ctx, []int64{cardID})
@@ -623,8 +623,12 @@ func (r *CardRepository) GetInvolvedUserIDsForNotifications(ctx context.Context,
 		ids[uid] = true
 	}
 
-	// Get subtask users (raw to avoid missing sqlc query)
-	rows, err := r.Db.Query(ctx, `SELECT user_id FROM kanban_card_subtask WHERE card_id = $1 AND user_id IS NOT NULL`, cardID)
+	// Get subtask users + card author in one round-trip (raw to avoid missing sqlc query).
+	// Dedup is handled by the ids map below, so UNION ALL is enough.
+	rows, err := r.Db.Query(ctx, `
+		SELECT user_id FROM kanban_card_subtask WHERE card_id = $1 AND user_id IS NOT NULL
+		UNION ALL
+		SELECT created_by_id FROM kanban_card WHERE id = $1 AND created_by_id IS NOT NULL`, cardID)
 	if err != nil {
 		return nil, err
 	}
