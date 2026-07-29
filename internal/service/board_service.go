@@ -16,7 +16,7 @@ import (
 	"go_kanban_service/internal/repository"
 )
 
-const maxBoardTitleLength = 200
+const maxBoardTitleLength = 150
 
 var defaultBoardColumns = []dto.CreateBoardColumnRequest{
 	{Title: "К выполнению", HeaderColor: boardColorPtr("bg-success")},

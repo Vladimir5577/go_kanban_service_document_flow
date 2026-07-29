@@ -10,13 +10,13 @@ import (
 
 // CreateProjectRequest DTO для создания проекта
 type CreateProjectRequest struct {
-	Name        string  `json:"name" validate:"required,min=3,max=255"`
+	Name        string  `json:"name" validate:"required,min=3,max=70"`
 	Description *string `json:"description,omitempty" validate:"omitempty,max=1000"`
 }
 
 // UpdateProjectRequest DTO для обновления проекта
 type UpdateProjectRequest struct {
-	Name        *string `json:"name,omitempty" validate:"omitempty,min=3,max=255"`
+	Name        *string `json:"name,omitempty" validate:"omitempty,min=3,max=70"`
 	Description *string `json:"description,omitempty" validate:"omitempty,max=1000"`
 }
 

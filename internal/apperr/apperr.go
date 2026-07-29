@@ -30,6 +30,7 @@ const (
 	CodeColumnHasCards              ErrorCode = "column_has_cards"
 	CodeColumnIDAndPositionRequired ErrorCode = "column_id_and_position_required"
 	CodeColumnIDAndTitleRequired    ErrorCode = "column_id_and_title_required"
+	CodeColumnNameTooLong           ErrorCode = "column_name_too_long"
 	CodeColumnNotFound              ErrorCode = "column_not_found"
 	CodeColumnTitleRequired         ErrorCode = "column_title_required"
 	CodeCommentAuthorOnly           ErrorCode = "comment_author_only"
@@ -58,6 +59,7 @@ const (
 	CodeProjectCreateFailed         ErrorCode = "project_create_failed"
 	CodeProjectNameRequired         ErrorCode = "project_name_required"
 	CodeProjectNameTooLong          ErrorCode = "project_name_too_long"
+	CodeProjectNameTooShort         ErrorCode = "project_name_too_short"
 	CodeProjectNotFound             ErrorCode = "project_not_found"
 	CodeSubtaskNotFound             ErrorCode = "subtask_not_found"
 	CodeSubtaskTitleRequired        ErrorCode = "subtask_title_required"
@@ -132,6 +134,7 @@ func categoryCode(code ErrorCode) ErrorCode {
 		CodeCannotRemoveSelf,
 		CodeColumnIDAndPositionRequired,
 		CodeColumnIDAndTitleRequired,
+		CodeColumnNameTooLong,
 		CodeColumnTitleRequired,
 		CodeCommentBodyRequired,
 		CodeCommentBodyTooLong,
@@ -149,6 +152,7 @@ func categoryCode(code ErrorCode) ErrorCode {
 		CodeOwnerRoleImmutable,
 		CodeProjectNameRequired,
 		CodeProjectNameTooLong,
+		CodeProjectNameTooShort,
 		CodeSubtaskTitleRequired,
 		CodeUpdateFieldsRequired,
 		CodeUserNotProjectMember:

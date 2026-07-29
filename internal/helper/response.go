@@ -113,6 +113,7 @@ func statusForErrorCode(code apperr.ErrorCode) int {
 		apperr.CodeCannotRemoveSelf,
 		apperr.CodeColumnIDAndPositionRequired,
 		apperr.CodeColumnIDAndTitleRequired,
+		apperr.CodeColumnNameTooLong,
 		apperr.CodeColumnTitleRequired,
 		apperr.CodeCommentBodyRequired,
 		apperr.CodeCommentBodyTooLong,
@@ -130,6 +131,7 @@ func statusForErrorCode(code apperr.ErrorCode) int {
 		apperr.CodeOwnerRoleImmutable,
 		apperr.CodeProjectNameRequired,
 		apperr.CodeProjectNameTooLong,
+		apperr.CodeProjectNameTooShort,
 		apperr.CodeSubtaskTitleRequired,
 		apperr.CodeUpdateFieldsRequired,
 		apperr.CodeUserNotProjectMember:
