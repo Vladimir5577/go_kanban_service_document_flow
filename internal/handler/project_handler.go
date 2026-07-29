@@ -52,6 +52,7 @@ func (h *ProjectHandler) CreateProject() http.HandlerFunc {
 		if err := validator.Validate.Struct(req); err != nil {
 			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
 				{Field: "Name", Tag: "required"}: apperr.CodeProjectNameRequired,
+				{Field: "Name", Tag: "min"}:      apperr.CodeProjectNameTooShort,
 				{Field: "Name", Tag: "max"}:      apperr.CodeProjectNameTooLong,
 			}))
 			return
@@ -99,6 +100,7 @@ func (h *ProjectHandler) UpdateProject() http.HandlerFunc {
 
 		if err := validator.Validate.Struct(req); err != nil {
 			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
+				{Field: "Name", Tag: "min"}: apperr.CodeProjectNameTooShort,
 				{Field: "Name", Tag: "max"}: apperr.CodeProjectNameTooLong,
 			}))
 			return

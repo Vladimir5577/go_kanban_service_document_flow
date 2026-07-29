@@ -58,6 +58,7 @@ const (
 	CodeProjectCreateFailed         ErrorCode = "project_create_failed"
 	CodeProjectNameRequired         ErrorCode = "project_name_required"
 	CodeProjectNameTooLong          ErrorCode = "project_name_too_long"
+	CodeProjectNameTooShort         ErrorCode = "project_name_too_short"
 	CodeProjectNotFound             ErrorCode = "project_not_found"
 	CodeSubtaskNotFound             ErrorCode = "subtask_not_found"
 	CodeSubtaskTitleRequired        ErrorCode = "subtask_title_required"
@@ -149,6 +150,7 @@ func categoryCode(code ErrorCode) ErrorCode {
 		CodeOwnerRoleImmutable,
 		CodeProjectNameRequired,
 		CodeProjectNameTooLong,
+		CodeProjectNameTooShort,
 		CodeSubtaskTitleRequired,
 		CodeUpdateFieldsRequired,
 		CodeUserNotProjectMember:

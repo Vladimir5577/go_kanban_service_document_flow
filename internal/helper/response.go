@@ -122,6 +122,7 @@ func statusForErrorCode(code apperr.ErrorCode) int {
 		apperr.CodeOwnerRoleImmutable,
 		apperr.CodeProjectNameRequired,
 		apperr.CodeProjectNameTooLong,
+		apperr.CodeProjectNameTooShort,
 		apperr.CodeSubtaskTitleRequired,
 		apperr.CodeUpdateFieldsRequired,
 		apperr.CodeUserNotProjectMember:
