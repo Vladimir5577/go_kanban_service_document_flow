@@ -160,7 +160,9 @@ func (s *KanbanNotificationService) NotifyCardCreated(
 		},
 	}
 
-	s.publisher.PublishAsync(events.RoutingKanbanNotificationCardCreated, evt)
+	s.publish(events.RoutingKanbanNotificationCardCreated, evt,
+		fmt.Sprintf("Новая задача «%s» на доске «%s»", title, boardTitle),
+		"Создана задача", link)
 }
 
 // NotifyTaskAssigned notifies a user that a task (or subtask) was assigned to them.
@@ -194,7 +196,13 @@ func (s *KanbanNotificationService) NotifyTaskAssigned(
 		},
 	}
 
-	s.publisher.PublishAsync(events.RoutingKanbanNotificationTaskAssigned, evt)
+	notifTitle := fmt.Sprintf("Вам назначена задача: %s", title)
+	if isSubtask {
+		notifTitle = fmt.Sprintf("Вам назначена подзадача: %s", title)
+	}
+
+	s.publish(events.RoutingKanbanNotificationTaskAssigned, evt,
+		notifTitle, "Назначена задача", link)
 }
 
 // NotifyTaskMoved notifies relevant users when a card is moved to another column.
@@ -248,7 +256,10 @@ func (s *KanbanNotificationService) NotifyTaskMoved(
 		},
 	}
 
-	s.publisher.PublishAsync(events.RoutingKanbanNotificationTaskMoved, evt)
+	s.publish(events.RoutingKanbanNotificationTaskMoved, evt,
+		fmt.Sprintf("%s переместил(а) задачу %s из колонки «%s» в колонку «%s»",
+			authorName, title, fromColumn, toColumn),
+		"Задача перемещена", link)
 }
 
 // NotifyCommentAdded notifies relevant users about a new comment.
@@ -302,7 +313,9 @@ func (s *KanbanNotificationService) NotifyCommentAdded(
 		},
 	}
 
-	s.publisher.PublishAsync(events.RoutingKanbanNotificationCommentAdded, evt)
+	s.publish(events.RoutingKanbanNotificationCommentAdded, evt,
+		fmt.Sprintf("%s оставил(а) комментарий к задаче %s", authorName, taskTitle),
+		"Новый комментарий в задаче", link)
 }
 
 // NotifySubtaskAssigned is used when a subtask gets an assignee.
@@ -340,7 +353,9 @@ func (s *KanbanNotificationService) NotifySubtaskAssigned(
 		},
 	}
 
-	s.publisher.PublishAsync(events.RoutingKanbanNotificationSubtaskAssigned, evt)
+	s.publish(events.RoutingKanbanNotificationSubtaskAssigned, evt,
+		fmt.Sprintf("Вам назначена подзадача: %s", title),
+		"Назначена задача", link)
 }
 
 // NotifyProjectUserAdded notifies a user that they were added to a project.
@@ -366,7 +381,9 @@ func (s *KanbanNotificationService) NotifyProjectUserAdded(
 		},
 	}
 
-	s.publisher.PublishAsync(events.RoutingKanbanNotificationProjectUserAdded, evt)
+	s.publish(events.RoutingKanbanNotificationProjectUserAdded, evt,
+		fmt.Sprintf("Вас добавили в проект «%s»", projectName),
+		"Добавлен в проект", link)
 }
 
 // NotifyProjectUserRemoved notifies a user that they were removed from a project.
@@ -392,7 +409,29 @@ func (s *KanbanNotificationService) NotifyProjectUserRemoved(
 		},
 	}
 
-	s.publisher.PublishAsync(events.RoutingKanbanNotificationProjectUserRemoved, evt)
+	s.publish(events.RoutingKanbanNotificationProjectUserRemoved, evt,
+		fmt.Sprintf("Вас исключили из проекта «%s»", projectName),
+		"Исключён из проекта", link)
+}
+
+// publish дополняет событие полями общего контракта и отправляет его.
+//
+// Заголовок и подпись приходят с места вызова: там уже есть и названия задач,
+// и имена авторов, ради которых прежде городился switch на стороне сервиса
+// нотификаций — в другом репозитории и с отдельным деплоем на каждый новый тип.
+func (s *KanbanNotificationService) publish(
+	routingKey string,
+	evt events.KanbanNotificationEvent,
+	title, typeLabel, link string,
+) {
+	evt.EventID = events.NewEventID()
+	evt.Title = title
+	evt.TypeLabel = typeLabel
+	if link != "" {
+		evt.Link = &link
+	}
+
+	s.publisher.PublishAsync(routingKey, evt)
 }
 
 // Note: filterOutActor and uniqueUserIDs are defined in card_service.go (same package).

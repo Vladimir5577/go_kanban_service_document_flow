@@ -133,20 +133,45 @@ func (p *Publisher) Close() {
 
 // PublishAsync publishes the event in a background goroutine.
 // Safe to call from HTTP handlers — does not block the response.
-// Errors are logged but not propagated.
+//
+// Отправка повторяется: моргнувший брокер или перезапуск его пода иначе
+// съедали событие насовсем — уведомление просто не приходило, и следов не
+// оставалось. Повтор безопасен, потому что у события есть eventId: консьюмер
+// отсечёт дубль по (event_id, user_id).
+//
+// ponytail: три попытки в горутине, не transactional outbox. Полной гарантии
+// нет — падение процесса между бизнес-транзакцией и публикацией по-прежнему
+// съест событие. Для строки в колокольчике этого достаточно; понадобится
+// гарантия доставки — тогда outbox с таблицей и поллером.
 func (p *Publisher) PublishAsync(routingKey string, payload any) {
 	if p.dsn == "" || p.exchange == "" {
 		return
 	}
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		const attempts = 3
 
-		if err := p.Publish(ctx, routingKey, payload); err != nil {
-			slog.Warn("Failed to publish RabbitMQ event",
-				"routing_key", routingKey,
-				"error", err)
+		var err error
+		for attempt := 0; attempt < attempts; attempt++ {
+			if attempt > 0 {
+				// 200ms, 400ms — переподключение укладывается, а вызывающий
+				// HTTP-запрос давно ответил и ничего не ждёт.
+				time.Sleep(time.Duration(200*(1<<(attempt-1))) * time.Millisecond)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err = p.Publish(ctx, routingKey, payload)
+			cancel()
+
+			if err == nil {
+				return
+			}
+
+			slog.Warn("Не удалось опубликовать событие, повтор",
+				"routing_key", routingKey, "attempt", attempt+1, "error", err)
 		}
+
+		slog.Error("Событие потеряно: исчерпаны попытки публикации",
+			"routing_key", routingKey, "attempts", attempts, "error", err)
 	}()
 }

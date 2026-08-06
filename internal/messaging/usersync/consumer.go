@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -164,22 +165,22 @@ func (c *Consumer) consume(ctx context.Context) error {
 	}
 }
 
-func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
-	requeue, err := c.processDelivery(ctx, delivery)
-	if err != nil {
-		// Повторяем только реально временные ошибки (например, БД недоступна).
-		// Постоянные (битый JSON, слишком длинное значение, нарушение constraint)
-		// повтором не лечатся — requeue такого сообщения зациклит consumer, ровно
-		// это и роняло сервис. Снимаем с очереди (в DLQ, если задана политика).
-		if requeue && !isPermanent(err) {
-			slog.Error("Событие синхронизации пользователя: временная ошибка, будет повторено", "routing_key", delivery.RoutingKey, "error", err)
-			if ackErr := delivery.Nack(false, true); ackErr != nil {
-				slog.Error("Не удалось вернуть сообщение в RabbitMQ", "error", ackErr)
-			}
-			return
-		}
+// Сколько раз пытаемся пережить временную ошибку, не выпуская сообщение из рук,
+// и пауза между попытками. Минуты хватает на перезапуск базы или переключение
+// на реплику. Пока обработчик ждёт, сообщения лежат в очереди — не теряются и
+// никого не греют.
+const (
+	temporaryAttempts = 5
+	temporaryInterval = 15 * time.Second
+)
 
-		slog.Warn("Событие синхронизации пользователя снято с очереди", "routing_key", delivery.RoutingKey, "error", err)
+func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
+	if err := c.safeProcess(ctx, delivery); err != nil {
+		// Requeue не делаем ни при какой ошибке: постоянные повтором не лечатся,
+		// а временные уже пережили минуту попыток. Именно бесконечный requeue
+		// когда-то и уронил сервис.
+		slog.Error("Событие синхронизации пользователя снято с очереди",
+			"routing_key", delivery.RoutingKey, "error", err)
 		if ackErr := delivery.Nack(false, false); ackErr != nil {
 			slog.Error("Не удалось снять сообщение с очереди RabbitMQ", "error", ackErr)
 		}
@@ -189,6 +190,54 @@ func (c *Consumer) handleDelivery(ctx context.Context, delivery amqp.Delivery) {
 	if err := delivery.Ack(false); err != nil {
 		slog.Error("Не удалось подтвердить сообщение RabbitMQ", "error", err)
 	}
+}
+
+// safeProcess обрабатывает доставку с ограниченным числом попыток и ловит панику.
+//
+// Паника здесь опаснее любой ошибки: непойманная, она убивает процесс целиком,
+// сообщение остаётся неподтверждённым, RabbitMQ возвращает его в очередь — и
+// после перезапуска сервис падает на нём снова. Такой цикл не лечится никакой
+// политикой повторов. HTTP-часть прикрыта chiMiddleware.Recoverer, но консьюмер
+// работает в своей горутине, мимо роутера.
+//
+// Превращаем панику в постоянную ошибку: сообщение уедет в DLQ вместе со
+// стектрейсом в логе, а сервис продолжит работать.
+func (c *Consumer) safeProcess(ctx context.Context, delivery amqp.Delivery) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			slog.Error("Паника при обработке события синхронизации",
+				"routing_key", delivery.RoutingKey, "panic", p,
+				"stack", string(debug.Stack()))
+			err = fmt.Errorf("%w: паника: %v", errInvalidMessage, p)
+		}
+	}()
+
+	for attempt := 1; attempt <= temporaryAttempts; attempt++ {
+		retryable, procErr := c.processDelivery(ctx, delivery)
+		if procErr == nil {
+			return nil
+		}
+		err = procErr
+
+		// Постоянные ошибки (битый JSON, слишком длинное значение, нарушение
+		// constraint) повтором не лечатся — сколько ни пробуй, результат тот же.
+		if !retryable || isPermanent(procErr) || attempt == temporaryAttempts {
+			return err
+		}
+
+		slog.Warn("Событие синхронизации пользователя: временная ошибка, повтор",
+			"routing_key", delivery.RoutingKey, "attempt", attempt, "of", temporaryAttempts,
+			"retry_in", temporaryInterval, "error", procErr)
+
+		select {
+		case <-ctx.Done():
+			// Иначе выключение сервиса ждало бы все оставшиеся паузы.
+			return err
+		case <-time.After(temporaryInterval):
+		}
+	}
+
+	return err
 }
 
 // isPermanent сообщает, что повтор бесполезен: сообщение отравленное и должно

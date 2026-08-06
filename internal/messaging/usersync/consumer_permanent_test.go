@@ -1,11 +1,13 @@
 package usersync
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func TestIsPermanent(t *testing.T) {
@@ -29,5 +31,28 @@ func TestIsPermanent(t *testing.T) {
 				t.Fatalf("isPermanent(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
+	}
+}
+
+// Паника не должна убивать процесс: иначе сообщение остаётся неподтверждённым,
+// RabbitMQ возвращает его в очередь, и после перезапуска сервис падает на нём
+// снова. Тот самый цикл, который не лечится никакой политикой повторов.
+// HTTP-часть прикрыта chiMiddleware.Recoverer, а консьюмер работает мимо роутера.
+//
+// Consumer без repo и clock: обращение к ним внутри обработки даст
+// nil-разыменование.
+func TestSafeProcessRecoversPanic(t *testing.T) {
+	c := &Consumer{}
+	delivery := amqp.Delivery{
+		RoutingKey: "user.deleted",
+		Body:       []byte(`{"event":"deleted","userId":5}`),
+	}
+
+	err := c.safeProcess(context.Background(), delivery)
+	if err == nil {
+		t.Fatal("паника должна превратиться в ошибку, а не уронить процесс")
+	}
+	if !isPermanent(err) {
+		t.Error("паника должна считаться постоянной ошибкой — иначе сообщение вернётся и уронит сервис снова")
 	}
 }
