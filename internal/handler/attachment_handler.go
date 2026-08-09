@@ -67,7 +67,7 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 		// Клиентскому значению верить нельзя: оно потом уезжало в БД и
 		// возвращалось на выдаче, позволяя отдать загруженный html как
 		// text/html с нашего origin.
-		contentType, err := detectContentType(file)
+		contentType, err := helper.DetectContentType(file)
 		if err != nil {
 			helper.WriteError(w, apperr.New(apperr.CodeFileNotProvided, "file not readable"))
 			return
@@ -128,7 +128,7 @@ func (h *AttachmentHandler) DownloadAttachment() http.HandlerFunc {
 		// Тип нормализуем и на выдаче: в БД остались строки, записанные до
 		// перехода на серверное определение, — в них лежит то, что прислал
 		// клиент. nosniff запрещает браузеру угадывать тип вопреки заголовку.
-		contentType, _ := normalizeContentType(att.ContentType)
+		contentType, _ := helper.NormalizeContentType(att.ContentType)
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", att.Filename))
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -166,7 +166,7 @@ func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
 		// html и svg — уходит вложением с нейтральным типом: иначе загруженный
 		// файл исполняется как страница на нашем origin, а токены доступа
 		// лежат в localStorage.
-		contentType, inlineAllowed := normalizeContentType(att.ContentType)
+		contentType, inlineAllowed := helper.NormalizeContentType(att.ContentType)
 		if inlineAllowed {
 			w.Header().Set("Content-Disposition", "inline")
 		} else {

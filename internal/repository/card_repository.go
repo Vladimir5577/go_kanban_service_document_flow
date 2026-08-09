@@ -438,7 +438,12 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 			return err
 		}
 
-		for _, userID := range c.AssigneeIDs {
+		// Дубликаты в списке отсеиваем до вставки. У связующих таблиц
+		// составной первичный ключ, поэтому assignee_ids вида [5, 5] дали бы
+		// нарушение уникальности и откат всей транзакции — карточка не
+		// создалась бы вовсе из-за того, что клиент прислал один и тот же id
+		// дважды.
+		for _, userID := range dedupeIDs(c.AssigneeIDs) {
 			if err := q.AddCardAssignee(ctx, dbgen.AddCardAssigneeParams{
 				CardID: res.ID,
 				UserID: userID,
@@ -447,7 +452,7 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 			}
 		}
 
-		for _, labelID := range c.LabelIDs {
+		for _, labelID := range dedupeIDs(c.LabelIDs) {
 			if err := q.AddCardLabel(ctx, dbgen.AddCardLabelParams{
 				KanbanCardID:  res.ID,
 				KanbanLabelID: labelID,
@@ -547,10 +552,11 @@ func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.
 	return c, nil
 }
 
-// updateCardParams собирает параметры обновления из модели.
+// updateCardParams собирает параметры полного обновления карточки из модели.
 //
-// Вынесено из UpdateCard, чтобы MoveCard мог выполнить тот же запрос внутри
-// своей транзакции, не дублируя разбор необязательных полей.
+// Вынесено из тела UpdateCard, чтобы разбор необязательных полей не мешал
+// читать сам запрос. Перемещение карточки этим НЕ пользуется: оно пишет
+// только column_id и position, чтобы не затирать чужие правки.
 func updateCardParams(c *model.Card) dbgen.UpdateCardParams {
 	params := dbgen.UpdateCardParams{
 		Title:      c.Title,
@@ -592,22 +598,48 @@ func (r *CardRepository) DeleteCard(ctx context.Context, id int64) error {
 	return queries.DeleteCard(ctx, id)
 }
 
+// UpdateCardAssignees заменяет набор исполнителей карточки.
+//
+// Операция «очистить и записать заново» обязана быть атомарной: сбой между
+// ClearCardAssignees и вставками оставлял карточку вообще без исполнителей,
+// хотя пользователь просто менял одного на другого.
 func (r *CardRepository) UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error {
-	queries := dbgen.New(r.Db)
-
-	if err := queries.ClearCardAssignees(ctx, cardID); err != nil {
-		return err
-	}
-
-	for _, uid := range userIDs {
-		if err := queries.AddCardAssignee(ctx, dbgen.AddCardAssigneeParams{
-			CardID: cardID,
-			UserID: uid,
-		}); err != nil {
+	return ExecTx(ctx, r.Db, func(q *dbgen.Queries) error {
+		if err := q.ClearCardAssignees(ctx, cardID); err != nil {
 			return err
 		}
+
+		for _, uid := range dedupeIDs(userIDs) {
+			if err := q.AddCardAssignee(ctx, dbgen.AddCardAssigneeParams{
+				CardID: cardID,
+				UserID: uid,
+			}); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+}
+
+// dedupeIDs убирает повторы, сохраняя порядок первого вхождения.
+func dedupeIDs(ids []int64) []int64 {
+	if len(ids) < 2 {
+		return ids
 	}
-	return nil
+
+	seen := make(map[int64]struct{}, len(ids))
+	unique := make([]int64, 0, len(ids))
+
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+
+	return unique
 }
 
 // MoveCard переносит карточку в колонку на заданную позицию.
@@ -622,27 +654,39 @@ func (r *CardRepository) UpdateCardAssignees(ctx context.Context, cardID int64, 
 // Теперь проверка и запись выполняются в одной транзакции, а колонка-приёмник
 // блокируется: параллельные перемещения в неё выстраиваются в очередь.
 func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
-	card, err := r.GetCard(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
-	card.ColumnID = columnID
-	card.Position = position
-
 	const epsilon = 0.0001
-	rebalanced := false
 
-	err = ExecTxWith(ctx, r.Db, func(tx pgx.Tx, q *dbgen.Queries) error {
-		// Блокировка строки колонки — точка сериализации для всех
-		// перемещений в неё. Блокируем именно колонку, а не набор карточек:
-		// ребаланс всё равно переписывает позиции всей колонки целиком.
-		var lockedColumnID int64
+	err := ExecTxWith(ctx, r.Db, func(tx pgx.Tx, q *dbgen.Queries) error {
+		// Блокируем ОБЕ колонки — исходную и целевую — и обязательно в
+		// порядке возрастания id.
+		//
+		// Одной целевой колонки мало. Встречные переносы A→B и B→A блокируют
+		// разные колонки, спокойно расходятся дальше и упираются друг в друга
+		// уже на строках карточек: ребаланс приёмника трогает карточку,
+		// которую вторая транзакция как раз уводит к себе. Postgres в такой
+		// ситуации снимает одну из транзакций с 40P01. Единый порядок взятия
+		// блокировок делает такую петлю невозможной: вторая транзакция ждёт
+		// уже на первой колонке, не успев тронуть ни одной строки карточек.
+		var sourceColumnID int64
 		if err := tx.QueryRow(ctx,
-			`SELECT id FROM kanban_column WHERE id = $1 FOR UPDATE`,
-			columnID,
-		).Scan(&lockedColumnID); err != nil {
+			`SELECT column_id FROM kanban_card WHERE id = $1`,
+			id,
+		).Scan(&sourceColumnID); err != nil {
 			return err
+		}
+
+		lockOrder := []int64{sourceColumnID, columnID}
+		if lockOrder[0] > lockOrder[1] {
+			lockOrder[0], lockOrder[1] = lockOrder[1], lockOrder[0]
+		}
+		for _, lockColumnID := range dedupeIDs(lockOrder) {
+			var lockedColumnID int64
+			if err := tx.QueryRow(ctx,
+				`SELECT id FROM kanban_column WHERE id = $1 FOR UPDATE`,
+				lockColumnID,
+			).Scan(&lockedColumnID); err != nil {
+				return err
+			}
 		}
 
 		siblings, err := q.GetCardsByColumn(ctx, columnID)
@@ -658,17 +702,29 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 			}
 		}
 
-		res, err := q.UpdateCard(ctx, updateCardParams(card))
+		// Пишем ровно те два поля, которые меняет перемещение.
+		//
+		// Раньше здесь вызывался общий UpdateCard, переписывающий всю строку
+		// значениями из снимка, прочитанного ДО транзакции. Это давало
+		// потерянное обновление: если параллельно кто-то переименовывал
+		// карточку, перемещение возвращало заголовок к прежнему значению.
+		tag, err := tx.Exec(ctx,
+			`UPDATE kanban_card
+			    SET column_id = $1, position = $2, updated_at = NOW()
+			  WHERE id = $3`,
+			columnID, position, id,
+		)
 		if err != nil {
 			return err
 		}
-		card.UpdatedAt = res.UpdatedAt.Time
+		if tag.RowsAffected() == 0 {
+			return apperr.ErrNotFound
+		}
 
 		if needsRebalance {
 			if err := q.RebalanceColumnCards(ctx, columnID); err != nil {
 				return err
 			}
-			rebalanced = true
 		}
 
 		return nil
@@ -677,13 +733,10 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 		return nil, NormalizeError(err)
 	}
 
-	// Ребаланс переписал позиции всей колонки — актуальную позицию карточки
-	// перечитываем уже после коммита.
-	if rebalanced {
-		return r.GetCard(ctx, id)
-	}
-
-	return card, nil
+	// Карточка перечитывается после коммита всегда, а не только после
+	// ребаланса: только так вернётся строка со всеми полями в актуальном
+	// состоянии, включая изменения, сделанные параллельно.
+	return r.GetCard(ctx, id)
 }
 
 // GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users + card author.

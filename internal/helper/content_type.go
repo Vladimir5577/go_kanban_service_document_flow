@@ -1,4 +1,4 @@
-package handler
+package helper
 
 import (
 	"io"
@@ -18,7 +18,7 @@ import (
 // detectionWindow — сколько байт нужно http.DetectContentType.
 const detectionWindow = 512
 
-// inlineSafeContentTypes — типы, которые разрешено показывать в браузере
+// InlineSafeContentTypes — типы, которые разрешено показывать в браузере
 // прямо на нашем origin.
 //
 // Здесь только растровые изображения. SVG сознательно отсутствует: это XML,
@@ -26,12 +26,13 @@ const detectionWindow = 512
 // хоть и в песочнице, но inline-выдача не нужна ни одному экрану — фронт
 // рендерит в <img> только то, у чего contentType начинается с image/
 // (src/components/Attachments/AttachmentFile.tsx), а всё остальное качает.
-var inlineSafeContentTypes = map[string]struct{}{
-	"image/png":  {},
-	"image/jpeg": {},
-	"image/gif":  {},
-	"image/webp": {},
-	"image/bmp":  {},
+var InlineSafeContentTypes = map[string]struct{}{
+	"image/png":    {},
+	"image/jpeg":   {},
+	"image/gif":    {},
+	"image/webp":   {},
+	"image/bmp":    {},
+	"image/x-icon": {},
 }
 
 // detectContentType читает начало файла и возвращает тип, определённый по
@@ -41,7 +42,7 @@ var inlineSafeContentTypes = map[string]struct{}{
 // Ошибку чтения не считаем фатальной: пустой или очень короткий файл — это
 // нормальный случай, для него http.DetectContentType вернёт
 // application/octet-stream, что нас устраивает.
-func detectContentType(file io.ReadSeeker) (string, error) {
+func DetectContentType(file io.ReadSeeker) (string, error) {
 	buf := make([]byte, detectionWindow)
 
 	n, err := io.ReadFull(file, buf)
@@ -61,13 +62,13 @@ func detectContentType(file io.ReadSeeker) (string, error) {
 //
 // Применяется и на выдаче тоже, а не только при загрузке: в БД остались
 // строки, записанные до этой правки, — там лежит то, что прислал клиент.
-func normalizeContentType(stored string) (contentType string, inlineAllowed bool) {
+func NormalizeContentType(stored string) (contentType string, inlineAllowed bool) {
 	base := strings.TrimSpace(strings.ToLower(stored))
 	if idx := strings.IndexByte(base, ';'); idx >= 0 {
 		base = strings.TrimSpace(base[:idx])
 	}
 
-	if _, ok := inlineSafeContentTypes[base]; ok {
+	if _, ok := InlineSafeContentTypes[base]; ok {
 		return base, true
 	}
 

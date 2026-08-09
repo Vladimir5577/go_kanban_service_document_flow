@@ -726,10 +726,19 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 	}
 
 	card, err := s.repo.MoveCard(ctx, id, columnID, position)
-	if err == nil && columnChanged {
+	// Ошибку возвращаем сразу. Раньше проверка err стояла у логирования и у
+	// realtime, но НЕ у блока уведомлений ниже — а он разыменовывает card,
+	// который при ошибке равен nil. То есть любой сбой перемещения (не
+	// найдено, конфликт блокировок) заканчивался паникой в обработчике
+	// вместо нормального ответа с ошибкой.
+	if err != nil {
+		return nil, err
+	}
+
+	if columnChanged {
 		s.logActivity(ctx, id, "moved", oldValue, newValue)
 	}
-	if err == nil && s.realtimePublisher != nil {
+	if s.realtimePublisher != nil {
 		patch := map[string]any{
 			"id":        card.ID,
 			"position":  card.Position,
@@ -753,7 +762,7 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 		s.notificationSvc.NotifyTaskMoved(ctx, projectID, sourceColumn.BoardID, id, derefInt64(actorID), card.Title, sourceColumn.Title, targetColumn.Title)
 	}
 
-	return card, err
+	return card, nil
 }
 
 func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {

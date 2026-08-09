@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"go_kanban_service/internal/config"
+	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
 )
 
@@ -32,8 +33,18 @@ type AttachmentResponse struct {
 }
 
 func MapAttachmentResponse(cfg *config.Config, a model.Attachment) *AttachmentResponse {
+	// Через imgproxy пускаем только растровые форматы из общего списка, а не
+	// всё с префиксом image/. Префикс пропускал image/svg+xml — то есть XML,
+	// который разбирал бы уже сам imgproxy, — и любые строки, записанные до
+	// перехода на серверное определение типа, где тип брался со слов клиента.
+	//
+	// Сам contentType в ответе оставляем как есть: по нему интерфейс выбирает
+	// иконку файла, и подмена его на application/octet-stream превратила бы
+	// pdf и документы в «неизвестный файл».
+	_, isInlineSafeImage := helper.NormalizeContentType(a.ContentType)
+
 	var previewUrl string
-	if strings.HasPrefix(a.ContentType, "image/") && cfg.ImgproxyBaseUrl != "" {
+	if isInlineSafeImage && cfg.ImgproxyBaseUrl != "" {
 		// e.g. http://localhost:8082/unsafe/rs:fit:400:400/plain/s3://kanban/cards/...
 		previewUrl = fmt.Sprintf("%s/unsafe/rs:fit:400:400/plain/s3://%s/%s",
 			strings.TrimRight(cfg.ImgproxyBaseUrl, "/"),

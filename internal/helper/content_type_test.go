@@ -1,4 +1,4 @@
-package handler
+package helper
 
 import (
 	"bytes"
@@ -12,7 +12,7 @@ import (
 func TestDetectContentTypeIgnoresClaimedType(t *testing.T) {
 	html := []byte("<html><body><script>alert(1)</script></body></html>")
 
-	got, err := detectContentType(bytes.NewReader(html))
+	got, err := DetectContentType(bytes.NewReader(html))
 	if err != nil {
 		t.Fatalf("определение типа не должно падать: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestDetectContentTypeIgnoresClaimedType(t *testing.T) {
 		t.Errorf("получили %q, ожидали text/html...", got)
 	}
 
-	if _, inline := normalizeContentType(got); inline {
+	if _, inline := NormalizeContentType(got); inline {
 		t.Error("html не должен отдаваться inline")
 	}
 }
@@ -32,7 +32,7 @@ func TestDetectContentTypeRewindsReader(t *testing.T) {
 	payload := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{0}, 600)...)
 	reader := bytes.NewReader(payload)
 
-	got, err := detectContentType(reader)
+	got, err := DetectContentType(reader)
 	if err != nil {
 		t.Fatalf("определение типа не должно падать: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestDetectContentTypeRewindsReader(t *testing.T) {
 }
 
 func TestDetectContentTypeHandlesShortFile(t *testing.T) {
-	got, err := detectContentType(bytes.NewReader([]byte{}))
+	got, err := DetectContentType(bytes.NewReader([]byte{}))
 	if err != nil {
 		t.Fatalf("пустой файл — не ошибка: %v", err)
 	}
@@ -67,6 +67,7 @@ func TestNormalizeContentType(t *testing.T) {
 		{"image/png", "image/png", true, "растровая картинка показывается в интерфейсе"},
 		{"IMAGE/JPEG", "image/jpeg", true, "регистр не должен влиять"},
 		{"image/webp; charset=binary", "image/webp", true, "параметры отбрасываются"},
+		{"image/x-icon", "image/x-icon", true, "http.DetectContentType распознаёт .ico именно так"},
 		{"text/html", "application/octet-stream", false, "исполняемая разметка только вложением"},
 		{"image/svg+xml", "application/octet-stream", false, "svg — это xml со скриптом внутри"},
 		{"application/pdf", "application/octet-stream", false, "inline не нужен ни одному экрану"},
@@ -75,7 +76,7 @@ func TestNormalizeContentType(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		gotType, gotInline := normalizeContentType(c.stored)
+		gotType, gotInline := NormalizeContentType(c.stored)
 		if gotType != c.wantType || gotInline != c.wantInline {
 			t.Errorf("%q -> (%q, %v), ожидали (%q, %v): %s",
 				c.stored, gotType, gotInline, c.wantType, c.wantInline, c.why)

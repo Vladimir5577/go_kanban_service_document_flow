@@ -11,15 +11,21 @@ on:
 permissions:
   contents: read
 
+# Push в ветку с открытым PR иначе запускает job дважды. Группа по ref
+# оставляет только последний запуск и отменяет предыдущий.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Установить Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           # Версия берётся из go.mod, чтобы не разъезжаться с проектом.
           go-version-file: go.mod
@@ -41,6 +47,9 @@ jobs:
         run: go vet ./...
 
       - name: Тесты
-        # -race ловит гонки, ради которых в этой ветке правились MoveCard и
-        # создание карточки; без него такие дефекты в тестах не видны.
+        # -race ловит гонки по памяти внутри процесса Go. Он НЕ проверяет
+        # блокировки и аномалии PostgreSQL: транзакционные правки MoveCard и
+        # создания карточки этим гейтом не покрыты, для них нужен
+        # интеграционный тест с реальной базой и двумя встречными запросами.
+        # Такого теста пока нет — это осознанный пробел, а не забытый шаг.
         run: go test -race ./...
