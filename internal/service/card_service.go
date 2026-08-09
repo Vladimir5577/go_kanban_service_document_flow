@@ -100,14 +100,6 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 
-	activeCardsCount, err := s.repo.CountActiveCardsByBoard(ctx, column.BoardID)
-	if err != nil {
-		return nil, err
-	}
-	if activeCardsCount >= maxActiveCardsPerBoard {
-		return nil, apperr.New(apperr.CodeBoardCardLimitReached, "maximum number of cards (300) on board reached")
-	}
-
 	if len(req.AssigneeIDs) > 1 {
 		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
 	}
@@ -135,20 +127,16 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	if authorID := currentUserID(ctx); authorID != nil {
 		c.CreatedByID = authorID
 	}
-	if req.Position != nil {
-		c.Position = *req.Position
-	} else {
-		cards, _ := s.repo.GetCardsByColumn(ctx, req.ColumnID)
-		if len(cards) > 0 {
-			// Prepend at the top using FIRST/2 (halving), matching the frontend's
-			// computePosition(undefined, next) = next/2. Subtracting a fixed step
-			// hit 0/negative on the first prepend and collided with the move math.
-			c.Position = cards[0].Position / 2.0
-		} else {
-			c.Position = 65536.0
-		}
-	}
-	created, err := s.repo.CreateCard(ctx, req.ColumnID, c)
+	// Позицию считает репозиторий внутри транзакции, под блокировкой колонки.
+	// Здесь её вычислять нельзя: между расчётом и вставкой успевает вклиниться
+	// чужая карточка, и обе получают одинаковое значение. Предел карточек на
+	// доске проверяется там же и по той же причине.
+	created, err := s.repo.CreateCard(ctx, repository.CreateCardInput{
+		BoardID:        column.BoardID,
+		ColumnID:       req.ColumnID,
+		Card:           c,
+		MaxActiveCards: maxActiveCardsPerBoard,
+	})
 	if err == nil && created != nil {
 		s.logActivity(ctx, created.ID, "created", nil, nil)
 		if s.realtimePublisher != nil {

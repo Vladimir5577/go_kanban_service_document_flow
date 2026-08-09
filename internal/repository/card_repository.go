@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"time"
 
@@ -15,13 +16,12 @@ import (
 )
 
 type CardRepositoryInterface interface {
-	CreateCard(ctx context.Context, columnID int64, c *model.Card) (*model.Card, error)
+	CreateCard(ctx context.Context, in CreateCardInput) (*model.Card, error)
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error)
 	GetCardsByBoard(ctx context.Context, boardID int64) ([]model.Card, error)
 	GetAssignedCards(ctx context.Context, userID int64, status string) ([]AssignedCardRow, error)
 	GetAssignedSubtasks(ctx context.Context, userID int64, status string) ([]AssignedSubtaskRow, error)
-	CountActiveCardsByBoard(ctx context.Context, boardID int64) (int, error)
 	GetAssigneesByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
 	GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
 	UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error)
@@ -210,20 +210,6 @@ func timestamptzPtr(v pgtype.Timestamptz) *time.Time {
 	return &value
 }
 
-func (r *CardRepository) CountActiveCardsByBoard(ctx context.Context, boardID int64) (int, error) {
-	query := `
-		SELECT COUNT(c.id)
-		FROM kanban_card c
-		JOIN kanban_column col ON col.id = c.column_id
-		WHERE col.board_id = $1 AND c.is_archived = FALSE`
-
-	var count int
-	if err := r.Db.QueryRow(ctx, query, boardID).Scan(&count); err != nil {
-		return 0, err
-	}
-	return count, nil
-}
-
 func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error) {
 	queries := dbgen.New(r.Db)
 	dbCards, err := queries.GetCardsByColumn(ctx, columnID)
@@ -400,6 +386,38 @@ func (r *CardRepository) GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int
 	return result, nil
 }
 
+// testHookBeforeCardInsert вызывается внутри транзакции CreateCard после
+// проверки предела и расчёта позиции, но до вставки строки. В рабочей сборке
+// всегда nil — значение выставляют только интеграционные тесты.
+var testHookBeforeCardInsert func()
+
+// CreateCardInput — всё, что нужно для создания карточки одной транзакцией.
+//
+// Позиции здесь нет намеренно: её считает сервер, внутри транзакции, под
+// блокировкой колонки. См. комментарий к CreateCard.
+type CreateCardInput struct {
+	BoardID  int64
+	ColumnID int64
+	Card     *model.Card
+
+	// MaxActiveCards — предел активных карточек на доске. Передаётся из
+	// сервиса, чтобы значение жило в одном месте, а проверялось там, где его
+	// можно проверить честно, — внутри транзакции.
+	MaxActiveCards int
+}
+
+// minCardPosition — граница, ниже которой позиции больше не делятся пополам.
+//
+// Каждая карточка, добавленная в начало колонки, получает половину позиции
+// верхней. Через несколько десятков добавлений подряд числа становятся
+// неразличимо малы, а потом схлопываются в ноль, и порядок карточек
+// перестаёт быть определённым. Дойдя до границы, колонка пересчитывается.
+const minCardPosition = 1.0
+
+// defaultCardPosition — позиция первой карточки в пустой колонке. Совпадает с
+// шагом ребаланса, чтобы после пересчёта числа выглядели одинаково.
+const defaultCardPosition = 65536.0
+
 // CreateCard создаёт карточку вместе со связями.
 //
 // Исполнители и метки принимаются в запросе и раньше молча терялись: строка
@@ -410,11 +428,24 @@ func (r *CardRepository) GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int
 //
 // Всё пишется одной транзакцией: карточка без своих связей — это не
 // «частично созданная карточка», а карточка с потерянными данными.
-func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *model.Card) (*model.Card, error) {
+//
+// В той же транзакции — проверка предела карточек на доске и расчёт позиции.
+// Раньше и то и другое считалось до транзакции: два одновременных создания
+// видели одинаковую картину, и предел в 300 карточек обходился (обе вставки
+// проходили при 299), а позиция «половина верхней» вычислялась из снимка,
+// который к моменту вставки успевал устареть — карточки получали одинаковые
+// позиции.
+//
+// Порядок взятия блокировок: сначала доска, потом колонка. Он должен быть
+// единым во всём сервисе, иначе встречные операции образуют петлю ожидания.
+// MoveCard блокирует только колонки, поэтому пересечения с ним нет: создание
+// держит доску и ждёт колонку, перенос доску не трогает вовсе.
+func (r *CardRepository) CreateCard(ctx context.Context, in CreateCardInput) (*model.Card, error) {
+	c := in.Card
+
 	params := dbgen.CreateCardParams{
 		Title:    c.Title,
-		Position: c.Position,
-		ColumnID: columnID,
+		ColumnID: in.ColumnID,
 	}
 	if c.Description != nil {
 		params.Description = pgtype.Text{String: *c.Description, Valid: true}
@@ -432,7 +463,59 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 		params.BorderColor = pgtype.Text{String: *c.BorderColor, Valid: true}
 	}
 
-	err := ExecTx(ctx, r.Db, func(q *dbgen.Queries) error {
+	err := ExecTxWith(ctx, r.Db, func(tx pgx.Tx, q *dbgen.Queries) error {
+		var lockedBoardID int64
+		if err := tx.QueryRow(ctx,
+			`SELECT id FROM kanban_board WHERE id = $1 FOR UPDATE`,
+			in.BoardID,
+		).Scan(&lockedBoardID); err != nil {
+			return err
+		}
+
+		var lockedColumnID int64
+		if err := tx.QueryRow(ctx,
+			`SELECT id FROM kanban_column WHERE id = $1 FOR UPDATE`,
+			in.ColumnID,
+		).Scan(&lockedColumnID); err != nil {
+			return err
+		}
+
+		// Предел карточек считается здесь, а не в сервисе: только под
+		// блокировкой доски ответ на «сколько сейчас активных» остаётся
+		// верным до самой вставки.
+		var activeCards int
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(c.id)
+			   FROM kanban_card c
+			   JOIN kanban_column col ON col.id = c.column_id
+			  WHERE col.board_id = $1 AND c.is_archived = FALSE`,
+			in.BoardID,
+		).Scan(&activeCards); err != nil {
+			return err
+		}
+		if in.MaxActiveCards > 0 && activeCards >= in.MaxActiveCards {
+			return apperr.New(
+				apperr.CodeBoardCardLimitReached,
+				fmt.Sprintf("maximum number of cards (%d) on board reached", in.MaxActiveCards),
+			)
+		}
+
+		position, err := nextTopPosition(ctx, tx, q, in.ColumnID)
+		if err != nil {
+			return err
+		}
+		c.Position = position
+		params.Position = position
+
+		// Точка синхронизации для интеграционных тестов: в рабочей сборке nil.
+		// Стоит там, где раньше проходила граница транзакции: предел и позиция
+		// уже посчитаны, вставки ещё не было. Именно в этом промежутке две
+		// параллельные попытки создать карточку раньше видели одинаковую
+		// картину.
+		if testHookBeforeCardInsert != nil {
+			testHookBeforeCardInsert()
+		}
+
 		res, err := q.CreateCard(ctx, params)
 		if err != nil {
 			return err
@@ -472,6 +555,58 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 	}
 
 	return c, nil
+}
+
+// nextTopPosition считает позицию карточки, добавляемой в начало колонки.
+//
+// Новая карточка встаёт над верхней и получает половину её позиции — тот же
+// расчёт, что делает фронт при перетаскивании в начало списка. Вычитать
+// фиксированный шаг нельзя: на первой же вставке он уводит позицию в ноль и
+// ниже, и порядок ломается.
+//
+// Вызывать только внутри транзакции, в которой колонка уже заблокирована:
+// иначе между чтением верхней позиции и вставкой успевает вклиниться чужая
+// карточка, и обе получат одинаковое значение.
+func nextTopPosition(ctx context.Context, tx pgx.Tx, q *dbgen.Queries, columnID int64) (float64, error) {
+	top, err := minActivePosition(ctx, tx, columnID)
+	if err != nil {
+		return 0, err
+	}
+	if top == nil {
+		return defaultCardPosition, nil
+	}
+	if half := *top / 2.0; half >= minCardPosition {
+		return half, nil
+	}
+
+	// Делить дальше нечего: позиции стали неразличимо малы. Раскладываем
+	// колонку заново с обычным шагом — порядок карточек при этом сохраняется,
+	// меняются только числа.
+	if err := q.RebalanceColumnCards(ctx, columnID); err != nil {
+		return 0, err
+	}
+
+	top, err = minActivePosition(ctx, tx, columnID)
+	if err != nil {
+		return 0, err
+	}
+	if top == nil {
+		return defaultCardPosition, nil
+	}
+	return *top / 2.0, nil
+}
+
+// minActivePosition отдаёт позицию верхней активной карточки колонки или nil,
+// если колонка пуста.
+func minActivePosition(ctx context.Context, tx pgx.Tx, columnID int64) (*float64, error) {
+	var position *float64
+	if err := tx.QueryRow(ctx,
+		`SELECT MIN(position) FROM kanban_card WHERE column_id = $1 AND is_archived = FALSE`,
+		columnID,
+	).Scan(&position); err != nil {
+		return nil, err
+	}
+	return position, nil
 }
 
 func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, error) {

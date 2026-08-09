@@ -7,11 +7,18 @@ import (
 	"go_kanban_service/internal/model"
 )
 
+// CreateCardRequest — тело POST /kanban/cards.
+//
+// Поля position здесь нет намеренно: позицией новой карточки владеет сервер.
+// Клиент не может вычислить её безопасно — между чтением списка и отправкой
+// запроса колонка меняется, — а принятая с клиента позиция обходила и расчёт,
+// и блокировку колонки, из-за чего две карточки получали одинаковое место.
+// Новая карточка всегда встаёт в начало колонки; чтобы положить её в другое
+// место, есть перенос (PATCH /kanban/cards/{id}/move).
 type CreateCardRequest struct {
 	Title       string     `json:"title" validate:"required,max=500"`
 	ColumnID    int64      `json:"column_id" validate:"required"`
 	Description *string    `json:"description,omitempty"`
-	Position    *float64   `json:"position,omitempty"`
 	DueDate     *time.Time `json:"dueDate,omitempty"`
 	Priority    *string    `json:"priority,omitempty"`
 	BorderColor *string    `json:"borderColor,omitempty"`
