@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -9,7 +11,7 @@ import (
 )
 
 type ProjectRepositoryInterface interface {
-	GetAllProjects(ctx context.Context) ([]model.Project, error)
+	ListProjects(ctx context.Context, f model.ProjectListFilters) (*model.ProjectListPage, error)
 	CreateProject(ctx context.Context, p *model.Project) (*model.Project, error)
 	GetProject(ctx context.Context, id int64) (*model.Project, error)
 	UpdateProject(ctx context.Context, p *model.Project) (*model.Project, error)
@@ -27,32 +29,139 @@ func NewProjectRepository(db *pgxpool.Pool) *ProjectRepository {
 	}
 }
 
-func (r *ProjectRepository) GetAllProjects(ctx context.Context) ([]model.Project, error) {
-	query := `
-		SELECT id, name, description, owner_id, created_by_id, created_at, updated_at, deleted_at
-		FROM kanban_project
-		WHERE deleted_at IS NULL
-		ORDER BY id DESC`
+func (r *ProjectRepository) ListProjects(ctx context.Context, f model.ProjectListFilters) (*model.ProjectListPage, error) {
+	page := f.Page
+	if page < 1 {
+		page = 1
+	}
+	limit := f.Limit
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	offset := (page - 1) * limit
 
-	rows, err := r.Db.Query(ctx, query)
+	status := f.Status
+	if status == "" {
+		status = model.ProjectStatusActive
+	}
+
+	where := "TRUE"
+	args := make([]any, 0, 4)
+	argN := 1
+
+	switch status {
+	case model.ProjectStatusActive:
+		where += " AND p.deleted_at IS NULL"
+	case model.ProjectStatusDeleted:
+		where += " AND p.deleted_at IS NOT NULL"
+	case model.ProjectStatusAll:
+		// no status filter
+	default:
+		where += " AND p.deleted_at IS NULL"
+	}
+
+	if search := strings.TrimSpace(f.Search); search != "" {
+		where += fmt.Sprintf(" AND (p.name ILIKE $%d OR COALESCE(p.description, '') ILIKE $%d)", argN, argN)
+		args = append(args, "%"+search+"%")
+		argN++
+	}
+
+	countQuery := `SELECT COUNT(*) FROM kanban_project p WHERE ` + where
+	var total int64
+	if err := r.Db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, NormalizeError(err)
+	}
+
+	orderBySQL, ok := map[string]string{
+		"name":          "p.name",
+		"created_at":    "p.created_at",
+		"members_count": "members_count",
+		"boards_count":  "boards_count",
+		"tasks_count":   "tasks_count",
+	}[f.OrderBy]
+	if !ok {
+		orderBySQL = "p.created_at"
+	}
+	orderSQL := "DESC"
+	if f.Order == "ASC" {
+		orderSQL = "ASC"
+	}
+
+	listArgs := append(append([]any{}, args...), limit, offset)
+	listQuery := fmt.Sprintf(`
+		SELECT
+			p.id,
+			p.name,
+			p.description,
+			p.created_at,
+			p.deleted_at,
+			(SELECT COUNT(*) FROM kanban_project_user pu WHERE pu.kanban_project_id = p.id) AS members_count,
+			(SELECT COUNT(*) FROM kanban_board b WHERE b.kanban_project_id = p.id AND b.deleted_at IS NULL) AS boards_count,
+			(
+				SELECT COUNT(*)
+				FROM kanban_card c
+				JOIN kanban_column col ON col.id = c.column_id
+				JOIN kanban_board b ON b.id = col.board_id
+				WHERE b.kanban_project_id = p.id
+				  AND b.deleted_at IS NULL
+				  AND c.is_archived = FALSE
+			) AS tasks_count,
+			p.owner_id,
+			u.login,
+			u.lastname,
+			u.firstname,
+			u.patronymic,
+			u.avatar_name
+		FROM kanban_project p
+		LEFT JOIN users u ON u.id = p.owner_id
+		WHERE %s
+		ORDER BY %s %s, p.id DESC
+		LIMIT $%d OFFSET $%d`, where, orderBySQL, orderSQL, argN, argN+1)
+
+	rows, err := r.Db.Query(ctx, listQuery, listArgs...)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 	defer rows.Close()
 
-	var projects []model.Project
+	items := make([]model.ProjectListItem, 0)
 	for rows.Next() {
-		var p model.Project
+		var item model.ProjectListItem
+		var ownerID int64
+		var ownerLogin, ownerLastname, ownerFirstname *string
+		var ownerPatronymic, ownerAvatar *string
 		if err := rows.Scan(
-			&p.ID, &p.Name, &p.Description, &p.OwnerID, &p.CreatedByID,
-			&p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
+			&item.ID, &item.Name, &item.Description, &item.CreatedAt, &item.DeletedAt,
+			&item.MembersCount, &item.BoardsCount, &item.TasksCount,
+			&ownerID, &ownerLogin, &ownerLastname, &ownerFirstname, &ownerPatronymic, &ownerAvatar,
 		); err != nil {
 			return nil, err
 		}
-		projects = append(projects, p)
+		if ownerLogin != nil {
+			item.Owner = &model.User{
+				ID:         ownerID,
+				Login:      *ownerLogin,
+				Lastname:   *ownerLastname,
+				Firstname:  *ownerFirstname,
+				Patronymic: ownerPatronymic,
+				AvatarName: ownerAvatar,
+			}
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	return projects, rows.Err()
+	return &model.ProjectListPage{
+		Items: items,
+		Total: total,
+		Page:  page,
+		Limit: limit,
+	}, nil
 }
 
 func (r *ProjectRepository) CreateProject(ctx context.Context, p *model.Project) (*model.Project, error) {

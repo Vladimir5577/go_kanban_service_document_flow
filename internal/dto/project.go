@@ -94,6 +94,83 @@ type ProjectResponse struct {
 	Members        []*MemberResponse `json:"members"`
 }
 
+// ProjectListItemResponse — строка справочника проектов.
+type ProjectListItemResponse struct {
+	ID           int64         `json:"id"`
+	Name         string        `json:"name"`
+	Description  *string       `json:"description,omitempty"`
+	CreatedAt    time.Time     `json:"createdAt"`
+	MembersCount int64         `json:"membersCount"`
+	BoardsCount  int64         `json:"boardsCount"`
+	TasksCount   int64         `json:"tasksCount"`
+	Status       string        `json:"status"` // active | deleted
+	DeletedAt    *time.Time    `json:"deletedAt,omitempty"`
+	Owner        *UserResponse `json:"owner,omitempty"`
+}
+
+type ProjectListPaginationResponse struct {
+	CurrentPage int   `json:"currentPage"`
+	TotalPages  int   `json:"totalPages"`
+	Total       int64 `json:"total"`
+	Limit       int   `json:"limit"`
+}
+
+// ProjectListResponse — ответ GET /spa/api/kanban/projects (справочник).
+type ProjectListResponse struct {
+	Projects   []*ProjectListItemResponse    `json:"projects"`
+	Pagination ProjectListPaginationResponse `json:"pagination"`
+}
+
+func MapProjectListResponse(page *model.ProjectListPage) *ProjectListResponse {
+	if page == nil {
+		return &ProjectListResponse{
+			Projects: make([]*ProjectListItemResponse, 0),
+		}
+	}
+
+	totalPages := 0
+	if page.Limit > 0 && page.Total > 0 {
+		totalPages = int((page.Total + int64(page.Limit) - 1) / int64(page.Limit))
+	}
+
+	items := make([]*ProjectListItemResponse, 0, len(page.Items))
+	for i := range page.Items {
+		items = append(items, MapProjectListItemResponse(&page.Items[i]))
+	}
+
+	return &ProjectListResponse{
+		Projects: items,
+		Pagination: ProjectListPaginationResponse{
+			CurrentPage: page.Page,
+			TotalPages:  totalPages,
+			Total:       page.Total,
+			Limit:       page.Limit,
+		},
+	}
+}
+
+func MapProjectListItemResponse(item *model.ProjectListItem) *ProjectListItemResponse {
+	if item == nil {
+		return nil
+	}
+	status := model.ProjectStatusActive
+	if item.DeletedAt != nil {
+		status = model.ProjectStatusDeleted
+	}
+	return &ProjectListItemResponse{
+		ID:           item.ID,
+		Name:         item.Name,
+		Description:  item.Description,
+		CreatedAt:    item.CreatedAt,
+		MembersCount: item.MembersCount,
+		BoardsCount:  item.BoardsCount,
+		TasksCount:   item.TasksCount,
+		Status:       status,
+		DeletedAt:    item.DeletedAt,
+		Owner:        MapUserResponse(item.Owner),
+	}
+}
+
 // MapProjectResponse конвертирует базовую модель в DTO (без связей)
 func MapProjectResponse(p *model.Project) *ProjectResponse {
 	if p == nil {
@@ -109,15 +186,6 @@ func MapProjectResponse(p *model.Project) *ProjectResponse {
 		Boards:       make([]*BoardResponse, 0),
 		Members:      make([]*MemberResponse, 0),
 	}
-}
-
-// MapProjectsResponse конвертирует срез моделей в срез DTO
-func MapProjectsResponse(projects []model.Project) []*ProjectResponse {
-	resp := make([]*ProjectResponse, 0, len(projects))
-	for i := range projects {
-		resp = append(resp, MapProjectResponse(&projects[i]))
-	}
-	return resp
 }
 
 // MapNavProjectResponse конвертирует внутреннюю модель NavProject в DTO для сайдбара
