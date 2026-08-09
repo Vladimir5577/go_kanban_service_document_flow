@@ -60,7 +60,7 @@ func NewProjectService(
 func (s *ProjectService) ListProjects(ctx context.Context, f model.ProjectListFilters) (*dto.ProjectListResponse, error) {
 	user, ok := middleware.GetUser(ctx)
 	if !ok {
-		return nil, accessDenied()
+		return nil, apperr.New(apperr.CodeUnauthorized, string(apperr.CodeUnauthorized))
 	}
 	isAdmin := false
 	for _, role := range user.Roles {
@@ -70,7 +70,7 @@ func (s *ProjectService) ListProjects(ctx context.Context, f model.ProjectListFi
 		}
 	}
 	if !isAdmin {
-		return nil, accessDenied()
+		return nil, apperr.New(apperr.CodeAccessDenied, string(apperr.CodeAccessDenied))
 	}
 
 	page, err := s.repo.ListProjects(ctx, f)

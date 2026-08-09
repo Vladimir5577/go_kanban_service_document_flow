@@ -31,7 +31,7 @@ func (h *ProjectHandler) ListProjects() http.HandlerFunc {
 		switch status {
 		case "active", "deleted", "all":
 		default:
-			helper.WriteError(w, apperr.New(apperr.CodeValidation, "invalid status filter"))
+			helper.WriteError(w, apperr.New(apperr.CodeInvalidStatus, string(apperr.CodeInvalidStatus)))
 			return
 		}
 
@@ -47,7 +47,7 @@ func (h *ProjectHandler) ListProjects() http.HandlerFunc {
 		switch orderBy {
 		case "name", "created_at", "members_count", "boards_count", "tasks_count":
 		default:
-			helper.WriteError(w, apperr.New(apperr.CodeValidation, "invalid order_by"))
+			helper.WriteError(w, apperr.New(apperr.CodeInvalidOrderBy, string(apperr.CodeInvalidOrderBy)))
 			return
 		}
 
@@ -56,7 +56,7 @@ func (h *ProjectHandler) ListProjects() http.HandlerFunc {
 			order = "DESC"
 		}
 		if order != "ASC" && order != "DESC" {
-			helper.WriteError(w, apperr.New(apperr.CodeValidation, "invalid order"))
+			helper.WriteError(w, apperr.New(apperr.CodeInvalidOrder, string(apperr.CodeInvalidOrder)))
 			return
 		}
 
