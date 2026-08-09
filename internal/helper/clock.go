@@ -12,4 +12,3 @@ func NewClock() Clock { return Clock{} }
 func (c Clock) Now() time.Time {
 	return time.Now().UTC().Truncate(time.Second)
 }
-

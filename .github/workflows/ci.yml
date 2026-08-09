@@ -1,0 +1,46 @@
+name: CI
+
+# Гейт на каждый push и pull request. До этого в репозитории не было ни одной
+# автоматической проверки: сборка и тесты гонялись руками, поэтому регрессии
+# ловились уже на стенде.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Установить Go
+        uses: actions/setup-go@v5
+        with:
+          # Версия берётся из go.mod, чтобы не разъезжаться с проектом.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Проверить форматирование
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Файлы не отформатированы gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Собрать
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Тесты
+        # -race ловит гонки, ради которых в этой ветке правились MoveCard и
+        # создание карточки; без него такие дефекты в тестах не видны.
+        run: go test -race ./...
