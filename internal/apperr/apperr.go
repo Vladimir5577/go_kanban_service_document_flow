@@ -47,8 +47,11 @@ const (
 	CodeFolderNotFound              ErrorCode = "folder_not_found"
 	CodeInsufficientPermissions     ErrorCode = "insufficient_permissions"
 	CodeInvalidJSON                 ErrorCode = "invalid_json"
+	CodeInvalidOrder                ErrorCode = "invalid_order"
+	CodeInvalidOrderBy              ErrorCode = "invalid_order_by"
 	CodeInvalidRole                 ErrorCode = "invalid_role"
 	CodeInvalidRoleForUser          ErrorCode = "invalid_role_for_user"
+	CodeInvalidStatus               ErrorCode = "invalid_status"
 	CodeLabelNameRequired           ErrorCode = "label_name_required"
 	CodeLabelNotFound               ErrorCode = "label_not_found"
 	CodeMemberNotFound              ErrorCode = "member_not_found"
@@ -144,8 +147,11 @@ func categoryCode(code ErrorCode) ErrorCode {
 		CodeFolderNameRequired,
 		CodeFolderNameTooLong,
 		CodeInvalidJSON,
+		CodeInvalidOrder,
+		CodeInvalidOrderBy,
 		CodeInvalidRole,
 		CodeInvalidRoleForUser,
+		CodeInvalidStatus,
 		CodeLabelNameRequired,
 		CodeMembersArrayExpected,
 		CodeMembersListEmpty,

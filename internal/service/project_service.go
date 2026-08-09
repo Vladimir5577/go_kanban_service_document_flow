@@ -18,7 +18,7 @@ import (
 const defaultProjectBoardTitle = "Главная доска"
 
 type ProjectServiceInterface interface {
-	GetAllProjects(ctx context.Context) ([]model.Project, error)
+	ListProjects(ctx context.Context, f model.ProjectListFilters) (*dto.ProjectListResponse, error)
 	CreateProject(ctx context.Context, req dto.CreateProjectRequest) (*model.Project, error)
 	GetProject(ctx context.Context, id int64) (*dto.ProjectResponse, error)
 	UpdateProject(ctx context.Context, id int64, req dto.UpdateProjectRequest) (*model.Project, error)
@@ -57,8 +57,27 @@ func NewProjectService(
 	}
 }
 
-func (s *ProjectService) GetAllProjects(ctx context.Context) ([]model.Project, error) {
-	return s.repo.GetAllProjects(ctx)
+func (s *ProjectService) ListProjects(ctx context.Context, f model.ProjectListFilters) (*dto.ProjectListResponse, error) {
+	user, ok := middleware.GetUser(ctx)
+	if !ok {
+		return nil, apperr.New(apperr.CodeUnauthorized, string(apperr.CodeUnauthorized))
+	}
+	isAdmin := false
+	for _, role := range user.Roles {
+		if role == "ROLE_ADMIN" {
+			isAdmin = true
+			break
+		}
+	}
+	if !isAdmin {
+		return nil, apperr.New(apperr.CodeAccessDenied, string(apperr.CodeAccessDenied))
+	}
+
+	page, err := s.repo.ListProjects(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	return dto.MapProjectListResponse(page), nil
 }
 
 func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjectRequest) (*model.Project, error) {
