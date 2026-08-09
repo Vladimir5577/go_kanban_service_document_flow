@@ -112,6 +112,16 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
 	}
 
+	// Связи карточки теперь действительно сохраняются, поэтому их надо
+	// проверять здесь так же, как их проверяет отдельный эндпоинт назначения
+	// (SetCardAssignees): иначе создание стало бы обходным путём мимо правил.
+	if err := s.validateProjectAssignees(ctx, projectID, req.AssigneeIDs); err != nil {
+		return nil, err
+	}
+	if err := s.validateBoardLabels(ctx, column.BoardID, req.LabelIDs); err != nil {
+		return nil, err
+	}
+
 	c := &model.Card{
 		Title:       req.Title,
 		ColumnID:    req.ColumnID,
@@ -611,6 +621,36 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 		}
 	}
 	return err
+}
+
+// validateBoardLabels проверяет, что все метки принадлежат доске карточки.
+//
+// Отдельного эндпоинта «навесить метку при создании» в сервисе нет, поэтому
+// и проверки для этого пути раньше не существовало — вместе с тем, что метки
+// вообще не сохранялись. Раз сохраняем, то и проверяем: иначе на карточку
+// вешалась бы метка чужой доски, а то и чужого проекта.
+func (s *CardService) validateBoardLabels(ctx context.Context, boardID int64, labelIDs []int64) error {
+	if len(labelIDs) == 0 {
+		return nil
+	}
+
+	boardLabels, err := s.labelRepo.GetLabels(ctx, boardID)
+	if err != nil {
+		return err
+	}
+
+	allowed := make(map[int64]struct{}, len(boardLabels))
+	for _, label := range boardLabels {
+		allowed[label.ID] = struct{}{}
+	}
+
+	for _, labelID := range labelIDs {
+		if _, ok := allowed[labelID]; !ok {
+			return apperr.New(apperr.CodeLabelNotFound, "label does not belong to the board")
+		}
+	}
+
+	return nil
 }
 
 func (s *CardService) validateProjectAssignees(ctx context.Context, projectID int64, userIDs []int64) error {

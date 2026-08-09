@@ -398,9 +398,17 @@ func (r *CardRepository) GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int
 	return result, nil
 }
 
+// CreateCard создаёт карточку вместе со связями.
+//
+// Исполнители и метки принимаются в запросе и раньше молча терялись: строка
+// карточки вставлялась, а kanban_card_assignee и kanban_card_label не
+// трогались вовсе. При этом сервис успевал разослать уведомления «вам
+// назначена задача» по списку из памяти — то есть пользователь получал
+// уведомление о назначении, которого в базе не было.
+//
+// Всё пишется одной транзакцией: карточка без своих связей — это не
+// «частично созданная карточка», а карточка с потерянными данными.
 func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *model.Card) (*model.Card, error) {
-	queries := dbgen.New(r.Db)
-
 	params := dbgen.CreateCardParams{
 		Title:    c.Title,
 		Position: c.Position,
@@ -422,14 +430,40 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 		params.BorderColor = pgtype.Text{String: *c.BorderColor, Valid: true}
 	}
 
-	res, err := queries.CreateCard(ctx, params)
+	err := ExecTx(ctx, r.Db, func(q *dbgen.Queries) error {
+		res, err := q.CreateCard(ctx, params)
+		if err != nil {
+			return err
+		}
+
+		for _, userID := range c.AssigneeIDs {
+			if err := q.AddCardAssignee(ctx, dbgen.AddCardAssigneeParams{
+				CardID: res.ID,
+				UserID: userID,
+			}); err != nil {
+				return err
+			}
+		}
+
+		for _, labelID := range c.LabelIDs {
+			if err := q.AddCardLabel(ctx, dbgen.AddCardLabelParams{
+				KanbanCardID:  res.ID,
+				KanbanLabelID: labelID,
+			}); err != nil {
+				return err
+			}
+		}
+
+		c.ID = res.ID
+		c.CreatedAt = res.CreatedAt.Time
+		c.UpdatedAt = res.UpdatedAt.Time
+
+		return nil
+	})
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
-	c.ID = res.ID
-	c.CreatedAt = res.CreatedAt.Time
-	c.UpdatedAt = res.UpdatedAt.Time
 	return c, nil
 }
 
