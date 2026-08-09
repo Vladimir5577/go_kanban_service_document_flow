@@ -28,6 +28,7 @@ type CardRepositoryInterface interface {
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
 	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
+	RestoreCard(ctx context.Context, id int64, boardID int64, maxActiveCards int) error
 
 	// GetInvolvedUserIDsForNotifications returns distinct user IDs that are assignees on the card,
 	// assignees on any of its subtasks, or the card's author. Used to decide notification recipients.
@@ -567,6 +568,77 @@ func (r *CardRepository) CreateCard(ctx context.Context, in CreateCardInput) (*m
 	}
 
 	return c, nil
+}
+
+// RestoreCard возвращает карточку из архива, соблюдая предел активных карточек
+// на доске.
+//
+// Возврат из архива — вторая операция, которая увеличивает число активных
+// карточек, и раньше она шла мимо предела: обычная запись строки без подсчёта и
+// без блокировки. Доску с 300 карточками можно было раздуть сколько угодно —
+// заархивировать одну, создать новую, вернуть архивную, повторить. Создание
+// после этого отказывало, а доска уже была за пределом, и вернуть её в норму
+// можно было только удалением.
+//
+// Проверка и запись идут в одной транзакции под блокировкой доски — той же, что
+// в CreateCard, и в том же порядке. Поэтому одновременные «создать» и «вернуть
+// из архива» выстраиваются в очередь, а не проходят оба по одному свободному
+// месту.
+func (r *CardRepository) RestoreCard(ctx context.Context, id int64, boardID int64, maxActiveCards int) error {
+	err := ExecTxWith(ctx, r.Db, func(tx pgx.Tx, _ *dbgen.Queries) error {
+		var lockedBoardID int64
+		if err := tx.QueryRow(ctx,
+			`SELECT id FROM kanban_board WHERE id = $1 FOR UPDATE`,
+			boardID,
+		).Scan(&lockedBoardID); err != nil {
+			return err
+		}
+
+		var activeCards int
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(c.id)
+			   FROM kanban_card c
+			   JOIN kanban_column col ON col.id = c.column_id
+			  WHERE col.board_id = $1 AND c.is_archived = FALSE`,
+			boardID,
+		).Scan(&activeCards); err != nil {
+			return err
+		}
+		if maxActiveCards > 0 && activeCards >= maxActiveCards {
+			return apperr.New(
+				apperr.CodeBoardCardLimitReached,
+				fmt.Sprintf("maximum number of cards (%d) on board reached", maxActiveCards),
+			)
+		}
+
+		if r.testHookBeforeCardInsert != nil {
+			r.testHookBeforeCardInsert()
+		}
+
+		// Пишутся ровно те поля, которые меняет возврат из архива. Общий
+		// UpdateCard переписал бы всю строку значениями из снимка,
+		// прочитанного до транзакции, и потерял бы параллельные правки
+		// заголовка или срока.
+		tag, err := tx.Exec(ctx,
+			`UPDATE kanban_card
+			    SET is_archived = FALSE, archived_at = NULL, archived_by_id = NULL, updated_at = NOW()
+			  WHERE id = $1 AND is_archived = TRUE`,
+			id,
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			// Либо карточки нет, либо её уже вернул кто-то другой, пока мы
+			// ждали блокировку. Второе не ошибка данных, но и молча делать
+			// вид, что вернули именно мы, нельзя.
+			return apperr.ErrNotFound
+		}
+
+		return nil
+	})
+
+	return NormalizeError(err)
 }
 
 // nextTopPosition считает позицию карточки, добавляемой в начало колонки.

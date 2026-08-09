@@ -767,22 +767,29 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 		return withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 
-	activityType := "archived"
+	// Возврат из архива увеличивает число активных карточек, поэтому идёт
+	// отдельным путём — с проверкой предела под блокировкой доски, как при
+	// создании. Архивация предел только освобождает, ей блокировка не нужна.
 	if card.IsArchived {
-		activityType = "restored"
-		card.IsArchived = false
-		card.ArchivedAt = nil
-		card.ArchivedByID = nil
-	} else {
-		card.IsArchived = true
-		now := s.cfg.Clock.Now()
-		card.ArchivedAt = &now
-		card.ArchivedByID = currentUserID(ctx)
+		column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
+		if err != nil {
+			return withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+		}
+		if err := s.repo.RestoreCard(ctx, id, column.BoardID, maxActiveCardsPerBoard); err != nil {
+			return err
+		}
+		s.logActivity(ctx, id, "restored", nil, nil)
+		return nil
 	}
+
+	card.IsArchived = true
+	now := s.cfg.Clock.Now()
+	card.ArchivedAt = &now
+	card.ArchivedByID = currentUserID(ctx)
 
 	_, err = s.repo.UpdateCard(ctx, card)
 	if err == nil {
-		s.logActivity(ctx, id, activityType, nil, nil)
+		s.logActivity(ctx, id, "archived", nil, nil)
 	}
 	return err
 }

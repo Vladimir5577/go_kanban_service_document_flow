@@ -14,7 +14,7 @@ import (
 // запроса колонка меняется, — а принятая с клиента позиция обходила и расчёт,
 // и блокировку колонки, из-за чего две карточки получали одинаковое место.
 // Новая карточка всегда встаёт в начало колонки; чтобы положить её в другое
-// место, есть перенос (PATCH /kanban/cards/{id}/move).
+// место, есть перенос (POST /kanban/cards/{id}/move).
 type CreateCardRequest struct {
 	Title       string     `json:"title" validate:"required,max=500"`
 	ColumnID    int64      `json:"column_id" validate:"required"`
