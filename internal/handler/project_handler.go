@@ -3,10 +3,12 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/helper"
+	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/service"
 	"go_kanban_service/internal/validator"
 )
@@ -19,14 +21,58 @@ func NewProjectHandler(s service.ProjectServiceInterface) *ProjectHandler {
 	return &ProjectHandler{service: s}
 }
 
-func (h *ProjectHandler) GetAllProjects() http.HandlerFunc {
+func (h *ProjectHandler) ListProjects() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		projects, err := h.service.GetAllProjects(r.Context())
+		query := r.URL.Query()
+		status := query.Get("status")
+		if status == "" {
+			status = "active"
+		}
+		switch status {
+		case "active", "deleted", "all":
+		default:
+			helper.WriteError(w, apperr.New(apperr.CodeInvalidStatus, string(apperr.CodeInvalidStatus)))
+			return
+		}
+
+		pageSize := parsePositiveInt(query.Get("page_size"), 10)
+		if pageSize > 100 {
+			pageSize = 100
+		}
+
+		orderBy := query.Get("order_by")
+		if orderBy == "" {
+			orderBy = "created_at"
+		}
+		switch orderBy {
+		case "name", "created_at", "members_count", "boards_count", "tasks_count":
+		default:
+			helper.WriteError(w, apperr.New(apperr.CodeInvalidOrderBy, string(apperr.CodeInvalidOrderBy)))
+			return
+		}
+
+		order := strings.ToUpper(query.Get("order"))
+		if order == "" {
+			order = "DESC"
+		}
+		if order != "ASC" && order != "DESC" {
+			helper.WriteError(w, apperr.New(apperr.CodeInvalidOrder, string(apperr.CodeInvalidOrder)))
+			return
+		}
+
+		res, err := h.service.ListProjects(r.Context(), model.ProjectListFilters{
+			Search:  strings.TrimSpace(query.Get("search")),
+			Status:  status,
+			OrderBy: orderBy,
+			Order:   order,
+			Page:    parsePositiveInt(query.Get("page"), 1),
+			Limit:   pageSize,
+		})
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.MapProjectsResponse(projects))
+		helper.WriteJSON(w, http.StatusOK, res)
 	}
 }
 
