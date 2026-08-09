@@ -200,3 +200,45 @@ func activeCardCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, boar
 	}
 	return count
 }
+
+// TestCreateCardRebalanceKeepsRelativeOrder — пересчёт колонки сохраняет
+// порядок карточек.
+//
+// Пересчёт трогает все активные карточки колонки, а не только новую. Если он
+// разложит их не в том порядке — например по id вместо позиции, — доска
+// перемешается у всех, кто её откроет, и списать это будет не на что: числа
+// после пересчёта выглядят аккуратно.
+func TestCreateCardRebalanceKeepsRelativeOrder(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+
+	board := seedBoard(t, ctx, pool)
+	column := seedColumn(t, ctx, pool, board.BoardID, "колонка", 65536)
+
+	// Порядок создания намеренно обратен порядку на доске: если пересчёт
+	// возьмёт id вместо позиции, порядок перевернётся и тест это заметит.
+	bottom := seedCard(t, ctx, pool, column, "нижняя", 4)
+	middle := seedCard(t, ctx, pool, column, "средняя", 2)
+	top := seedCard(t, ctx, pool, column, "верхняя", 1)
+
+	repo := &CardRepository{Db: pool}
+	card := &model.Card{Title: "новая"}
+	if _, err := repo.CreateCard(ctx, CreateCardInput{
+		BoardID:  board.BoardID,
+		ColumnID: column,
+		Card:     card,
+	}); err != nil {
+		t.Fatalf("создание карточки: %v", err)
+	}
+
+	want := []int64{card.ID, top, middle, bottom}
+	got := columnCardIDs(t, ctx, pool, column)
+	if len(got) != len(want) {
+		t.Fatalf("в колонке ожидались %d карточки, а их %d", len(want), len(got))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("после пересчёта порядок карточек должен остаться прежним: ожидали %v, получили %v", want, got)
+		}
+	}
+}

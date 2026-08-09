@@ -585,7 +585,7 @@ func (r *CardRepository) CreateCard(ctx context.Context, in CreateCardInput) (*m
 // из архива» выстраиваются в очередь, а не проходят оба по одному свободному
 // месту.
 func (r *CardRepository) RestoreCard(ctx context.Context, id int64, boardID int64, maxActiveCards int) error {
-	err := ExecTxWith(ctx, r.Db, func(tx pgx.Tx, _ *dbgen.Queries) error {
+	err := ExecTxWith(ctx, r.Db, func(tx pgx.Tx, q *dbgen.Queries) error {
 		var lockedBoardID int64
 		if err := tx.QueryRow(ctx,
 			`SELECT id FROM kanban_board WHERE id = $1 FOR UPDATE`,
@@ -611,6 +611,39 @@ func (r *CardRepository) RestoreCard(ctx context.Context, id int64, boardID int6
 			)
 		}
 
+		// Колонка карточки нужна дважды: заблокировать её (порядок тот же, что
+		// в создании: доска, затем колонка) и посчитать позицию.
+		var columnID int64
+		if err := tx.QueryRow(ctx,
+			`SELECT column_id FROM kanban_card WHERE id = $1 AND is_archived = TRUE`,
+			id,
+		).Scan(&columnID); err != nil {
+			return err
+		}
+
+		var lockedColumnID int64
+		if err := tx.QueryRow(ctx,
+			`SELECT id FROM kanban_column WHERE id = $1 FOR UPDATE`,
+			columnID,
+		).Scan(&lockedColumnID); err != nil {
+			return err
+		}
+
+		// Карточка возвращается наверх колонки с заново посчитанной позицией, а
+		// не со старой.
+		//
+		// Расчёт позиций и ребаланс смотрят только на активные карточки, то
+		// есть архивную они не видят и её место могут занять. Возврат со старым
+		// значением давал две активные карточки на одной позиции: колонка с
+		// единственной карточкой на 65536 архивируется, новая карточка получает
+		// те же 65536, архивная возвращается — и порядок в колонке перестаёт
+		// быть определённым. То же со старыми позициями вида 0 или
+		// отрицательной, оставшимися от прежней арифметики.
+		position, err := nextTopPosition(ctx, tx, q, columnID)
+		if err != nil {
+			return err
+		}
+
 		if r.testHookBeforeCardInsert != nil {
 			r.testHookBeforeCardInsert()
 		}
@@ -619,11 +652,16 @@ func (r *CardRepository) RestoreCard(ctx context.Context, id int64, boardID int6
 		// UpdateCard переписал бы всю строку значениями из снимка,
 		// прочитанного до транзакции, и потерял бы параллельные правки
 		// заголовка или срока.
+		//
+		// Условие по column_id страхует от переноса карточки, случившегося
+		// между чтением колонки и взятием блокировки: тогда возврат честно
+		// сообщит «не найдено», а не запишет позицию из чужой колонки.
 		tag, err := tx.Exec(ctx,
 			`UPDATE kanban_card
-			    SET is_archived = FALSE, archived_at = NULL, archived_by_id = NULL, updated_at = NOW()
-			  WHERE id = $1 AND is_archived = TRUE`,
-			id,
+			    SET is_archived = FALSE, archived_at = NULL, archived_by_id = NULL,
+			        position = $2, updated_at = NOW()
+			  WHERE id = $1 AND is_archived = TRUE AND column_id = $3`,
+			id, position, columnID,
 		)
 		if err != nil {
 			return err

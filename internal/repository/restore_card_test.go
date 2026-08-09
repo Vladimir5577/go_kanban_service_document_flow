@@ -126,3 +126,37 @@ func seedArchivedCard(t *testing.T, ctx context.Context, pool *pgxpool.Pool, col
 	}
 	return id
 }
+
+// TestRestoreCardGetsFreshPosition — карточка возвращается из архива на
+// свободное место, а не на своё прежнее.
+//
+// Расчёт позиций смотрит только на активные карточки: пока карточка лежала в
+// архиве, её место могла занять новая. Возврат со старым значением давал две
+// активные карточки на одной позиции — порядок в колонке становился делом
+// случая.
+func TestRestoreCardGetsFreshPosition(t *testing.T) {
+	ctx := context.Background()
+	pool := newTestPool(t)
+
+	board := seedBoard(t, ctx, pool)
+	column := seedColumn(t, ctx, pool, board.BoardID, "колонка", 65536)
+
+	// Место архивной карточки занято активной с той же позицией.
+	archived := seedArchivedCard(t, ctx, pool, column, "в архиве", 65536)
+	seedCard(t, ctx, pool, column, "занял место", 65536)
+
+	repo := &CardRepository{Db: pool}
+	if err := repo.RestoreCard(ctx, archived, board.BoardID, 0); err != nil {
+		t.Fatalf("возврат из архива: %v", err)
+	}
+
+	assertPositionsDistinct(t, ctx, pool, column, "колонка")
+
+	var position float64
+	if err := pool.QueryRow(ctx, `SELECT position FROM kanban_card WHERE id = $1`, archived).Scan(&position); err != nil {
+		t.Fatalf("чтение позиции вернувшейся карточки: %v", err)
+	}
+	if position <= 0 {
+		t.Errorf("позиция вернувшейся карточки должна быть положительной, а получилась %v", position)
+	}
+}

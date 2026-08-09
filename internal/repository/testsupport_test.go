@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -328,4 +327,32 @@ func awaitAll(t *testing.T, wg *sync.WaitGroup, timeout time.Duration, what stri
 	case <-time.After(timeout):
 		t.Fatalf("%s не завершились за %s: похоже на взаимную блокировку, которую не разобрал даже детектор PostgreSQL", what, timeout)
 	}
+}
+
+// columnCardIDs отдаёт id активных карточек колонки в том порядке, в каком их
+// увидит доска.
+func columnCardIDs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, columnID int64) []int64 {
+	t.Helper()
+
+	rows, err := pool.Query(ctx,
+		`SELECT id FROM kanban_card WHERE column_id = $1 AND is_archived = FALSE ORDER BY position, id`,
+		columnID,
+	)
+	if err != nil {
+		t.Fatalf("чтение карточек колонки %d: %v", columnID, err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("чтение id карточки: %v", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("чтение карточек колонки %d: %v", columnID, err)
+	}
+	return ids
 }
