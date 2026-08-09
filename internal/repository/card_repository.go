@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"math"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -536,6 +538,20 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error) {
 	queries := dbgen.New(r.Db)
 
+	res, err := queries.UpdateCard(ctx, updateCardParams(c))
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+
+	c.UpdatedAt = res.UpdatedAt.Time
+	return c, nil
+}
+
+// updateCardParams собирает параметры обновления из модели.
+//
+// Вынесено из UpdateCard, чтобы MoveCard мог выполнить тот же запрос внутри
+// своей транзакции, не дублируя разбор необязательных полей.
+func updateCardParams(c *model.Card) dbgen.UpdateCardParams {
 	params := dbgen.UpdateCardParams{
 		Title:      c.Title,
 		Position:   c.Position,
@@ -568,13 +584,7 @@ func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.
 		params.CompletedByID = pgtype.Int8{Int64: *c.CompletedByID, Valid: true}
 	}
 
-	res, err := queries.UpdateCard(ctx, params)
-	if err != nil {
-		return nil, NormalizeError(err)
-	}
-
-	c.UpdatedAt = res.UpdatedAt.Time
-	return c, nil
+	return params
 }
 
 func (r *CardRepository) DeleteCard(ctx context.Context, id int64) error {
@@ -600,49 +610,80 @@ func (r *CardRepository) UpdateCardAssignees(ctx context.Context, cardID int64, 
 	return nil
 }
 
+// MoveCard переносит карточку в колонку на заданную позицию.
+//
+// Раньше это были четыре независимых запроса без транзакции: прочитать
+// карточку, прочитать содержимое колонки, проверить коллизию позиций,
+// записать. Два одновременных перетаскивания в одну колонку успевали оба
+// увидеть «коллизии нет» и записать почти одинаковые позиции, а ребаланс мог
+// идти параллельно со вставкой — порядок карточек после перезагрузки
+// становился непредсказуемым.
+//
+// Теперь проверка и запись выполняются в одной транзакции, а колонка-приёмник
+// блокируется: параллельные перемещения в неё выстраиваются в очередь.
 func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
-	// 1. Fetch card to check existence
 	card, err := r.GetCard(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 
-	// 2. Fetch all cards in the destination column
-	cards, err := r.GetCardsByColumn(ctx, columnID)
-	if err != nil {
-		return nil, err
-	}
-
-	// 3. Check for collision
-	const epsilon = 0.0001
-	needsRebalance := false
-	for _, c := range cards {
-		if c.ID != id && (c.Position-position > -epsilon && c.Position-position < epsilon) {
-			needsRebalance = true
-			break
-		}
-	}
-
-	// 4. Update card
 	card.ColumnID = columnID
 	card.Position = position
 
-	updatedCard, err := r.UpdateCard(ctx, card)
+	const epsilon = 0.0001
+	rebalanced := false
+
+	err = ExecTxWith(ctx, r.Db, func(tx pgx.Tx, q *dbgen.Queries) error {
+		// Блокировка строки колонки — точка сериализации для всех
+		// перемещений в неё. Блокируем именно колонку, а не набор карточек:
+		// ребаланс всё равно переписывает позиции всей колонки целиком.
+		var lockedColumnID int64
+		if err := tx.QueryRow(ctx,
+			`SELECT id FROM kanban_column WHERE id = $1 FOR UPDATE`,
+			columnID,
+		).Scan(&lockedColumnID); err != nil {
+			return err
+		}
+
+		siblings, err := q.GetCardsByColumn(ctx, columnID)
+		if err != nil {
+			return err
+		}
+
+		needsRebalance := false
+		for _, sibling := range siblings {
+			if sibling.ID != id && math.Abs(sibling.Position-position) < epsilon {
+				needsRebalance = true
+				break
+			}
+		}
+
+		res, err := q.UpdateCard(ctx, updateCardParams(card))
+		if err != nil {
+			return err
+		}
+		card.UpdatedAt = res.UpdatedAt.Time
+
+		if needsRebalance {
+			if err := q.RebalanceColumnCards(ctx, columnID); err != nil {
+				return err
+			}
+			rebalanced = true
+		}
+
+		return nil
+	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
-	// 8. Trigger rebalance if needed
-	if needsRebalance {
-		queries := dbgen.New(r.Db)
-		if err := queries.RebalanceColumnCards(ctx, columnID); err != nil {
-			return nil, err
-		}
-		// fetch card again to get the rebalanced position
+	// Ребаланс переписал позиции всей колонки — актуальную позицию карточки
+	// перечитываем уже после коммита.
+	if rebalanced {
 		return r.GetCard(ctx, id)
 	}
 
-	return updatedCard, nil
+	return card, nil
 }
 
 // GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users + card author.
