@@ -1,0 +1,48 @@
+# Изолированный Postgres для интеграционных тестов репозитория.
+#
+# Зачем отдельный файл, а не сервис в основном docker-compose.yml:
+#  - основной поднимает базу в общей сети project-net рядом с боевыми
+#    сервисами и монтирует каталог с данными; тесты пишут и удаляют схему
+#    целиком, и делать это рядом с чем-то живым нельзя;
+#  - здесь нет ни внешней сети, ни тома: данные лежат в tmpfs и исчезают
+#    вместе с контейнером, поэтому прогон всегда стартует с чистой базы.
+#
+# Порт 55433 выбран, чтобы не конфликтовать с 5433 из основного compose:
+# оба стенда должны спокойно жить одновременно.
+#
+# Запуск:
+#   docker compose -f docker-compose.test.yml up -d
+#   KANBAN_TEST_DB_DSN="postgres://test:test@127.0.0.1:55433/kanban_test?sslmode=disable" go test ./internal/repository/ -run Concurrency -v
+#   docker compose -f docker-compose.test.yml down
+#
+# Без переменной KANBAN_TEST_DB_DSN интеграционные тесты пропускаются, поэтому
+# обычный `go test ./...` работает на машине без Docker.
+services:
+  kanban_test_db:
+    image: postgres:16.4
+    container_name: kanban_test_postgres
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: kanban_test
+      # fsync здесь не нужен: база одноразовая, зато тесты заметно быстрее.
+      POSTGRES_INITDB_ARGS: "--nosync"
+    command:
+      - postgres
+      - -c
+      - fsync=off
+      - -c
+      - full_page_writes=off
+      # Взаимные блокировки в тестах должны разбираться быстро, иначе прогон
+      # упирается в стандартную секундную паузу детектора.
+      - -c
+      - deadlock_timeout=100ms
+    tmpfs:
+      - /var/lib/postgresql/data
+    ports:
+      - "55433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d kanban_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
