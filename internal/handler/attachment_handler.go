@@ -63,15 +63,20 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 		}
 		objectName := fmt.Sprintf("%d/%s%s", cardID, uuid.New().String(), ext)
 
-		err = h.minioSvc.UploadFile(r.Context(), h.cfg.MinioBucket, objectName, file, header.Size, header.Header.Get("Content-Type"))
+		// Тип берём по содержимому, а не из заголовка multipart-части.
+		// Клиентскому значению верить нельзя: оно потом уезжало в БД и
+		// возвращалось на выдаче, позволяя отдать загруженный html как
+		// text/html с нашего origin.
+		contentType, err := detectContentType(file)
 		if err != nil {
-			helper.WriteError(w, err)
+			helper.WriteError(w, apperr.New(apperr.CodeFileNotProvided, "file not readable"))
 			return
 		}
 
-		contentType := header.Header.Get("Content-Type")
-		if contentType == "" {
-			contentType = "application/octet-stream"
+		err = h.minioSvc.UploadFile(r.Context(), h.cfg.MinioBucket, objectName, file, header.Size, contentType)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
 		}
 
 		req := dto.CreateAttachmentRequest{
@@ -120,8 +125,13 @@ func (h *AttachmentHandler) DownloadAttachment() http.HandlerFunc {
 		}
 		defer obj.Close()
 
+		// Тип нормализуем и на выдаче: в БД остались строки, записанные до
+		// перехода на серверное определение, — в них лежит то, что прислал
+		// клиент. nosniff запрещает браузеру угадывать тип вопреки заголовку.
+		contentType, _ := normalizeContentType(att.ContentType)
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", att.Filename))
-		w.Header().Set("Content-Type", att.ContentType)
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		io.Copy(w, obj)
 	}
 }
@@ -152,8 +162,18 @@ func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
 		}
 		defer obj.Close()
 
-		w.Header().Set("Content-Disposition", "inline")
-		w.Header().Set("Content-Type", att.ContentType)
+		// Inline отдаём только растровые изображения. Всё остальное — включая
+		// html и svg — уходит вложением с нейтральным типом: иначе загруженный
+		// файл исполняется как страница на нашем origin, а токены доступа
+		// лежат в localStorage.
+		contentType, inlineAllowed := normalizeContentType(att.ContentType)
+		if inlineAllowed {
+			w.Header().Set("Content-Disposition", "inline")
+		} else {
+			w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", att.Filename))
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		io.Copy(w, obj)
 	}
 }
