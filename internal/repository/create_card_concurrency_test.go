@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -151,11 +150,8 @@ func TestCreateCardRebalancesWhenPositionsRunOut(t *testing.T) {
 func createTwoCardsConcurrently(t *testing.T, ctx context.Context, pool *pgxpool.Pool, boardID, firstColumn, secondColumn int64) (created int, failed int) {
 	t.Helper()
 
-	repo := &CardRepository{Db: pool}
-
-	meet := newRendezvous(2, 2*time.Second)
-	testHookBeforeCardInsert = meet.arrive
-	t.Cleanup(func() { testHookBeforeCardInsert = nil })
+	meet := newRendezvous(2, meetTimeout)
+	repo := &CardRepository{Db: pool, testHookBeforeCardInsert: meet.arrive}
 
 	columns := [2]int64{firstColumn, secondColumn}
 	errs := make([]error, 2)
@@ -173,7 +169,7 @@ func createTwoCardsConcurrently(t *testing.T, ctx context.Context, pool *pgxpool
 			})
 		}(i)
 	}
-	wg.Wait()
+	awaitAll(t, &wg, moveTimeout, "параллельные создания карточек")
 
 	limitReached := apperr.New(apperr.CodeBoardCardLimitReached, "")
 	for i, err := range errs {

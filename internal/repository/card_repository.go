@@ -36,6 +36,23 @@ type CardRepositoryInterface interface {
 
 type CardRepository struct {
 	Db *pgxpool.Pool
+
+	// Точки синхронизации для интеграционных тестов. В рабочей сборке всегда
+	// nil: их выставляют только тесты пакета, и только на своём экземпляре
+	// репозитория.
+	//
+	// Раньше это были переменные уровня пакета; так дешевле, но любой тест мог
+	// незаметно повлиять на соседний, а появление t.Parallel() превратило бы
+	// это в гонку. Поле экземпляра такой возможности не оставляет.
+	//
+	// testHookAfterFirstColumnLock вызывается в MoveCard сразу после взятия
+	// ПЕРВОЙ блокировки колонки — именно в этом промежутке видно, в каком
+	// порядке транзакции берут ресурсы.
+	testHookAfterFirstColumnLock func()
+
+	// testHookBeforeCardInsert вызывается в CreateCard после проверки предела
+	// и расчёта позиции, но до вставки строки.
+	testHookBeforeCardInsert func()
 }
 
 type AssignedCardRow struct {
@@ -386,11 +403,6 @@ func (r *CardRepository) GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int
 	return result, nil
 }
 
-// testHookBeforeCardInsert вызывается внутри транзакции CreateCard после
-// проверки предела и расчёта позиции, но до вставки строки. В рабочей сборке
-// всегда nil — значение выставляют только интеграционные тесты.
-var testHookBeforeCardInsert func()
-
 // CreateCardInput — всё, что нужно для создания карточки одной транзакцией.
 //
 // Позиции здесь нет намеренно: её считает сервер, внутри транзакции, под
@@ -512,8 +524,8 @@ func (r *CardRepository) CreateCard(ctx context.Context, in CreateCardInput) (*m
 		// уже посчитаны, вставки ещё не было. Именно в этом промежутке две
 		// параллельные попытки создать карточку раньше видели одинаковую
 		// картину.
-		if testHookBeforeCardInsert != nil {
-			testHookBeforeCardInsert()
+		if r.testHookBeforeCardInsert != nil {
+			r.testHookBeforeCardInsert()
 		}
 
 		res, err := q.CreateCard(ctx, params)
@@ -777,11 +789,6 @@ func dedupeIDs(ids []int64) []int64 {
 	return unique
 }
 
-// testHookBeforeRebalance вызывается внутри транзакции MoveCard между записью
-// карточки и ребалансом колонки. В рабочей сборке всегда nil — значение
-// выставляют только интеграционные тесты (см. move_card_concurrency_test.go).
-var testHookBeforeRebalance func()
-
 // MoveCard переносит карточку в колонку на заданную позицию.
 //
 // Раньше это были четыре независимых запроса без транзакции: прочитать
@@ -819,7 +826,18 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 		if lockOrder[0] > lockOrder[1] {
 			lockOrder[0], lockOrder[1] = lockOrder[1], lockOrder[0]
 		}
-		for _, lockColumnID := range dedupeIDs(lockOrder) {
+		// Точка синхронизации тестов стоит между первой и второй блокировкой:
+		// только в этом промежутке видно, в каком порядке транзакции берут
+		// колонки. Если ждать позже, обе успевают взять оба ресурса
+		// поодиночке, петля не складывается, и тест зеленеет на коде, в
+		// котором порядок нарушен.
+		meet := r.testHookAfterFirstColumnLock
+		if meet == nil {
+			meet = func() {}
+		}
+
+		locks := dedupeIDs(lockOrder)
+		for i, lockColumnID := range locks {
 			var lockedColumnID int64
 			if err := tx.QueryRow(ctx,
 				`SELECT id FROM kanban_column WHERE id = $1 FOR UPDATE`,
@@ -827,6 +845,15 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 			).Scan(&lockedColumnID); err != nil {
 				return err
 			}
+			if i == 0 {
+				meet()
+			}
+		}
+		// Если блокировок не осталось вовсе, встреча всё равно должна
+		// состояться: иначе тест, снявший защиту целиком, потеряет вместе с
+		// ней и чередование — и станет зелёным именно там, где обязан падать.
+		if len(locks) == 0 {
+			meet()
 		}
 
 		siblings, err := q.GetCardsByColumn(ctx, columnID)
@@ -859,19 +886,6 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 		}
 		if tag.RowsAffected() == 0 {
 			return apperr.ErrNotFound
-		}
-
-		// Точка синхронизации для интеграционных тестов: в обычной сборке nil,
-		// то есть стоит одна проверка на nil за перенос карточки.
-		//
-		// Без неё встречные переносы нечем поймать. Взаимная блокировка
-		// возникает только при определённом чередовании — обе транзакции
-		// должны успеть записать свою карточку и лишь потом взяться за
-		// ребаланс чужой колонки. Воспроизводить это паузами нельзя: тест либо
-		// не ловит гонку, либо ловит её через раз в зависимости от загрузки
-		// машины, а «через раз» в гейте бесполезно.
-		if testHookBeforeRebalance != nil {
-			testHookBeforeRebalance()
 		}
 
 		if needsRebalance {

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -40,17 +41,43 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 			"затем %s=postgres://test:test@127.0.0.1:55433/kanban_test?sslmode=disable", testDSNEnv)
 	}
 
-	ctx := context.Background()
+	assertThrowawayDatabase(t, dsn)
+
+	// Подготовка схемы ограничена по времени: если база занята чужой
+	// транзакцией, DROP SCHEMA будет ждать её сколько угодно, и прогон
+	// замрёт без единого сообщения.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
 	resetSchema(t, ctx, dsn)
 	applyMigrations(t, ctx, dsn)
 
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("подключение к тестовой базе: %v", err)
 	}
 	t.Cleanup(pool.Close)
 
 	return pool
+}
+
+// assertThrowawayDatabase не даёт снести схему на чужой базе.
+//
+// Тесты начинают с DROP SCHEMA public CASCADE. Если в KANBAN_TEST_DB_DSN
+// случайно окажется адрес стенда или рабочей базы, один запуск уничтожит её
+// содержимое. Цена ошибки несопоставима с ценой проверки имени, поэтому
+// разрешаем только базы, в имени которых есть test.
+func assertThrowawayDatabase(t *testing.T, dsn string) {
+	t.Helper()
+
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("разбор %s: %v", testDSNEnv, err)
+	}
+	if !strings.Contains(strings.ToLower(cfg.Database), "test") {
+		t.Fatalf("%s указывает на базу %q: тесты стирают схему целиком и работают только с одноразовой базой, "+
+			"в имени которой есть test (см. docker-compose.test.yml)", testDSNEnv, cfg.Database)
+	}
 }
 
 // simpleProtocolConn — соединение, через которое можно выполнить SQL-файл
@@ -267,5 +294,38 @@ func (r *rendezvous) arrive() {
 	select {
 	case <-r.ready:
 	case <-time.After(r.timeout):
+	}
+}
+
+// happened говорит, дошли ли до точки встречи все участники.
+//
+// Это не проверка успеха, а способ понять, что именно проверил тест: встреча
+// состоялась — значит чередование было настоящим; не состоялась — значит
+// второй участник ждал на блокировке, и это тоже осмысленный результат.
+// Без такого различения зелёный тест, в котором хук перестал вызываться
+// вовсе, выглядел бы точно так же, как честно пройденный.
+func (r *rendezvous) happened() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.arrived >= r.want
+}
+
+// awaitAll ждёт завершения горутин теста с ограничением по времени.
+//
+// Голый wg.Wait() при регрессии в блокировках оставляет прогон висеть до
+// общего таймаута go test — без сообщения о том, что именно застряло.
+func awaitAll(t *testing.T, wg *sync.WaitGroup, timeout time.Duration, what string) {
+	t.Helper()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		t.Fatalf("%s не завершились за %s: похоже на взаимную блокировку, которую не разобрал даже детектор PostgreSQL", what, timeout)
 	}
 }
