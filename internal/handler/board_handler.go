@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
@@ -143,11 +144,34 @@ func (h *BoardHandler) GetBoardArchive() http.HandlerFunc {
 		}
 
 		query := r.URL.Query()
+
+		orderBy := query.Get("order_by")
+		if orderBy == "" {
+			orderBy = "archived_at"
+		}
+		switch orderBy {
+		case "title", "column", "archived_at", "created_at":
+		default:
+			helper.WriteError(w, apperr.New(apperr.CodeInvalidOrderBy, string(apperr.CodeInvalidOrderBy)))
+			return
+		}
+
+		order := strings.ToUpper(query.Get("order"))
+		if order == "" {
+			order = "DESC"
+		}
+		if order != "ASC" && order != "DESC" {
+			helper.WriteError(w, apperr.New(apperr.CodeInvalidOrder, string(apperr.CodeInvalidOrder)))
+			return
+		}
+
 		filters := model.BoardArchiveFilters{
 			Title:       query.Get("title"),
 			Description: query.Get("description"),
 			DateFrom:    query.Get("dateFrom"),
 			DateTo:      query.Get("dateTo"),
+			OrderBy:     orderBy,
+			Order:       order,
 			Page:        parsePositiveInt(query.Get("page"), 1),
 			Limit:       10,
 		}

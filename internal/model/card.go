@@ -34,6 +34,8 @@ type BoardArchiveFilters struct {
 	Description string
 	DateFrom    string
 	DateTo      string
+	OrderBy     string // title | column | archived_at | created_at
+	Order       string // ASC | DESC
 	Page        int
 	Limit       int
 }
@@ -44,8 +46,10 @@ type ArchivedCard struct {
 	Description *string
 	ColumnTitle string
 	BorderColor *string
+	CreatedAt   time.Time
 	ArchivedAt  *time.Time
 	ArchivedBy  *User
+	Assignees   []User
 }
 
 type BoardArchivePage struct {

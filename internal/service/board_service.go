@@ -389,6 +389,35 @@ func (s *BoardService) GetBoardArchive(ctx context.Context, projectID int64, boa
 	if err != nil {
 		return nil, err
 	}
+
+	ids := make([]int64, len(archive.Cards))
+	for i := range archive.Cards {
+		ids[i] = archive.Cards[i].ID
+	}
+	byCard, err := s.cardRepo.GetAssigneesByCardIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	var userIDs []int64
+	for _, uids := range byCard {
+		userIDs = append(userIDs, uids...)
+	}
+	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	byUser := make(map[int64]model.User, len(users))
+	for _, u := range users {
+		byUser[u.ID] = u
+	}
+	for i := range archive.Cards {
+		for _, uid := range byCard[archive.Cards[i].ID] {
+			if u, ok := byUser[uid]; ok {
+				archive.Cards[i].Assignees = append(archive.Cards[i].Assignees, u)
+			}
+		}
+	}
+
 	return dto.MapBoardArchiveResponse(s.cfg, archive), nil
 }
 
