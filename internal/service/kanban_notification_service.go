@@ -120,6 +120,11 @@ func (s *KanbanNotificationService) resolveBoardID(ctx context.Context, boardID,
 	return column.BoardID
 }
 
+// projectTaskLink — SPA permalink: /projects/:id/board-:boardId/task-:taskId.
+func projectTaskLink(projectID, boardID, cardID int64) string {
+	return fmt.Sprintf("/projects/%d/board-%d/task-%d", projectID, boardID, cardID)
+}
+
 // NotifyCardCreated notifies project admins about a new card (except the actor).
 func (s *KanbanNotificationService) NotifyCardCreated(
 	ctx context.Context,
@@ -145,7 +150,7 @@ func (s *KanbanNotificationService) NotifyCardCreated(
 
 	boardTitle := s.getBoardTitle(ctx, boardID)
 
-	link := fmt.Sprintf("/projects/%d?board=%d&task=%d", projectID, boardID, cardID)
+	link := projectTaskLink(projectID, boardID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "card_created",
 		ActorID:    actorID,
@@ -180,7 +185,7 @@ func (s *KanbanNotificationService) NotifyTaskAssigned(
 	resolvedBoardID := s.resolveBoardID(ctx, boardID, cardID)
 	boardTitle := s.getBoardTitle(ctx, resolvedBoardID)
 
-	link := fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
+	link := projectTaskLink(projectID, resolvedBoardID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "task_assigned",
 		ActorID:    actorID,
@@ -238,7 +243,7 @@ func (s *KanbanNotificationService) NotifyTaskMoved(
 	resolvedBoardID := s.resolveBoardID(ctx, boardID, cardID)
 	boardTitle := s.getBoardTitle(ctx, resolvedBoardID)
 
-	link := fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
+	link := projectTaskLink(projectID, resolvedBoardID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "task_moved",
 		ActorID:    actorID,
@@ -293,10 +298,7 @@ func (s *KanbanNotificationService) NotifyCommentAdded(
 	effectiveBoardID := s.resolveBoardID(ctx, boardID, cardID)
 	boardTitle := s.getBoardTitle(ctx, effectiveBoardID)
 
-	link := fmt.Sprintf("/projects/%d?board=%d&task=%d", projectID, effectiveBoardID, cardID)
-	if effectiveBoardID == 0 {
-		link = fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
-	}
+	link := projectTaskLink(projectID, effectiveBoardID, cardID)
 
 	evt := events.KanbanNotificationEvent{
 		Type:       "comment_added",
@@ -337,7 +339,7 @@ func (s *KanbanNotificationService) NotifySubtaskAssigned(
 	boardID := s.resolveBoardID(ctx, 0, cardID)
 	boardTitle := s.getBoardTitle(ctx, boardID)
 
-	link := fmt.Sprintf("/projects/%d?task=%d", projectID, cardID)
+	link := projectTaskLink(projectID, boardID, cardID)
 	evt := events.KanbanNotificationEvent{
 		Type:       "subtask_assigned",
 		ActorID:    actorID,
