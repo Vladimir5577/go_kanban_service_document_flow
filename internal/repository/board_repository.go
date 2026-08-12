@@ -299,10 +299,10 @@ func buildArchivedCardsQuery(boardID int64, filters model.BoardArchiveFilters) s
 		Where(sq.Eq{"c.is_archived": true})
 
 	if title := strings.TrimSpace(filters.Title); title != "" {
-		query = query.Where(sq.Like{"c.title": "%" + title + "%"})
+		query = query.Where(sq.ILike{"c.title": "%" + title + "%"})
 	}
 	if description := strings.TrimSpace(filters.Description); description != "" {
-		query = query.Where(sq.Like{"c.description": "%" + description + "%"})
+		query = query.Where(sq.ILike{"c.description": "%" + description + "%"})
 	}
 	if from, ok := parseArchiveDate(filters.DateFrom, false); ok {
 		query = query.Where(sq.GtOrEq{"c.archived_at": from})
