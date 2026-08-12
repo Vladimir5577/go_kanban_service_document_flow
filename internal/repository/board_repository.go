@@ -205,13 +205,14 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 			"c.description",
 			"col.title AS column_title",
 			"c.border_color",
+			"c.created_at",
 			"c.archived_at",
 			"c.archived_by_id",
 			"u.lastname",
 			"u.firstname",
 			"u.avatar_name",
 		).
-		OrderBy("c.archived_at DESC NULLS LAST", "c.id DESC").
+		OrderBy(archiveOrderBy(filters)...).
 		Limit(uint64(limit)).
 		Offset(uint64(offset)).
 		ToSql()
@@ -242,6 +243,7 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 			&description,
 			&card.ColumnTitle,
 			&borderColor,
+			&card.CreatedAt,
 			&archivedAt,
 			&archivedByID,
 			&archivedByLastname,
@@ -287,6 +289,25 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 		Total:         total,
 		ArchivedCount: archivedCount,
 	}, nil
+}
+
+func archiveOrderBy(filters model.BoardArchiveFilters) []string {
+	orderBySQL, ok := map[string]string{
+		"title":       "c.title",
+		"column":      "col.title",
+		"archived_at": "c.archived_at",
+		"created_at":  "c.created_at",
+	}[filters.OrderBy]
+	if !ok {
+		orderBySQL = "c.archived_at"
+	}
+
+	dir := "DESC"
+	if filters.Order == "ASC" {
+		dir = "ASC"
+	}
+
+	return []string{orderBySQL + " " + dir + " NULLS LAST", "c.id DESC"}
 }
 
 func buildArchivedCardsQuery(boardID int64, filters model.BoardArchiveFilters) sq.SelectBuilder {
