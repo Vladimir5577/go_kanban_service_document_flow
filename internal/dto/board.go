@@ -123,13 +123,15 @@ type BoardArchivePaginationResponse struct {
 }
 
 type ArchivedCardResponse struct {
-	ID          int64                 `json:"id"`
-	Title       string                `json:"title"`
-	Description *string               `json:"description"`
-	ColumnTitle string                `json:"columnTitle"`
-	BorderColor *string               `json:"borderColor"`
-	ArchivedAt  *time.Time            `json:"archivedAt"`
-	ArchivedBy  *CardAssigneeResponse `json:"archivedBy"`
+	ID          int64                   `json:"id"`
+	Title       string                  `json:"title"`
+	Description *string                 `json:"description"`
+	ColumnTitle string                  `json:"columnTitle"`
+	BorderColor *string                 `json:"borderColor"`
+	CreatedAt   time.Time               `json:"createdAt"`
+	ArchivedAt  *time.Time              `json:"archivedAt"`
+	ArchivedBy  *CardAssigneeResponse   `json:"archivedBy"`
+	Assignees   []*CardAssigneeResponse `json:"assignees"`
 }
 
 type BoardArchiveResponse struct {
@@ -169,14 +171,20 @@ func MapArchivedCardResponse(cfg *config.Config, card *model.ArchivedCard) *Arch
 	if card == nil {
 		return nil
 	}
+	assignees := make([]*CardAssigneeResponse, 0, len(card.Assignees))
+	for i := range card.Assignees {
+		assignees = append(assignees, mapArchivedByUser(cfg, &card.Assignees[i]))
+	}
 	return &ArchivedCardResponse{
 		ID:          card.ID,
 		Title:       card.Title,
 		Description: card.Description,
 		ColumnTitle: card.ColumnTitle,
 		BorderColor: card.BorderColor,
+		CreatedAt:   card.CreatedAt,
 		ArchivedAt:  card.ArchivedAt,
 		ArchivedBy:  mapArchivedByUser(cfg, card.ArchivedBy),
+		Assignees:   assignees,
 	}
 }
 

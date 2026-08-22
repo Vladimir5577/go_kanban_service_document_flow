@@ -18,10 +18,7 @@ const goldenPayload = `{` +
 	`"eventId":"018f0c3e-7a11-7c9d-9f2a-4d5b6e7f8a90",` +
 	`"title":"Новая задача «Свет в холле» на доске «Спринт 12»",` +
 	`"typeLabel":"Создана задача",` +
-	// `&` в ссылке уезжает как \u0026: encoding/json по умолчанию экранирует
-	// HTML-символы. На проводе это валидный JSON, консьюмер разбирает обратно
-	// в `&` — парная проверка на его стороне это и подтверждает.
-	`"link":"/projects/7?board=3\u0026task=42",` +
+	`"link":"/projects/7/board-3/task-42",` +
 	`"type":"card_created",` +
 	`"actorId":144,` +
 	`"projectId":7,` +
@@ -33,7 +30,7 @@ const goldenPayload = `{` +
 
 func TestKanbanNotificationEventJSON(t *testing.T) {
 	boardID, cardID := int64(3), int64(42)
-	link := "/projects/7?board=3&task=42"
+	link := "/projects/7/board-3/task-42"
 
 	evt := KanbanNotificationEvent{
 		EventID:    "018f0c3e-7a11-7c9d-9f2a-4d5b6e7f8a90",
