@@ -128,10 +128,12 @@ type ArchivedCardResponse struct {
 	Description *string                 `json:"description"`
 	ColumnTitle string                  `json:"columnTitle"`
 	BorderColor *string                 `json:"borderColor"`
-	CreatedAt   time.Time               `json:"createdAt"`
-	ArchivedAt  *time.Time              `json:"archivedAt"`
-	ArchivedBy  *CardAssigneeResponse   `json:"archivedBy"`
-	Assignees   []*CardAssigneeResponse `json:"assignees"`
+	CreatedAt    time.Time               `json:"createdAt"`
+	ArchivedAt   *time.Time              `json:"archivedAt"`
+	ArchivedBy   *CardAssigneeResponse   `json:"archivedBy"`
+	CompletedAt  *time.Time              `json:"completedAt"`
+	CompletedBy  *CardAssigneeResponse   `json:"completedBy"`
+	Assignees    []*CardAssigneeResponse `json:"assignees"`
 }
 
 type BoardArchiveResponse struct {
@@ -181,10 +183,12 @@ func MapArchivedCardResponse(cfg *config.Config, card *model.ArchivedCard) *Arch
 		Description: card.Description,
 		ColumnTitle: card.ColumnTitle,
 		BorderColor: card.BorderColor,
-		CreatedAt:   card.CreatedAt,
-		ArchivedAt:  card.ArchivedAt,
-		ArchivedBy:  mapArchivedByUser(cfg, card.ArchivedBy),
-		Assignees:   assignees,
+		CreatedAt:    card.CreatedAt,
+		ArchivedAt:   card.ArchivedAt,
+		ArchivedBy:   mapArchivedByUser(cfg, card.ArchivedBy),
+		CompletedAt:  card.CompletedAt,
+		CompletedBy:  mapArchivedByUser(cfg, card.CompletedBy),
+		Assignees:    assignees,
 	}
 }
 

@@ -150,7 +150,7 @@ func (h *BoardHandler) GetBoardArchive() http.HandlerFunc {
 			orderBy = "archived_at"
 		}
 		switch orderBy {
-		case "title", "column", "archived_at", "created_at":
+		case "title", "column", "archived_at", "created_at", "completed_at":
 		default:
 			helper.WriteError(w, apperr.New(apperr.CodeInvalidOrderBy, string(apperr.CodeInvalidOrderBy)))
 			return

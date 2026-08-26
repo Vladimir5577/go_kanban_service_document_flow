@@ -211,6 +211,11 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 			"u.lastname",
 			"u.firstname",
 			"u.avatar_name",
+			"c.completed_at",
+			"c.completed_by_id",
+			"cb.lastname",
+			"cb.firstname",
+			"cb.avatar_name",
 		).
 		OrderBy(archiveOrderBy(filters)...).
 		Limit(uint64(limit)).
@@ -236,6 +241,11 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 		var archivedByLastname pgtype.Text
 		var archivedByFirstname pgtype.Text
 		var archivedByAvatar pgtype.Text
+		var completedAt pgtype.Timestamptz
+		var completedByID pgtype.Int8
+		var completedByLastname pgtype.Text
+		var completedByFirstname pgtype.Text
+		var completedByAvatar pgtype.Text
 
 		if err := rows.Scan(
 			&card.ID,
@@ -249,6 +259,11 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 			&archivedByLastname,
 			&archivedByFirstname,
 			&archivedByAvatar,
+			&completedAt,
+			&completedByID,
+			&completedByLastname,
+			&completedByFirstname,
+			&completedByAvatar,
 		); err != nil {
 			return nil, err
 		}
@@ -275,6 +290,22 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 			}
 			card.ArchivedBy = user
 		}
+		if completedAt.Valid {
+			card.CompletedAt = &completedAt.Time
+		}
+		if completedByID.Valid {
+			user := &model.User{ID: completedByID.Int64}
+			if completedByLastname.Valid {
+				user.Lastname = completedByLastname.String
+			}
+			if completedByFirstname.Valid {
+				user.Firstname = completedByFirstname.String
+			}
+			if completedByAvatar.Valid {
+				user.AvatarName = &completedByAvatar.String
+			}
+			card.CompletedBy = user
+		}
 
 		cards = append(cards, card)
 	}
@@ -297,6 +328,7 @@ func archiveOrderBy(filters model.BoardArchiveFilters) []string {
 		"column":      "col.title",
 		"archived_at": "c.archived_at",
 		"created_at":  "c.created_at",
+		"completed_at": "c.completed_at",
 	}[filters.OrderBy]
 	if !ok {
 		orderBySQL = "c.archived_at"
@@ -316,6 +348,7 @@ func buildArchivedCardsQuery(boardID int64, filters model.BoardArchiveFilters) s
 		From("kanban_card c").
 		Join("kanban_column col ON c.column_id = col.id").
 		LeftJoin("users u ON c.archived_by_id = u.id").
+		LeftJoin("users cb ON c.completed_by_id = cb.id").
 		Where(sq.Eq{"col.board_id": boardID}).
 		Where(sq.Eq{"c.is_archived": true})
 
