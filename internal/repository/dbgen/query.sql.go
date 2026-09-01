@@ -1014,7 +1014,7 @@ func (q *Queries) GetAttachmentsByCard(ctx context.Context, arg GetAttachmentsBy
 
 const getBoard = `-- name: GetBoard :one
 
-SELECT id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at FROM kanban_board
+SELECT id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id FROM kanban_board
 WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
@@ -1033,12 +1033,13 @@ func (q *Queries) GetBoard(ctx context.Context, id int64) (KanbanBoard, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.DoneColumnID,
 	)
 	return i, err
 }
 
 const getBoardsByProject = `-- name: GetBoardsByProject :many
-SELECT id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at FROM kanban_board
+SELECT id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id FROM kanban_board
 WHERE kanban_project_id = $1 AND deleted_at IS NULL
 ORDER BY position ASC
 `
@@ -1061,6 +1062,7 @@ func (q *Queries) GetBoardsByProject(ctx context.Context, kanbanProjectID int64)
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.DoneColumnID,
 		); err != nil {
 			return nil, err
 		}

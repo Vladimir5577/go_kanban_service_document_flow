@@ -339,6 +339,23 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 		b.Position = *req.Position
 		changed = true
 	}
+	if req.DoneColumnID != nil {
+		var next *int64
+		if *req.DoneColumnID != 0 {
+			col, err := s.columnRepo.GetColumn(ctx, *req.DoneColumnID)
+			if err != nil {
+				return nil, err
+			}
+			if col.BoardID != b.ID {
+				return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
+			}
+			next = req.DoneColumnID
+		}
+		if err := s.repo.SetDoneColumnID(ctx, b.ID, next); err != nil {
+			return nil, err
+		}
+		b.DoneColumnID = next
+	}
 	if !changed {
 		return b, nil
 	}

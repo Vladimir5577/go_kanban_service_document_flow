@@ -71,8 +71,9 @@ func (r *CreateBoardRequest) UnmarshalJSON(data []byte) error {
 }
 
 type UpdateBoardRequest struct {
-	Title    *string  `json:"title,omitempty" validate:"omitempty"`
-	Position *float64 `json:"position,omitempty"`
+	Title        *string  `json:"title,omitempty" validate:"omitempty"`
+	Position     *float64 `json:"position,omitempty"`
+	DoneColumnID *int64   `json:"doneColumnId"`
 }
 
 type BoardResponse struct {
@@ -83,6 +84,7 @@ type BoardResponse struct {
 	CreatedByID     int64             `json:"createdById"`
 	CreatedAt       time.Time         `json:"createdAt"`
 	UpdatedAt       time.Time         `json:"updatedAt"`
+	DoneColumnID    *int64            `json:"doneColumnId"`
 	Columns         []*ColumnResponse `json:"columns"`
 }
 
@@ -98,6 +100,7 @@ func MapBoardResponse(b *model.Board) *BoardResponse {
 		CreatedByID:     b.CreatedByID,
 		CreatedAt:       b.CreatedAt,
 		UpdatedAt:       b.UpdatedAt,
+		DoneColumnID:    b.DoneColumnID,
 		Columns:         make([]*ColumnResponse, 0),
 	}
 }
