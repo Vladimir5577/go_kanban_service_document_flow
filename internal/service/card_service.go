@@ -22,6 +22,7 @@ type CardServiceInterface interface {
 	CreateCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error)
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error)
+	GetCardStandalone(ctx context.Context, id int64) (*dto.CardStandaloneResponse, error)
 	GetAssignedToMe(ctx context.Context, status string) (*dto.AssignedToMeResponse, error)
 	UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
@@ -42,6 +43,7 @@ type CardService struct {
 	userRepo          repository.UserRepositoryInterface
 	activityRepo      repository.ActivityRepositoryInterface
 	columnRepo        repository.ColumnRepositoryInterface
+	boardRepo         repository.BoardRepositoryInterface
 	projectRepo       repository.ProjectRepositoryInterface
 	projectMemberRepo repository.ProjectMemberRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
@@ -62,6 +64,7 @@ func NewCardService(
 	userRepo repository.UserRepositoryInterface,
 	activityRepo repository.ActivityRepositoryInterface,
 	columnRepo repository.ColumnRepositoryInterface,
+	boardRepo repository.BoardRepositoryInterface,
 	projectRepo repository.ProjectRepositoryInterface,
 	projectMemberRepo repository.ProjectMemberRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
@@ -79,6 +82,7 @@ func NewCardService(
 		userRepo:          userRepo,
 		activityRepo:      activityRepo,
 		columnRepo:        columnRepo,
+		boardRepo:         boardRepo,
 		projectRepo:       projectRepo,
 		projectMemberRepo: projectMemberRepo,
 		realtimePublisher: realtimePublisher,
@@ -339,6 +343,102 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	}
 
 	return resp, nil
+}
+
+func (s *CardService) GetCardStandalone(ctx context.Context, id int64) (*dto.CardStandaloneResponse, error) {
+	card, err := s.GetCardDetail(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
+	if err != nil {
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+	}
+
+	role, err := s.permSvc.GetMemberRole(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	columns, err := s.columnRepo.GetColumnsByBoard(ctx, card.BoardID)
+	if err != nil {
+		return nil, err
+	}
+	columnResp := make([]*dto.CardStandaloneColumnResponse, 0, len(columns))
+	for i := range columns {
+		columnResp = append(columnResp, &dto.CardStandaloneColumnResponse{
+			ID:          columns[i].ID,
+			Title:       columns[i].Title,
+			HeaderColor: columns[i].HeaderColor,
+			Position:    columns[i].Position,
+		})
+	}
+
+	board, err := s.boardRepo.GetBoard(ctx, card.BoardID)
+	if err != nil {
+		return nil, err
+	}
+
+	project, err := s.projectRepo.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, withNotFoundCode(err, apperr.CodeProjectNotFound)
+	}
+	members, err := s.projectMemberRepo.GetMembers(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	members = ensureOwnerMember(members, project.OwnerID, projectID)
+
+	userIDs := make([]int64, 0, len(members))
+	for _, m := range members {
+		userIDs = append(userIDs, m.UserID)
+	}
+	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
+	if err != nil {
+		return nil, err
+	}
+	userMap := make(map[int64]*model.User, len(users))
+	for i := range users {
+		userMap[users[i].ID] = &users[i]
+	}
+
+	memberResp := make([]*dto.MemberResponse, 0, len(members))
+	for _, m := range members {
+		item := &dto.MemberResponse{
+			UserID:  m.UserID,
+			Role:    m.Role,
+			IsOwner: m.UserID == project.OwnerID,
+		}
+		if u, ok := userMap[m.UserID]; ok {
+			item.Login = u.Login
+			item.Lastname = u.Lastname
+			item.Firstname = u.Firstname
+			item.Patronymic = u.Patronymic
+			item.AvatarUrl = dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail)
+		}
+		memberResp = append(memberResp, item)
+	}
+
+	labels, err := s.labelRepo.GetLabels(ctx, card.BoardID)
+	if err != nil {
+		return nil, err
+	}
+
+	currUser, _ := middleware.GetUser(ctx)
+	isOwner := currUser.ID == project.OwnerID
+
+	return &dto.CardStandaloneResponse{
+		Card:           card,
+		ProjectID:      projectID,
+		MemberRole:     string(role),
+		IsOwner:        isOwner,
+		IsProjectAdmin: role == RoleAdmin || isOwner,
+		DoneColumnID:   board.DoneColumnID,
+		Columns:        columnResp,
+		Members:        memberResp,
+		Labels:         dto.MapLabelsResponse(labels),
+	}, nil
 }
 
 func (s *CardService) GetCard(ctx context.Context, id int64) (*model.Card, error) {

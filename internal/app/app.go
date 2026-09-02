@@ -114,7 +114,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, activityRepo, realtimePublisher, userRepo)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
-	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
+	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, boardRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)

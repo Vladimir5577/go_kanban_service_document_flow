@@ -80,6 +80,7 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 		// CARDS
 		r.Route("/spa/api/kanban/cards", func(r chi.Router) {
 			r.Post("/", h.Card.CreateCard())
+			r.Get("/{id}/standalone", h.Card.GetCardStandalone())
 			r.Get("/{id}", h.Card.GetCard())
 			r.Patch("/{id}", h.Card.UpdateCard())
 			r.Delete("/{id}", h.Card.DeleteCard())
