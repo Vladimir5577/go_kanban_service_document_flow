@@ -171,16 +171,21 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 }
 
 func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error) {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
+	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleViewer)
 	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
+	resp, _, err := s.cardDetail(ctx, id, acc)
+	return resp, err
+}
+
+// cardDetail собирает карточку, когда доступ уже проверен и контекст известен.
+// Вторым значением отдаёт метки доски: GetCardStandalone нужен их полный
+// список, и читать его второй раз за тот же запрос незачем.
+func (s *CardService) cardDetail(ctx context.Context, id int64, acc CardAccess) (*dto.CardResponse, []model.Label, error) {
 	card, err := s.repo.GetCard(ctx, id)
 	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+		return nil, nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 
 	resp := dto.MapCardResponse(card)
@@ -188,7 +193,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	// Fetch Subtasks
 	subtasks, err := s.subtaskRepo.GetSubtasks(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	resp.Subtasks = dto.MapSubtasksResponse(subtasks)
 	for _, st := range subtasks {
@@ -201,7 +206,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	// Fetch Comments
 	comments, err := s.commentRepo.GetComments(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var userIDs []int64
@@ -227,19 +232,19 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 	var allAttachments []model.Attachment
 	attsCard, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "card")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	allAttachments = append(allAttachments, attsCard...)
 
 	attsDesc, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "description")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	allAttachments = append(allAttachments, attsDesc...)
 
 	chatAttachments, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "chat")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	allAttachments = append(allAttachments, chatAttachments...)
 
@@ -252,7 +257,7 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 
 	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	userMap := make(map[int64]*model.User)
 	for i := range users {
@@ -285,18 +290,14 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 		}
 	}
 
-	col, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
-	if err != nil {
-		return nil, err
-	}
+	// Доска и заголовок колонки пришли вместе с проверкой прав — отдельный
+	// GetColumn для этого больше не нужен.
+	resp.BoardID = acc.BoardID
+	resp.ColumnTitle = acc.ColumnTitle
 
-	// Enrich with board and column info required by frontend
-	resp.BoardID = col.BoardID
-	resp.ColumnTitle = col.Title
-
-	labels, err := s.labelRepo.GetLabels(ctx, col.BoardID)
+	labels, err := s.labelRepo.GetLabels(ctx, acc.BoardID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	labelMap := make(map[int64]*dto.LabelResponse, len(labels))
 	for i := range labels {
@@ -342,24 +343,22 @@ func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardRes
 		}
 	}
 
-	return resp, nil
+	return resp, labels, nil
 }
 
 func (s *CardService) GetCardStandalone(ctx context.Context, id int64) (*dto.CardStandaloneResponse, error) {
-	card, err := s.GetCardDetail(ctx, id)
+	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleViewer)
 	if err != nil {
 		return nil, err
 	}
 
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
-	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
-	}
-
-	role, err := s.permSvc.GetMemberRole(ctx, projectID)
+	card, labels, err := s.cardDetail(ctx, id, acc)
 	if err != nil {
 		return nil, err
 	}
+
+	projectID := acc.ProjectID
+	role := acc.Role
 
 	columns, err := s.columnRepo.GetColumnsByBoard(ctx, card.BoardID)
 	if err != nil {
@@ -380,15 +379,12 @@ func (s *CardService) GetCardStandalone(ctx context.Context, id int64) (*dto.Car
 		return nil, err
 	}
 
-	project, err := s.projectRepo.GetProject(ctx, projectID)
-	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeProjectNotFound)
-	}
+	// Владелец известен из проверки прав — отдельный GetProject не нужен.
 	members, err := s.projectMemberRepo.GetMembers(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
-	members = ensureOwnerMember(members, project.OwnerID, projectID)
+	members = ensureOwnerMember(members, acc.OwnerID, projectID)
 
 	userIDs := make([]int64, 0, len(members))
 	for _, m := range members {
@@ -408,7 +404,7 @@ func (s *CardService) GetCardStandalone(ctx context.Context, id int64) (*dto.Car
 		item := &dto.MemberResponse{
 			UserID:  m.UserID,
 			Role:    m.Role,
-			IsOwner: m.UserID == project.OwnerID,
+			IsOwner: m.UserID == acc.OwnerID,
 		}
 		if u, ok := userMap[m.UserID]; ok {
 			item.Login = u.Login
@@ -420,13 +416,10 @@ func (s *CardService) GetCardStandalone(ctx context.Context, id int64) (*dto.Car
 		memberResp = append(memberResp, item)
 	}
 
-	labels, err := s.labelRepo.GetLabels(ctx, card.BoardID)
-	if err != nil {
-		return nil, err
-	}
+	// labels уже прочитаны в cardDetail — это те же метки той же доски.
 
 	currUser, _ := middleware.GetUser(ctx)
-	isOwner := currUser.ID == project.OwnerID
+	isOwner := acc.IsOwner(currUser.ID)
 
 	return &dto.CardStandaloneResponse{
 		Card:           card,

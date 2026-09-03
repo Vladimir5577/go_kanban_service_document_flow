@@ -408,6 +408,24 @@ JOIN kanban_column c ON card.column_id = c.id
 JOIN kanban_board b ON c.board_id = b.id
 WHERE card.id = $1;
 
+-- name: GetCardContext :one
+-- Всё, что нужно для проверки прав и для шапки карточки, одним запросом:
+-- проект, доска, заголовок колонки, владелец. Джойны те же, что в
+-- GetProjectIDByCard, плюс проект — все по первичным ключам.
+-- deleted_at проекта не фильтруем в WHERE, а возвращаем: иначе «карточки нет»
+-- и «проект удалён» схлопнутся в одну ошибку и фронт получит не тот код.
+SELECT
+    b.kanban_project_id,
+    b.id AS board_id,
+    col.title AS column_title,
+    p.owner_id,
+    p.deleted_at AS project_deleted_at
+FROM kanban_card card
+JOIN kanban_column col ON card.column_id = col.id
+JOIN kanban_board b ON col.board_id = b.id
+JOIN kanban_project p ON b.kanban_project_id = p.id
+WHERE card.id = $1;
+
 -- name: RemoveProjectMember :exec
 DELETE FROM kanban_project_user
 WHERE kanban_project_id = $1 AND user_id = $2;

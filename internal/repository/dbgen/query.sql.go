@@ -163,7 +163,7 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 const createBoard = `-- name: CreateBoard :one
 INSERT INTO kanban_board (title, position, kanban_project_id, created_by_id)
 VALUES ($1, $2, $3, $4)
-RETURNING id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at
+RETURNING id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id
 `
 
 type CreateBoardParams struct {
@@ -190,6 +190,7 @@ func (q *Queries) CreateBoard(ctx context.Context, arg CreateBoardParams) (Kanba
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.DoneColumnID,
 	)
 	return i, err
 }
@@ -1161,6 +1162,46 @@ func (q *Queries) GetCardAssigneesByCardIDs(ctx context.Context, dollar_1 []int6
 	return items, nil
 }
 
+const getCardContext = `-- name: GetCardContext :one
+SELECT
+    b.kanban_project_id,
+    b.id AS board_id,
+    col.title AS column_title,
+    p.owner_id,
+    p.deleted_at AS project_deleted_at
+FROM kanban_card card
+JOIN kanban_column col ON card.column_id = col.id
+JOIN kanban_board b ON col.board_id = b.id
+JOIN kanban_project p ON b.kanban_project_id = p.id
+WHERE card.id = $1
+`
+
+type GetCardContextRow struct {
+	KanbanProjectID  int64              `json:"kanban_project_id"`
+	BoardID          int64              `json:"board_id"`
+	ColumnTitle      string             `json:"column_title"`
+	OwnerID          int64              `json:"owner_id"`
+	ProjectDeletedAt pgtype.Timestamptz `json:"project_deleted_at"`
+}
+
+// Всё, что нужно для проверки прав и для шапки карточки, одним запросом:
+// проект, доска, заголовок колонки, владелец. Джойны те же, что в
+// GetProjectIDByCard, плюс проект — все по первичным ключам.
+// deleted_at проекта не фильтруем в WHERE, а возвращаем: иначе «карточки нет»
+// и «проект удалён» схлопнутся в одну ошибку и фронт получит не тот код.
+func (q *Queries) GetCardContext(ctx context.Context, id int64) (GetCardContextRow, error) {
+	row := q.db.QueryRow(ctx, getCardContext, id)
+	var i GetCardContextRow
+	err := row.Scan(
+		&i.KanbanProjectID,
+		&i.BoardID,
+		&i.ColumnTitle,
+		&i.OwnerID,
+		&i.ProjectDeletedAt,
+	)
+	return i, err
+}
+
 const getCardLabels = `-- name: GetCardLabels :many
 
 SELECT kanban_label_id FROM kanban_card_label
@@ -1884,7 +1925,7 @@ const updateBoard = `-- name: UpdateBoard :one
 UPDATE kanban_board
 SET title = $1, position = $2, updated_at = CURRENT_TIMESTAMP
 WHERE id = $3 AND deleted_at IS NULL
-RETURNING id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at
+RETURNING id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id
 `
 
 type UpdateBoardParams struct {
@@ -1905,6 +1946,7 @@ func (q *Queries) UpdateBoard(ctx context.Context, arg UpdateBoardParams) (Kanba
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.DoneColumnID,
 	)
 	return i, err
 }
