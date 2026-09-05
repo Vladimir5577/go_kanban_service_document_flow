@@ -43,6 +43,7 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 			// PROJECT MEMBERS
 			r.Route("/{id}/members", func(r chi.Router) {
 				r.Put("/", h.ProjectMember.ReplaceMembers())
+				r.Post("/", h.ProjectMember.AddMember())
 				r.Patch("/{userId}", h.ProjectMember.UpdateMemberRole())
 				r.Delete("/{userId}", h.ProjectMember.RemoveMember())
 			})

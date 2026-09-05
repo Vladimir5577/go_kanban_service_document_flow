@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"errors"
+	"github.com/jackc/pgx/v5"
 	"context"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -14,6 +16,7 @@ type ProjectMemberRepositoryInterface interface {
 	GetMembers(ctx context.Context, projectID int64) ([]model.ProjectUser, error)
 	GetProjectMember(ctx context.Context, projectID, userID int64) (*model.ProjectUser, error)
 	AddMember(ctx context.Context, projectID int64, member model.ProjectUser) error
+	AddMemberIfAbsent(ctx context.Context, projectID int64, member model.ProjectUser) (bool, error)
 	ReplaceMembers(ctx context.Context, projectID int64, members []model.ProjectUser) error
 	UpdateMemberRole(ctx context.Context, projectID int64, userID int64, role string) error
 	UpdateProjectPlacement(ctx context.Context, projectID int64, userID int64, folderID *int64, position float64) (*model.ProjectUser, error)
@@ -82,6 +85,27 @@ func (r *ProjectMemberRepository) AddMember(ctx context.Context, projectID int64
 		params.FolderID = pgtype.Int8{Int64: *member.FolderID, Valid: true}
 	}
 	return queries.AddProjectMember(ctx, params)
+}
+
+// AddMemberIfAbsent вставляет участника, если его ещё нет; уже участник —
+// ничего не меняет (в т.ч. роль). inserted=false — участник уже был.
+func (r *ProjectMemberRepository) AddMemberIfAbsent(ctx context.Context, projectID int64, member model.ProjectUser) (bool, error) {
+	queries := dbgen.New(r.Db)
+	params := dbgen.AddProjectMemberIfAbsentParams{
+		KanbanProjectID: projectID,
+		UserID:          member.UserID,
+		Role:            member.Role,
+	}
+	if member.FolderID != nil {
+		params.FolderID = pgtype.Int8{Int64: *member.FolderID, Valid: true}
+	}
+	if _, err := queries.AddProjectMemberIfAbsent(ctx, params); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID int64, members []model.ProjectUser) error {

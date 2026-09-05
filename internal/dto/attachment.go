@@ -7,6 +7,7 @@ import (
 
 	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/helper"
+	"go_kanban_service/internal/media"
 	"go_kanban_service/internal/model"
 )
 
@@ -45,11 +46,10 @@ func MapAttachmentResponse(cfg *config.Config, a model.Attachment) *AttachmentRe
 
 	var previewUrl string
 	if isInlineSafeImage && cfg.ImgproxyBaseUrl != "" {
-		// e.g. http://localhost:8082/unsafe/rs:fit:400:400/plain/s3://kanban/cards/...
-		previewUrl = fmt.Sprintf("%s/unsafe/rs:fit:400:400/plain/s3://%s/%s",
-			strings.TrimRight(cfg.ImgproxyBaseUrl, "/"),
-			cfg.MinioBucket,
-			a.StorageKey)
+		// e.g. http://localhost:8082/{signature|unsafe}/rs:fit:400:400/plain/s3://kanban/cards/...
+		// Подпись — при заданных IMGPROXY_KEY/SALT (BE-03 / FE-01), иначе /unsafe/.
+		path := fmt.Sprintf("/rs:fit:400:400/plain/s3://%s/%s", cfg.MinioBucket, a.StorageKey)
+		previewUrl = strings.TrimRight(cfg.ImgproxyBaseUrl, "/") + media.SignImgproxyPath(cfg.ImgproxyKey, cfg.ImgproxySalt, path)
 	} else {
 		previewUrl = fmt.Sprintf("/spa/api/kanban/cards/%d/attachments/%d/preview", a.CardID, a.ID)
 	}

@@ -62,12 +62,12 @@ func TestMoveCardCounterMovesDoNotDeadlock(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		// A→B ровно на позицию соседа в B: коллизия, будет ребаланс B.
-		_, errs[0] = repo.MoveCard(ctx, cardA, columnB, 131072)
+		_, errs[0] = repo.MoveCard(ctx, cardA, columnB, 131072, MoveCardOptions{})
 	}()
 	go func() {
 		defer wg.Done()
 		// B→A ровно на позицию соседа в A: коллизия, будет ребаланс A.
-		_, errs[1] = repo.MoveCard(ctx, cardB, columnA, 131072)
+		_, errs[1] = repo.MoveCard(ctx, cardB, columnA, 131072, MoveCardOptions{})
 	}()
 	awaitAll(t, &wg, moveTimeout, "встречные переносы")
 
@@ -130,11 +130,11 @@ func TestMoveCardParallelIntoSameColumnKeepsOrderUnique(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, errs[0] = repo.MoveCard(ctx, first, target, 65536)
+		_, errs[0] = repo.MoveCard(ctx, first, target, 65536, MoveCardOptions{})
 	}()
 	go func() {
 		defer wg.Done()
-		_, errs[1] = repo.MoveCard(ctx, second, target, 65536)
+		_, errs[1] = repo.MoveCard(ctx, second, target, 65536, MoveCardOptions{})
 	}()
 	awaitAll(t, &wg, moveTimeout, "параллельные переносы в одну колонку")
 

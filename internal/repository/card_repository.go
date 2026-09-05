@@ -2,11 +2,13 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -16,7 +18,7 @@ import (
 )
 
 type CardRepositoryInterface interface {
-	CreateCard(ctx context.Context, in CreateCardInput) (*model.Card, error)
+	CreateCard(ctx context.Context, in CreateCardInput) (*CreateCardResult, error)
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error)
 	GetCardsByBoard(ctx context.Context, boardID int64) ([]model.Card, error)
@@ -24,11 +26,22 @@ type CardRepositoryInterface interface {
 	GetAssignedSubtasks(ctx context.Context, userID int64, status string) ([]AssignedSubtaskRow, error)
 	GetAssigneesByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
 	GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
-	UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error)
+	// UpdateCardFields пишет только содержимое карточки (заголовок, описание,
+	// срок, приоритет, цвет). Колонку/позицию, архив и «выполнено» меняют
+	// свои методы — см. GK-02 в аудите 2026-09-05.
+	UpdateCardFields(ctx context.Context, c *model.Card) (*model.Card, error)
+	// SetCardCompletion ставит или снимает отметку «выполнено» атомарно:
+	// expectOpen — ожидаемое текущее состояние (true = карточка ещё открыта).
+	// Если состояние уже изменил кто-то другой — apperr.CodeConflict.
+	SetCardCompletion(ctx context.Context, id int64, completedAt *time.Time, completedByID *int64, expectOpen bool) (*model.Card, error)
+	// ArchiveCard уводит карточку в архив, не трогая остальные поля.
+	ArchiveCard(ctx context.Context, id int64, archivedAt time.Time, archivedByID *int64) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
-	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
-	RestoreCard(ctx context.Context, id int64, boardID int64, maxActiveCards int) error
+	MoveCard(ctx context.Context, id int64, columnID int64, position float64, opts MoveCardOptions) (*MoveCardResult, error)
+	// RestoreCard возвращает карточку из архива; отдаёт позиции колонки, если
+	// при этом пришлось её перенумеровать.
+	RestoreCard(ctx context.Context, id int64, boardID int64, maxActiveCards int) ([]CardPosition, error)
 
 	// GetInvolvedUserIDsForNotifications returns distinct user IDs that are assignees on the card,
 	// assignees on any of its subtasks, or the card's author. Used to decide notification recipients.
@@ -419,6 +432,58 @@ type CreateCardInput struct {
 	MaxActiveCards int
 }
 
+// CardPosition — пара «карточка → позиция» после перенумерации колонки.
+type CardPosition struct {
+	ID       int64   `json:"id"`
+	Position float64 `json:"position"`
+}
+
+// CreateCardResult — созданная карточка и, если колонку пришлось
+// перенумеровать, позиции ВСЕХ её активных карточек.
+//
+// Ребаланс меняет позиции у всех карточек колонки, а клиенты раньше узнавали
+// только о новой (GK-01): их следующий drag считал середины от устаревших
+// чисел, карточка вставала не туда и снова провоцировала ребаланс.
+type CreateCardResult struct {
+	Card       *model.Card
+	Rebalanced []CardPosition
+}
+
+// CompletionChange — что сделать с отметкой «выполнено» при переносе.
+//
+// Колонка «сделано» (board.done_column_id) до сих пор не имела серверной
+// семантики (GK-03): перенос в неё не ставил completed_at, а вынос из неё не
+// снимал — и два источника «выполнено» расходились. Решение принимает сервис,
+// а пишется оно тем же UPDATE, что column_id/position, — без второго окна
+// между «уже в колонке» и «ещё не выполнено».
+type CompletionChange int
+
+const (
+	// CompletionKeep — отметку не трогать.
+	CompletionKeep CompletionChange = iota
+	// CompletionSet — поставить completed_at/completed_by_id (перенос в done-колонку).
+	CompletionSet
+	// CompletionClear — снять отметку (перенос из done-колонки).
+	CompletionClear
+)
+
+type MoveCardOptions struct {
+	Completion    CompletionChange
+	CompletedAt   time.Time
+	CompletedByID *int64
+}
+
+// MoveCardResult — перенесённая карточка и позиции колонки после ребаланса
+// (пустой срез — ребаланса не было).
+type MoveCardResult struct {
+	Card       *model.Card
+	Rebalanced []CardPosition
+	// Completion — что реально применили: CompletionSet/Clear из opts
+	// сводятся к Keep, если под блокировкой карточка уже в нужном состоянии
+	// (параллельный перенос успел раньше).
+	Completion CompletionChange
+}
+
 // minCardPosition — граница, ниже которой позиции больше не делятся пополам.
 //
 // Каждая карточка, добавленная в начало колонки, получает половину позиции
@@ -453,8 +518,9 @@ const defaultCardPosition = 65536.0
 // единым во всём сервисе, иначе встречные операции образуют петлю ожидания.
 // MoveCard блокирует только колонки, поэтому пересечения с ним нет: создание
 // держит доску и ждёт колонку, перенос доску не трогает вовсе.
-func (r *CardRepository) CreateCard(ctx context.Context, in CreateCardInput) (*model.Card, error) {
+func (r *CardRepository) CreateCard(ctx context.Context, in CreateCardInput) (*CreateCardResult, error) {
 	c := in.Card
+	var rebalanced []CardPosition
 
 	params := dbgen.CreateCardParams{
 		Title:    c.Title,
@@ -513,7 +579,7 @@ func (r *CardRepository) CreateCard(ctx context.Context, in CreateCardInput) (*m
 			)
 		}
 
-		position, err := nextTopPosition(ctx, tx, q, in.ColumnID)
+		position, didRebalance, err := nextTopPosition(ctx, tx, q, in.ColumnID)
 		if err != nil {
 			return err
 		}
@@ -561,13 +627,23 @@ func (r *CardRepository) CreateCard(ctx context.Context, in CreateCardInput) (*m
 		c.CreatedAt = res.CreatedAt.Time
 		c.UpdatedAt = res.UpdatedAt.Time
 
+		// Позиции собираются в той же транзакции: между коммитом и
+		// перечитыванием успел бы вклиниться чужой перенос, и клиент получил
+		// бы третий вариант порядка.
+		if didRebalance {
+			rebalanced, err = columnCardPositions(ctx, q, in.ColumnID)
+			if err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
 
-	return c, nil
+	return &CreateCardResult{Card: c, Rebalanced: rebalanced}, nil
 }
 
 // RestoreCard возвращает карточку из архива, соблюдая предел активных карточек
@@ -584,7 +660,8 @@ func (r *CardRepository) CreateCard(ctx context.Context, in CreateCardInput) (*m
 // в CreateCard, и в том же порядке. Поэтому одновременные «создать» и «вернуть
 // из архива» выстраиваются в очередь, а не проходят оба по одному свободному
 // месту.
-func (r *CardRepository) RestoreCard(ctx context.Context, id int64, boardID int64, maxActiveCards int) error {
+func (r *CardRepository) RestoreCard(ctx context.Context, id int64, boardID int64, maxActiveCards int) ([]CardPosition, error) {
+	var rebalanced []CardPosition
 	err := ExecTxWith(ctx, r.Db, func(tx pgx.Tx, q *dbgen.Queries) error {
 		var lockedBoardID int64
 		if err := tx.QueryRow(ctx,
@@ -639,7 +716,7 @@ func (r *CardRepository) RestoreCard(ctx context.Context, id int64, boardID int6
 		// те же 65536, архивная возвращается — и порядок в колонке перестаёт
 		// быть определённым. То же со старыми позициями вида 0 или
 		// отрицательной, оставшимися от прежней арифметики.
-		position, err := nextTopPosition(ctx, tx, q, columnID)
+		position, didRebalance, err := nextTopPosition(ctx, tx, q, columnID)
 		if err != nil {
 			return err
 		}
@@ -673,10 +750,30 @@ func (r *CardRepository) RestoreCard(ctx context.Context, id int64, boardID int6
 			return apperr.ErrNotFound
 		}
 
+		if didRebalance {
+			rebalanced, err = columnCardPositions(ctx, q, columnID)
+			if err != nil {
+				return err
+			}
+		}
+
 		return nil
 	})
 
-	return NormalizeError(err)
+	return rebalanced, NormalizeError(err)
+}
+
+// columnCardPositions — позиции активных карточек колонки внутри транзакции.
+func columnCardPositions(ctx context.Context, q *dbgen.Queries, columnID int64) ([]CardPosition, error) {
+	rows, err := q.GetColumnCardPositions(ctx, columnID)
+	if err != nil {
+		return nil, err
+	}
+	positions := make([]CardPosition, 0, len(rows))
+	for _, row := range rows {
+		positions = append(positions, CardPosition{ID: row.ID, Position: row.Position})
+	}
+	return positions, nil
 }
 
 // nextTopPosition считает позицию карточки, добавляемой в начало колонки.
@@ -689,33 +786,36 @@ func (r *CardRepository) RestoreCard(ctx context.Context, id int64, boardID int6
 // Вызывать только внутри транзакции, в которой колонка уже заблокирована:
 // иначе между чтением верхней позиции и вставкой успевает вклиниться чужая
 // карточка, и обе получат одинаковое значение.
-func nextTopPosition(ctx context.Context, tx pgx.Tx, q *dbgen.Queries, columnID int64) (float64, error) {
+//
+// Второе значение — пришлось ли перенумеровать колонку: тогда позиции
+// изменились у всех карточек, и вызывающий обязан сообщить об этом клиентам.
+func nextTopPosition(ctx context.Context, tx pgx.Tx, q *dbgen.Queries, columnID int64) (float64, bool, error) {
 	top, err := minActivePosition(ctx, tx, columnID)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	if top == nil {
-		return defaultCardPosition, nil
+		return defaultCardPosition, false, nil
 	}
 	if half := *top / 2.0; half >= minCardPosition {
-		return half, nil
+		return half, false, nil
 	}
 
 	// Делить дальше нечего: позиции стали неразличимо малы. Раскладываем
 	// колонку заново с обычным шагом — порядок карточек при этом сохраняется,
 	// меняются только числа.
 	if err := q.RebalanceColumnCards(ctx, columnID); err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
 	top, err = minActivePosition(ctx, tx, columnID)
 	if err != nil {
-		return 0, err
+		return 0, true, err
 	}
 	if top == nil {
-		return defaultCardPosition, nil
+		return defaultCardPosition, true, nil
 	}
-	return *top / 2.0, nil
+	return *top / 2.0, true, nil
 }
 
 // minActivePosition отдаёт позицию верхней активной карточки колонки или nil,
@@ -738,6 +838,26 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 		return nil, NormalizeError(err)
 	}
 
+	card := cardFromRow(c)
+
+	// Bulk-запросы для assignees и labels (используем существующие методы)
+	assigneesByCard, err := r.GetAssigneesByCardIDs(ctx, []int64{card.ID})
+	if err != nil {
+		return nil, err
+	}
+	card.AssigneeIDs = assigneesByCard[card.ID]
+
+	labelsByCard, err := r.GetLabelIDsByCardIDs(ctx, []int64{card.ID})
+	if err != nil {
+		return nil, err
+	}
+	card.LabelIDs = labelsByCard[card.ID]
+
+	return card, nil
+}
+
+// cardFromRow — модель из строки kanban_card (без исполнителей и меток).
+func cardFromRow(c dbgen.KanbanCard) *model.Card {
 	card := &model.Card{
 		ID:         c.ID,
 		Title:      c.Title,
@@ -780,47 +900,22 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 		v := c.CreatedByID.Int64
 		card.CreatedByID = &v
 	}
-
-	// Bulk-запросы для assignees и labels (используем существующие методы)
-	assigneesByCard, err := r.GetAssigneesByCardIDs(ctx, []int64{card.ID})
-	if err != nil {
-		return nil, err
-	}
-	card.AssigneeIDs = assigneesByCard[card.ID]
-
-	labelsByCard, err := r.GetLabelIDsByCardIDs(ctx, []int64{card.ID})
-	if err != nil {
-		return nil, err
-	}
-	card.LabelIDs = labelsByCard[card.ID]
-
-	return card, nil
+	return card
 }
 
-func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error) {
+// UpdateCardFields пишет содержимое карточки — и только его.
+//
+// Раньше здесь был общий UpdateCard, переписывавший всю строку из снимка,
+// прочитанного до записи (GK-02): правка описания в момент чужого переноса
+// возвращала карточку в прежнюю колонку, а параллельная отметка «выполнено»
+// затиралась NULL-ом. Колонку, позицию, архив и «выполнено» этот запрос не
+// трогает — им занимаются MoveCard, ArchiveCard/RestoreCard и SetCardCompletion.
+func (r *CardRepository) UpdateCardFields(ctx context.Context, c *model.Card) (*model.Card, error) {
 	queries := dbgen.New(r.Db)
 
-	res, err := queries.UpdateCard(ctx, updateCardParams(c))
-	if err != nil {
-		return nil, NormalizeError(err)
-	}
-
-	c.UpdatedAt = res.UpdatedAt.Time
-	return c, nil
-}
-
-// updateCardParams собирает параметры полного обновления карточки из модели.
-//
-// Вынесено из тела UpdateCard, чтобы разбор необязательных полей не мешал
-// читать сам запрос. Перемещение карточки этим НЕ пользуется: оно пишет
-// только column_id и position, чтобы не затирать чужие правки.
-func updateCardParams(c *model.Card) dbgen.UpdateCardParams {
-	params := dbgen.UpdateCardParams{
-		Title:      c.Title,
-		Position:   c.Position,
-		IsArchived: c.IsArchived,
-		ColumnID:   c.ColumnID,
-		ID:         c.ID,
+	params := dbgen.UpdateCardFieldsParams{
+		ID:    c.ID,
+		Title: c.Title,
 	}
 	if c.Description != nil {
 		params.Description = pgtype.Text{String: *c.Description, Valid: true}
@@ -834,20 +929,68 @@ func updateCardParams(c *model.Card) dbgen.UpdateCardParams {
 	if c.BorderColor != nil {
 		params.BorderColor = pgtype.Text{String: *c.BorderColor, Valid: true}
 	}
-	if c.ArchivedAt != nil {
-		params.ArchivedAt = pgtype.Timestamptz{Time: *c.ArchivedAt, Valid: true}
-	}
-	if c.ArchivedByID != nil {
-		params.ArchivedByID = pgtype.Int8{Int64: *c.ArchivedByID, Valid: true}
-	}
-	if c.CompletedAt != nil {
-		params.CompletedAt = pgtype.Timestamptz{Time: *c.CompletedAt, Valid: true}
-	}
-	if c.CompletedByID != nil {
-		params.CompletedByID = pgtype.Int8{Int64: *c.CompletedByID, Valid: true}
+
+	res, err := queries.UpdateCardFields(ctx, params)
+	if err != nil {
+		return nil, NormalizeError(err)
 	}
 
-	return params
+	// Возвращаем актуальную строку целиком: realtime-патч и ответ должны
+	// нести настоящие column_id/position/completed_at, а не снимок.
+	updated := cardFromRow(res)
+	updated.AssigneeIDs = c.AssigneeIDs
+	updated.LabelIDs = c.LabelIDs
+	return updated, nil
+}
+
+// SetCardCompletion — атомарный toggle отметки «выполнено».
+//
+// expectOpen — состояние, которое видел вызывающий. Если к моменту записи
+// его уже изменил другой пользователь, строка не совпадёт с условием и
+// вернётся CodeConflict, а не «карточка не найдена»: фронту нужно перечитать
+// карточку, а не показывать «удалена» на живой карточке.
+func (r *CardRepository) SetCardCompletion(ctx context.Context, id int64, completedAt *time.Time, completedByID *int64, expectOpen bool) (*model.Card, error) {
+	queries := dbgen.New(r.Db)
+
+	params := dbgen.SetCardCompletionParams{ID: id, ExpectOpen: expectOpen}
+	if completedAt != nil {
+		params.CompletedAt = pgtype.Timestamptz{Time: *completedAt, Valid: true}
+	}
+	if completedByID != nil {
+		params.CompletedByID = pgtype.Int8{Int64: *completedByID, Valid: true}
+	}
+
+	res, err := queries.SetCardCompletion(ctx, params)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperr.New(apperr.CodeConflict, "card completion changed concurrently")
+		}
+		return nil, NormalizeError(err)
+	}
+	return cardFromRow(res), nil
+}
+
+// ArchiveCard уводит карточку в архив точечным UPDATE. Повторная архивация
+// уже архивной карточки — конфликт, а не тихая перезапись archived_at.
+func (r *CardRepository) ArchiveCard(ctx context.Context, id int64, archivedAt time.Time, archivedByID *int64) (*model.Card, error) {
+	queries := dbgen.New(r.Db)
+
+	params := dbgen.ArchiveCardRowParams{
+		ID:         id,
+		ArchivedAt: pgtype.Timestamptz{Time: archivedAt, Valid: true},
+	}
+	if archivedByID != nil {
+		params.ArchivedByID = pgtype.Int8{Int64: *archivedByID, Valid: true}
+	}
+
+	res, err := queries.ArchiveCardRow(ctx, params)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperr.New(apperr.CodeConflict, "card already archived")
+		}
+		return nil, NormalizeError(err)
+	}
+	return cardFromRow(res), nil
 }
 
 func (r *CardRepository) DeleteCard(ctx context.Context, id int64) error {
@@ -910,8 +1053,15 @@ func dedupeIDs(ids []int64) []int64 {
 //
 // Теперь проверка и запись выполняются в одной транзакции, а колонка-приёмник
 // блокируется: параллельные перемещения в неё выстраиваются в очередь.
-func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
+//
+// Отметка «выполнено» (opts.Completion) пишется тем же UPDATE, что колонка и
+// позиция: перенос в done-колонку и completed_at не должны расходиться даже
+// на мгновение (GK-03). Позиции после ребаланса собираются внутри транзакции
+// и отдаются в результате (GK-01).
+func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64, opts MoveCardOptions) (*MoveCardResult, error) {
 	const epsilon = 0.0001
+	var rebalanced []CardPosition
+	appliedCompletion := CompletionKeep
 
 	err := ExecTxWith(ctx, r.Db, func(tx pgx.Tx, q *dbgen.Queries) error {
 		// Блокируем ОБЕ колонки — исходную и целевую — и обязательно в
@@ -966,6 +1116,25 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 			meet()
 		}
 
+		// Решение «поставить/снять отметку» пересчитываем по заблокированной
+		// строке, а не по снимку до транзакции: параллельный перенос мог уже
+		// завершить или вернуть карточку в работу (GK-03).
+		var lockedCompletedAt *time.Time
+		if err := tx.QueryRow(ctx,
+			`SELECT completed_at FROM kanban_card WHERE id = $1 FOR UPDATE`,
+			id,
+		).Scan(&lockedCompletedAt); err != nil {
+			return err
+		}
+		applied := opts.Completion
+		switch {
+		case applied == CompletionSet && lockedCompletedAt != nil:
+			applied = CompletionKeep
+		case applied == CompletionClear && lockedCompletedAt == nil:
+			applied = CompletionKeep
+		}
+		appliedCompletion = applied
+
 		siblings, err := q.GetCardsByColumn(ctx, columnID)
 		if err != nil {
 			return err
@@ -985,12 +1154,38 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 		// значениями из снимка, прочитанного ДО транзакции. Это давало
 		// потерянное обновление: если параллельно кто-то переименовывал
 		// карточку, перемещение возвращало заголовок к прежнему значению.
-		tag, err := tx.Exec(ctx,
-			`UPDATE kanban_card
-			    SET column_id = $1, position = $2, updated_at = NOW()
-			  WHERE id = $3`,
-			columnID, position, id,
+		var (
+			tag pgconn.CommandTag
 		)
+		switch applied {
+		case CompletionSet:
+			var completedBy pgtype.Int8
+			if opts.CompletedByID != nil {
+				completedBy = pgtype.Int8{Int64: *opts.CompletedByID, Valid: true}
+			}
+			tag, err = tx.Exec(ctx,
+				`UPDATE kanban_card
+				    SET column_id = $1, position = $2, updated_at = NOW(),
+				        completed_at = $4, completed_by_id = $5
+				  WHERE id = $3`,
+				columnID, position, id, opts.CompletedAt, completedBy,
+			)
+		case CompletionClear:
+			tag, err = tx.Exec(ctx,
+				`UPDATE kanban_card
+				    SET column_id = $1, position = $2, updated_at = NOW(),
+				        completed_at = NULL, completed_by_id = NULL
+				  WHERE id = $3`,
+				columnID, position, id,
+			)
+		default:
+			tag, err = tx.Exec(ctx,
+				`UPDATE kanban_card
+				    SET column_id = $1, position = $2, updated_at = NOW()
+				  WHERE id = $3`,
+				columnID, position, id,
+			)
+		}
 		if err != nil {
 			return err
 		}
@@ -1000,6 +1195,12 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 
 		if needsRebalance {
 			if err := q.RebalanceColumnCards(ctx, columnID); err != nil {
+				return err
+			}
+			// Срез позиций — из той же транзакции: после коммита между ним и
+			// перечитыванием успел бы вклиниться чужой перенос.
+			rebalanced, err = columnCardPositions(ctx, q, columnID)
+			if err != nil {
 				return err
 			}
 		}
@@ -1013,7 +1214,11 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 	// Карточка перечитывается после коммита всегда, а не только после
 	// ребаланса: только так вернётся строка со всеми полями в актуальном
 	// состоянии, включая изменения, сделанные параллельно.
-	return r.GetCard(ctx, id)
+	card, err := r.GetCard(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &MoveCardResult{Card: card, Rebalanced: rebalanced, Completion: appliedCompletion}, nil
 }
 
 // GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users + card author.

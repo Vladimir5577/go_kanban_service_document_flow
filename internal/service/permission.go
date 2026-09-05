@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/middleware"
@@ -81,9 +82,15 @@ func (s *PermissionService) GetMemberRole(ctx context.Context, projectID int64) 
 
 	var member *model.ProjectUser
 	if project.OwnerID != user.ID {
-		// Ошибку не разбираем: и «нет строки», и сбой запроса означают,
-		// что членство подтвердить нечем — resolveRole ответит отказом.
-		member, _ = s.memberRepo.GetProjectMember(ctx, projectID, user.ID)
+		// «Нет строки» — отказ (resolveRole), а сбой запроса — 5xx, как есть,
+		// без обёртки в apperr (GK-06). Раньше любая ошибка БД становилась
+		// 403 у всех не-владельцев: деградация базы маскировалась под
+		// отсутствие прав, в логах не было ни одной 5xx.
+		m, err := s.memberRepo.GetProjectMember(ctx, projectID, user.ID)
+		if err != nil && !errors.Is(err, apperr.ErrNotFound) {
+			return "", err
+		}
+		member = m
 	}
 
 	return resolveRole(user.ID, project.OwnerID, member)
@@ -135,7 +142,11 @@ func (s *PermissionService) RequireCardRole(ctx context.Context, cardID int64, m
 
 	var member *model.ProjectUser
 	if row.OwnerID != user.ID {
-		member, _ = s.memberRepo.GetProjectMember(ctx, row.KanbanProjectID, user.ID)
+		m, err := s.memberRepo.GetProjectMember(ctx, row.KanbanProjectID, user.ID)
+		if err != nil && !errors.Is(err, apperr.ErrNotFound) {
+			return CardAccess{}, err
+		}
+		member = m
 	}
 
 	role, err := resolveRole(user.ID, row.OwnerID, member)

@@ -41,6 +41,10 @@ type Config struct {
 
 	// Imgproxy configuration
 	ImgproxyBaseUrl string
+	// Ключ и соль подписи URL imgproxy (hex, те же, что у контейнера imgproxy
+	// и у Symfony). Пустые — URL остаются /unsafe/ (BE-03 / FE-01).
+	ImgproxyKey  string
+	ImgproxySalt string
 
 	// Symfony internal API for Kanban
 	SymfonyInternalApiUrl string
@@ -81,6 +85,8 @@ func Load() *Config {
 		MinioUserBucket:      getEnv("MINIO_USER_BUCKET", "user"),
 
 		ImgproxyBaseUrl:       getEnv("IMGPROXY_BASE_URL", "http://localhost:8082"),
+		ImgproxyKey:           getEnv("IMGPROXY_KEY", ""),
+		ImgproxySalt:          getEnv("IMGPROXY_SALT", ""),
 		SymfonyInternalApiUrl: getEnv("SYMFONY_INTERNAL_API_URL", ""),
 		SymfonyInternalApiKey: getEnv("SYMFONY_INTERNAL_API_KEY", ""),
 	}

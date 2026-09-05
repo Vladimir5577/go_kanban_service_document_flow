@@ -198,7 +198,7 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 	}
 	var total int64
 	if err := r.Db.QueryRow(ctx, totalSQL, totalArgs...).Scan(&total); err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
 	archivedCountSQL, archivedCountArgs, err := sq.Select("COUNT(c.id)").
@@ -213,7 +213,20 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 	}
 	var archivedCount int64
 	if err := r.Db.QueryRow(ctx, archivedCountSQL, archivedCountArgs...).Scan(&archivedCount); err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
+	}
+
+	// Страница за пределами выборки — пустой ответ без SELECT карточек (GK-04):
+	// total/archivedCount уже посчитаны, форма ответа не меняется, а Postgres
+	// не перебирает OFFSET по всей выборке.
+	if int64(offset) >= total {
+		return &model.BoardArchivePage{
+			Cards:         []model.ArchivedCard{},
+			Page:          page,
+			Limit:         limit,
+			Total:         total,
+			ArchivedCount: archivedCount,
+		}, nil
 	}
 
 	archiveSQL, archiveArgs, err := baseQuery.
@@ -245,7 +258,7 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 
 	rows, err := r.Db.Query(ctx, archiveSQL, archiveArgs...)
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 	defer rows.Close()
 

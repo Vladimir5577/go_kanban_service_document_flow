@@ -139,6 +139,15 @@ type CardResponse struct {
 	ChecklistTotal int                     `json:"checklistTotal"`
 	ChecklistDone  int                     `json:"checklistDone"`
 	CommentsCount  int                     `json:"commentsCount"`
+	// RebalancedCards — позиции всех активных карточек колонки, если при
+	// создании/переносе сервер её перенумеровал. Пусто — ребаланса не было.
+	RebalancedCards []CardPositionResponse `json:"rebalancedCards,omitempty"`
+}
+
+// CardPositionResponse — «карточка → позиция» после ребаланса колонки.
+type CardPositionResponse struct {
+	ID       int64   `json:"id"`
+	Position float64 `json:"position"`
 }
 
 func MapCardResponse(c *model.Card) *CardResponse {

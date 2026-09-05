@@ -7,6 +7,7 @@ import (
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/helper"
+	"go_kanban_service/internal/repository"
 	"go_kanban_service/internal/service"
 	"go_kanban_service/internal/validator"
 )
@@ -17,6 +18,18 @@ type CardHandler struct {
 
 func NewCardHandler(s service.CardServiceInterface) *CardHandler {
 	return &CardHandler{service: s}
+}
+
+// mapCardPositions — позиции колонки после ребаланса в ответ API (GK-01).
+func mapCardPositions(positions []repository.CardPosition) []dto.CardPositionResponse {
+	if len(positions) == 0 {
+		return nil
+	}
+	out := make([]dto.CardPositionResponse, 0, len(positions))
+	for _, p := range positions {
+		out = append(out, dto.CardPositionResponse{ID: p.ID, Position: p.Position})
+	}
+	return out
 }
 
 func (h *CardHandler) CreateCard() http.HandlerFunc {
@@ -34,7 +47,7 @@ func (h *CardHandler) CreateCard() http.HandlerFunc {
 			return
 		}
 
-		created, err := h.service.CreateCard(r.Context(), req)
+		created, rebalanced, err := h.service.CreateCard(r.Context(), req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -45,6 +58,7 @@ func (h *CardHandler) CreateCard() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
+		detail.RebalancedCards = mapCardPositions(rebalanced)
 		helper.WriteJSON(w, http.StatusCreated, detail)
 	}
 }
@@ -201,7 +215,8 @@ func (h *CardHandler) MoveCard() http.HandlerFunc {
 			return
 		}
 
-		if _, err = h.service.MoveCard(r.Context(), id, payload.ColumnID, payload.Position); err != nil {
+		_, rebalanced, err := h.service.MoveCard(r.Context(), id, payload.ColumnID, payload.Position)
+		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
@@ -211,6 +226,8 @@ func (h *CardHandler) MoveCard() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
+		// Позиции всей колонки после ребаланса — клиент применяет их целиком (GK-01).
+		detail.RebalancedCards = mapCardPositions(rebalanced)
 		helper.WriteJSON(w, http.StatusOK, detail)
 	}
 }

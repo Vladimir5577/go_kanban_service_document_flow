@@ -74,6 +74,75 @@ func (q *Queries) AddProjectMember(ctx context.Context, arg AddProjectMemberPara
 	return err
 }
 
+const addProjectMemberIfAbsent = `-- name: AddProjectMemberIfAbsent :one
+INSERT INTO kanban_project_user (kanban_project_id, user_id, role, folder_id, position)
+VALUES ($1, $2, $3, $4, COALESCE((
+    SELECT MAX(p.position) FROM kanban_project_user p
+    WHERE p.user_id = $2 AND p.folder_id IS NOT DISTINCT FROM $4
+), 0) + 1)
+ON CONFLICT (kanban_project_id, user_id) DO NOTHING
+RETURNING user_id
+`
+
+type AddProjectMemberIfAbsentParams struct {
+	KanbanProjectID int64       `json:"kanban_project_id"`
+	UserID          int64       `json:"user_id"`
+	Role            string      `json:"role"`
+	FolderID        pgtype.Int8 `json:"folder_id"`
+}
+
+// Точечное добавление (FE-04): уже участник — ничего не трогаем, в т.ч. роль,
+// которую параллельно мог выставить другой админ. Возвращает строку только при
+// фактической вставке — по этому признаку сервис шлёт уведомление.
+func (q *Queries) AddProjectMemberIfAbsent(ctx context.Context, arg AddProjectMemberIfAbsentParams) (int64, error) {
+	row := q.db.QueryRow(ctx, addProjectMemberIfAbsent,
+		arg.KanbanProjectID,
+		arg.UserID,
+		arg.Role,
+		arg.FolderID,
+	)
+	var user_id int64
+	err := row.Scan(&user_id)
+	return user_id, err
+}
+
+const archiveCardRow = `-- name: ArchiveCardRow :one
+UPDATE kanban_card
+SET is_archived = TRUE, archived_at = $2, archived_by_id = $3, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND is_archived = FALSE
+RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at
+`
+
+type ArchiveCardRowParams struct {
+	ID           int64              `json:"id"`
+	ArchivedAt   pgtype.Timestamptz `json:"archived_at"`
+	ArchivedByID pgtype.Int8        `json:"archived_by_id"`
+}
+
+func (q *Queries) ArchiveCardRow(ctx context.Context, arg ArchiveCardRowParams) (KanbanCard, error) {
+	row := q.db.QueryRow(ctx, archiveCardRow, arg.ID, arg.ArchivedAt, arg.ArchivedByID)
+	var i KanbanCard
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Description,
+		&i.Position,
+		&i.DueDate,
+		&i.Priority,
+		&i.IsArchived,
+		&i.ArchivedAt,
+		&i.ArchivedByID,
+		&i.CompletedAt,
+		&i.CompletedByID,
+		&i.ColumnID,
+		&i.CreatedByID,
+		&i.BorderColor,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const clearCardAssignees = `-- name: ClearCardAssignees :exec
 DELETE FROM kanban_card_assignee
 WHERE card_id = $1
@@ -1397,6 +1466,38 @@ func (q *Queries) GetColumn(ctx context.Context, id int64) (KanbanColumn, error)
 	return i, err
 }
 
+const getColumnCardPositions = `-- name: GetColumnCardPositions :many
+SELECT id, position FROM kanban_card
+WHERE column_id = $1 AND is_archived = FALSE
+ORDER BY position ASC, id ASC
+`
+
+type GetColumnCardPositionsRow struct {
+	ID       int64   `json:"id"`
+	Position float64 `json:"position"`
+}
+
+// Позиции активных карточек колонки — отдаются клиентам после ребаланса (GK-01).
+func (q *Queries) GetColumnCardPositions(ctx context.Context, columnID int64) ([]GetColumnCardPositionsRow, error) {
+	rows, err := q.db.Query(ctx, getColumnCardPositions, columnID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetColumnCardPositionsRow{}
+	for rows.Next() {
+		var i GetColumnCardPositionsRow
+		if err := rows.Scan(&i.ID, &i.Position); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getColumnsByBoard = `-- name: GetColumnsByBoard :many
 SELECT id, title, header_color, position, board_id FROM kanban_column
 WHERE board_id = $1
@@ -1921,6 +2022,51 @@ func (q *Queries) RemoveProjectMember(ctx context.Context, arg RemoveProjectMemb
 	return err
 }
 
+const setCardCompletion = `-- name: SetCardCompletion :one
+UPDATE kanban_card
+SET completed_at = $2, completed_by_id = $3, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND (completed_at IS NULL) = $4::boolean
+RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at
+`
+
+type SetCardCompletionParams struct {
+	ID            int64              `json:"id"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	CompletedByID pgtype.Int8        `json:"completed_by_id"`
+	ExpectOpen    bool               `json:"expect_open"`
+}
+
+// Атомарный toggle «выполнено»: условие по текущему состоянию отсекает второй
+// параллельный клик — он получит «нет строк», а не перезапишет чужой результат.
+func (q *Queries) SetCardCompletion(ctx context.Context, arg SetCardCompletionParams) (KanbanCard, error) {
+	row := q.db.QueryRow(ctx, setCardCompletion,
+		arg.ID,
+		arg.CompletedAt,
+		arg.CompletedByID,
+		arg.ExpectOpen,
+	)
+	var i KanbanCard
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Description,
+		&i.Position,
+		&i.DueDate,
+		&i.Priority,
+		&i.IsArchived,
+		&i.ArchivedAt,
+		&i.ArchivedByID,
+		&i.CompletedAt,
+		&i.CompletedByID,
+		&i.ColumnID,
+		&i.CreatedByID,
+		&i.BorderColor,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateBoard = `-- name: UpdateBoard :one
 UPDATE kanban_board
 SET title = $1, position = $2, updated_at = CURRENT_TIMESTAMP
@@ -1951,44 +2097,34 @@ func (q *Queries) UpdateBoard(ctx context.Context, arg UpdateBoardParams) (Kanba
 	return i, err
 }
 
-const updateCard = `-- name: UpdateCard :one
+const updateCardFields = `-- name: UpdateCardFields :one
 UPDATE kanban_card
-SET title = $1, description = $2, position = $3, due_date = $4, priority = $5, is_archived = $6, archived_at = $7, archived_by_id = $8, completed_at = $9, completed_by_id = $10, column_id = $11, border_color = $12, updated_at = CURRENT_TIMESTAMP
-WHERE id = $13
+SET title = $2, description = $3, due_date = $4, priority = $5, border_color = $6, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
 RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at
 `
 
-type UpdateCardParams struct {
-	Title         string             `json:"title"`
-	Description   pgtype.Text        `json:"description"`
-	Position      float64            `json:"position"`
-	DueDate       pgtype.Timestamptz `json:"due_date"`
-	Priority      pgtype.Text        `json:"priority"`
-	IsArchived    bool               `json:"is_archived"`
-	ArchivedAt    pgtype.Timestamptz `json:"archived_at"`
-	ArchivedByID  pgtype.Int8        `json:"archived_by_id"`
-	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
-	CompletedByID pgtype.Int8        `json:"completed_by_id"`
-	ColumnID      int64              `json:"column_id"`
-	BorderColor   pgtype.Text        `json:"border_color"`
-	ID            int64              `json:"id"`
+type UpdateCardFieldsParams struct {
+	ID          int64              `json:"id"`
+	Title       string             `json:"title"`
+	Description pgtype.Text        `json:"description"`
+	DueDate     pgtype.Timestamptz `json:"due_date"`
+	Priority    pgtype.Text        `json:"priority"`
+	BorderColor pgtype.Text        `json:"border_color"`
 }
 
-func (q *Queries) UpdateCard(ctx context.Context, arg UpdateCardParams) (KanbanCard, error) {
-	row := q.db.QueryRow(ctx, updateCard,
+// Точечная правка содержимого карточки (GK-02). column_id/position, архив и
+// отметка «выполнено» здесь не трогаются: у каждого свой запрос. Раньше общий
+// UpdateCard писал всю строку из снимка, прочитанного до записи, и затирал
+// параллельный перенос или отметку «выполнено».
+func (q *Queries) UpdateCardFields(ctx context.Context, arg UpdateCardFieldsParams) (KanbanCard, error) {
+	row := q.db.QueryRow(ctx, updateCardFields,
+		arg.ID,
 		arg.Title,
 		arg.Description,
-		arg.Position,
 		arg.DueDate,
 		arg.Priority,
-		arg.IsArchived,
-		arg.ArchivedAt,
-		arg.ArchivedByID,
-		arg.CompletedAt,
-		arg.CompletedByID,
-		arg.ColumnID,
 		arg.BorderColor,
-		arg.ID,
 	)
 	var i KanbanCard
 	err := row.Scan(

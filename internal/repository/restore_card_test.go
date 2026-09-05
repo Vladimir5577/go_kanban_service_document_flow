@@ -32,7 +32,7 @@ func TestRestoreCardRespectsBoardLimit(t *testing.T) {
 
 	repo := &CardRepository{Db: pool}
 
-	err := repo.RestoreCard(ctx, archived, board.BoardID, testCardLimit)
+	_, err := repo.RestoreCard(ctx, archived, board.BoardID, testCardLimit)
 	if !errors.Is(err, apperr.New(apperr.CodeBoardCardLimitReached, "")) {
 		t.Fatalf("возврат из архива при полном пределе должен отклоняться, а вернулось: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestRestoreCardRespectsBoardLimit(t *testing.T) {
 		 )`, column); err != nil {
 		t.Fatalf("подготовка свободного места: %v", err)
 	}
-	if err := repo.RestoreCard(ctx, archived, board.BoardID, testCardLimit); err != nil {
+	if _, err := repo.RestoreCard(ctx, archived, board.BoardID, testCardLimit); err != nil {
 		t.Fatalf("возврат из архива на свободное место: %v", err)
 	}
 	if got := activeCardCount(t, ctx, pool, board.BoardID); got != testCardLimit {
@@ -89,7 +89,7 @@ func TestRestoreAndCreateCompeteForLastSlot(t *testing.T) {
 	}()
 	go func() {
 		defer wg.Done()
-		errs[1] = repo.RestoreCard(ctx, archived, board.BoardID, testCardLimit)
+		_, errs[1] = repo.RestoreCard(ctx, archived, board.BoardID, testCardLimit)
 	}()
 	awaitAll(t, &wg, moveTimeout, "создание и возврат из архива")
 
@@ -146,7 +146,7 @@ func TestRestoreCardGetsFreshPosition(t *testing.T) {
 	seedCard(t, ctx, pool, column, "занял место", 65536)
 
 	repo := &CardRepository{Db: pool}
-	if err := repo.RestoreCard(ctx, archived, board.BoardID, 0); err != nil {
+	if _, err := repo.RestoreCard(ctx, archived, board.BoardID, 0); err != nil {
 		t.Fatalf("возврат из архива: %v", err)
 	}
 
