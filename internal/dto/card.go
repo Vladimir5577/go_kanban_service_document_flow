@@ -172,6 +172,27 @@ func MapCardResponse(c *model.Card) *CardResponse {
 	}
 }
 
+type CardStandaloneColumnResponse struct {
+	ID          int64   `json:"id"`
+	Title       string  `json:"title"`
+	HeaderColor string  `json:"headerColor"`
+	Position    float64 `json:"position"`
+}
+
+// CardStandaloneResponse — один ответ для панели задачи вне доски:
+// карточка + роль + участники + колонки (без карточек доски).
+type CardStandaloneResponse struct {
+	Card           *CardResponse                    `json:"card"`
+	ProjectID      int64                            `json:"projectId"`
+	MemberRole     string                           `json:"memberRole"`
+	IsOwner        bool                             `json:"isOwner"`
+	IsProjectAdmin bool                             `json:"isProjectAdmin"`
+	DoneColumnID   *int64                           `json:"doneColumnId"`
+	Columns        []*CardStandaloneColumnResponse  `json:"columns"`
+	Members        []*MemberResponse                `json:"members"`
+	Labels         []*LabelResponse                 `json:"labels"`
+}
+
 func MapCardsResponse(cards []model.Card) []*CardResponse {
 	resp := make([]*CardResponse, 0, len(cards))
 	for i := range cards {

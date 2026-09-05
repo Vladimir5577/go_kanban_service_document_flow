@@ -34,7 +34,7 @@ type BoardArchiveFilters struct {
 	Description string
 	DateFrom    string
 	DateTo      string
-	OrderBy     string // title | column | archived_at | created_at
+	OrderBy     string // title | column | archived_at | created_at | completed_at
 	Order       string // ASC | DESC
 	Page        int
 	Limit       int
@@ -49,6 +49,8 @@ type ArchivedCard struct {
 	CreatedAt   time.Time
 	ArchivedAt  *time.Time
 	ArchivedBy  *User
+	CompletedAt  *time.Time
+	CompletedBy  *User
 	Assignees   []User
 }
 

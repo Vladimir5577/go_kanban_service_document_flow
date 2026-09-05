@@ -21,6 +21,7 @@ type BoardRepositoryInterface interface {
 	CreateBoardWithColumns(ctx context.Context, projectID int64, b *model.Board, columns []model.Column) (*model.Board, error)
 	GetBoard(ctx context.Context, boardID int64) (*model.Board, error)
 	UpdateBoard(ctx context.Context, b *model.Board) (*model.Board, error)
+	SetDoneColumnID(ctx context.Context, boardID int64, columnID *int64) error
 	DeleteBoard(ctx context.Context, boardID int64) error
 	GetBoardArchive(ctx context.Context, boardID int64, filters model.BoardArchiveFilters) (*model.BoardArchivePage, error)
 	HasColumnsByBoard(ctx context.Context, boardID int64) (bool, error)
@@ -47,7 +48,7 @@ func (r *BoardRepository) GetBoardsByProject(ctx context.Context, projectID int6
 
 	var boards []model.Board
 	for _, b := range dbBoards {
-		boards = append(boards, model.Board{
+		board := model.Board{
 			ID:              b.ID,
 			Title:           b.Title,
 			Position:        b.Position,
@@ -55,7 +56,12 @@ func (r *BoardRepository) GetBoardsByProject(ctx context.Context, projectID int6
 			CreatedByID:     b.CreatedByID,
 			CreatedAt:       b.CreatedAt.Time,
 			UpdatedAt:       b.UpdatedAt.Time,
-		})
+		}
+		if b.DoneColumnID.Valid {
+			id := b.DoneColumnID.Int64
+			board.DoneColumnID = &id
+		}
+		boards = append(boards, board)
 	}
 	return boards, nil
 }
@@ -130,7 +136,7 @@ func (r *BoardRepository) GetBoard(ctx context.Context, id int64) (*model.Board,
 		return nil, NormalizeError(err)
 	}
 
-	return &model.Board{
+	board := &model.Board{
 		ID:              b.ID,
 		Title:           b.Title,
 		Position:        b.Position,
@@ -138,7 +144,12 @@ func (r *BoardRepository) GetBoard(ctx context.Context, id int64) (*model.Board,
 		CreatedByID:     b.CreatedByID,
 		CreatedAt:       b.CreatedAt.Time,
 		UpdatedAt:       b.UpdatedAt.Time,
-	}, nil
+	}
+	if b.DoneColumnID.Valid {
+		id := b.DoneColumnID.Int64
+		board.DoneColumnID = &id
+	}
+	return board, nil
 }
 
 func (r *BoardRepository) UpdateBoard(ctx context.Context, b *model.Board) (*model.Board, error) {
@@ -154,6 +165,13 @@ func (r *BoardRepository) UpdateBoard(ctx context.Context, b *model.Board) (*mod
 
 	mapDBBoard(&res, b)
 	return b, nil
+}
+
+func (r *BoardRepository) SetDoneColumnID(ctx context.Context, boardID int64, columnID *int64) error {
+	_, err := r.Db.Exec(ctx,
+		`UPDATE kanban_board SET done_column_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND deleted_at IS NULL`,
+		columnID, boardID)
+	return err
 }
 
 func (r *BoardRepository) DeleteBoard(ctx context.Context, id int64) error {
@@ -211,6 +229,11 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 			"u.lastname",
 			"u.firstname",
 			"u.avatar_name",
+			"c.completed_at",
+			"c.completed_by_id",
+			"cb.lastname",
+			"cb.firstname",
+			"cb.avatar_name",
 		).
 		OrderBy(archiveOrderBy(filters)...).
 		Limit(uint64(limit)).
@@ -236,6 +259,11 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 		var archivedByLastname pgtype.Text
 		var archivedByFirstname pgtype.Text
 		var archivedByAvatar pgtype.Text
+		var completedAt pgtype.Timestamptz
+		var completedByID pgtype.Int8
+		var completedByLastname pgtype.Text
+		var completedByFirstname pgtype.Text
+		var completedByAvatar pgtype.Text
 
 		if err := rows.Scan(
 			&card.ID,
@@ -249,6 +277,11 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 			&archivedByLastname,
 			&archivedByFirstname,
 			&archivedByAvatar,
+			&completedAt,
+			&completedByID,
+			&completedByLastname,
+			&completedByFirstname,
+			&completedByAvatar,
 		); err != nil {
 			return nil, err
 		}
@@ -275,6 +308,22 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 			}
 			card.ArchivedBy = user
 		}
+		if completedAt.Valid {
+			card.CompletedAt = &completedAt.Time
+		}
+		if completedByID.Valid {
+			user := &model.User{ID: completedByID.Int64}
+			if completedByLastname.Valid {
+				user.Lastname = completedByLastname.String
+			}
+			if completedByFirstname.Valid {
+				user.Firstname = completedByFirstname.String
+			}
+			if completedByAvatar.Valid {
+				user.AvatarName = &completedByAvatar.String
+			}
+			card.CompletedBy = user
+		}
 
 		cards = append(cards, card)
 	}
@@ -297,6 +346,7 @@ func archiveOrderBy(filters model.BoardArchiveFilters) []string {
 		"column":      "col.title",
 		"archived_at": "c.archived_at",
 		"created_at":  "c.created_at",
+		"completed_at": "c.completed_at",
 	}[filters.OrderBy]
 	if !ok {
 		orderBySQL = "c.archived_at"
@@ -316,6 +366,7 @@ func buildArchivedCardsQuery(boardID int64, filters model.BoardArchiveFilters) s
 		From("kanban_card c").
 		Join("kanban_column col ON c.column_id = col.id").
 		LeftJoin("users u ON c.archived_by_id = u.id").
+		LeftJoin("users cb ON c.completed_by_id = cb.id").
 		Where(sq.Eq{"col.board_id": boardID}).
 		Where(sq.Eq{"c.is_archived": true})
 

@@ -66,6 +66,23 @@ func (h *CardHandler) GetCard() http.HandlerFunc {
 	}
 }
 
+func (h *CardHandler) GetCardStandalone() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		res, err := h.service.GetCardStandalone(r.Context(), id)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusOK, res)
+	}
+}
+
 func (h *CardHandler) AssignedToMe() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		status := r.URL.Query().Get("status")

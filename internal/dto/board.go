@@ -71,8 +71,9 @@ func (r *CreateBoardRequest) UnmarshalJSON(data []byte) error {
 }
 
 type UpdateBoardRequest struct {
-	Title    *string  `json:"title,omitempty" validate:"omitempty"`
-	Position *float64 `json:"position,omitempty"`
+	Title        *string  `json:"title,omitempty" validate:"omitempty"`
+	Position     *float64 `json:"position,omitempty"`
+	DoneColumnID *int64   `json:"doneColumnId"`
 }
 
 type BoardResponse struct {
@@ -83,6 +84,7 @@ type BoardResponse struct {
 	CreatedByID     int64             `json:"createdById"`
 	CreatedAt       time.Time         `json:"createdAt"`
 	UpdatedAt       time.Time         `json:"updatedAt"`
+	DoneColumnID    *int64            `json:"doneColumnId"`
 	Columns         []*ColumnResponse `json:"columns"`
 }
 
@@ -98,6 +100,7 @@ func MapBoardResponse(b *model.Board) *BoardResponse {
 		CreatedByID:     b.CreatedByID,
 		CreatedAt:       b.CreatedAt,
 		UpdatedAt:       b.UpdatedAt,
+		DoneColumnID:    b.DoneColumnID,
 		Columns:         make([]*ColumnResponse, 0),
 	}
 }
@@ -128,10 +131,12 @@ type ArchivedCardResponse struct {
 	Description *string                 `json:"description"`
 	ColumnTitle string                  `json:"columnTitle"`
 	BorderColor *string                 `json:"borderColor"`
-	CreatedAt   time.Time               `json:"createdAt"`
-	ArchivedAt  *time.Time              `json:"archivedAt"`
-	ArchivedBy  *CardAssigneeResponse   `json:"archivedBy"`
-	Assignees   []*CardAssigneeResponse `json:"assignees"`
+	CreatedAt    time.Time               `json:"createdAt"`
+	ArchivedAt   *time.Time              `json:"archivedAt"`
+	ArchivedBy   *CardAssigneeResponse   `json:"archivedBy"`
+	CompletedAt  *time.Time              `json:"completedAt"`
+	CompletedBy  *CardAssigneeResponse   `json:"completedBy"`
+	Assignees    []*CardAssigneeResponse `json:"assignees"`
 }
 
 type BoardArchiveResponse struct {
@@ -181,10 +186,12 @@ func MapArchivedCardResponse(cfg *config.Config, card *model.ArchivedCard) *Arch
 		Description: card.Description,
 		ColumnTitle: card.ColumnTitle,
 		BorderColor: card.BorderColor,
-		CreatedAt:   card.CreatedAt,
-		ArchivedAt:  card.ArchivedAt,
-		ArchivedBy:  mapArchivedByUser(cfg, card.ArchivedBy),
-		Assignees:   assignees,
+		CreatedAt:    card.CreatedAt,
+		ArchivedAt:   card.ArchivedAt,
+		ArchivedBy:   mapArchivedByUser(cfg, card.ArchivedBy),
+		CompletedAt:  card.CompletedAt,
+		CompletedBy:  mapArchivedByUser(cfg, card.CompletedBy),
+		Assignees:    assignees,
 	}
 }
 
