@@ -91,6 +91,23 @@ func (p *KanbanRealtimePublisher) PublishCardDeleted(ctx context.Context, boardI
 	})
 }
 
+// PublishColumnRebalanced — колонка перенумерована: новые позиции ВСЕХ её
+// активных карточек. Подписчик применяет срез целиком, а не патчит по одной
+// карточке (GK-01). Старый фронт неизвестный тип события игнорирует, так что
+// выкат бэкенда вперёд фронта безопасен.
+func (p *KanbanRealtimePublisher) PublishColumnRebalanced(ctx context.Context, boardID, columnID int64, positions []repository.CardPosition, senderID int64) error {
+	cards := make([]map[string]any, 0, len(positions))
+	for _, position := range positions {
+		cards = append(cards, map[string]any{"id": position.ID, "position": position.Position})
+	}
+	return p.publish(ctx, boardID, map[string]any{
+		"type":     "column_rebalanced",
+		"columnId": columnID,
+		"cards":    cards,
+		"senderId": senderID,
+	})
+}
+
 func (p *KanbanRealtimePublisher) TryPublish(ctx context.Context, publish func(context.Context) error) {
 	if p == nil || publish == nil {
 		return

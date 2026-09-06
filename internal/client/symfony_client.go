@@ -34,6 +34,9 @@ func NewSymfonyClient(cfg *config.Config) *SymfonyClient {
 	}
 }
 
+// maxUserIDsPerRequest — потолок внутреннего API Symfony (KanbanUserController::MAX_IDS).
+const maxUserIDsPerRequest = 200
+
 func (c *SymfonyClient) FetchUsersByIDs(ctx context.Context, ids []int64) ([]model.User, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -42,6 +45,36 @@ func (c *SymfonyClient) FetchUsersByIDs(ctx context.Context, ids []int64) ([]mod
 		return nil, fmt.Errorf("symfony API credentials not configured")
 	}
 
+	// Доска собирает id авторов по карточкам с повторами; дедупликация и
+	// пачки по потолку API — иначе большая доска при холодном кэше получала
+	// 400 и оставалась без имён и аватаров (BE-15).
+	unique := make([]int64, 0, len(ids))
+	seen := make(map[int64]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+
+	var users []model.User
+	for start := 0; start < len(unique); start += maxUserIDsPerRequest {
+		end := start + maxUserIDsPerRequest
+		if end > len(unique) {
+			end = len(unique)
+		}
+		batch, err := c.fetchUsersBatch(ctx, unique[start:end])
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, batch...)
+	}
+
+	return users, nil
+}
+
+func (c *SymfonyClient) fetchUsersBatch(ctx context.Context, ids []int64) ([]model.User, error) {
 	strIDs := make([]string, len(ids))
 	for i, id := range ids {
 		strIDs[i] = strconv.FormatInt(id, 10)

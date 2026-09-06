@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"go_kanban_service/internal/config"
+	"go_kanban_service/internal/media"
 )
 
 const (
@@ -22,14 +23,9 @@ func UserAvatarURL(cfg *config.Config, storageKey *string, size string) *string 
 		width, height = 50, 50
 	}
 
-	url := fmt.Sprintf(
-		"%s/unsafe/rs:fill:%d:%d/plain/s3://%s/%s",
-		strings.TrimRight(cfg.ImgproxyBaseUrl, "/"),
-		width,
-		height,
-		cfg.MinioUserBucket,
-		*storageKey,
-	)
+	// Подпись при заданных IMGPROXY_KEY/SALT, иначе /unsafe/ (BE-03 / FE-01).
+	path := fmt.Sprintf("/rs:fill:%d:%d/plain/s3://%s/%s", width, height, cfg.MinioUserBucket, *storageKey)
+	url := strings.TrimRight(cfg.ImgproxyBaseUrl, "/") + media.SignImgproxyPath(cfg.ImgproxyKey, cfg.ImgproxySalt, path)
 
 	return &url
 }

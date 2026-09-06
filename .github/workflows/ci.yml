@@ -1,0 +1,91 @@
+name: CI
+
+# Гейт на каждый push и pull request. До этого в репозитории не было ни одной
+# автоматической проверки: сборка и тесты гонялись руками, поэтому регрессии
+# ловились уже на стенде.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+# Push в ветку с открытым PR иначе запускает job дважды. Группа по ref
+# оставляет только последний запуск и отменяет предыдущий.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    # База для интеграционных тестов репозитория. Без неё они помечаются как
+    # пропущенные, и гейт остаётся зелёным на коде со снятыми блокировками —
+    # то есть ровно там, где эти тесты и нужны. Настройки повторяют
+    # docker-compose.test.yml: одноразовая база, быстрый разбор взаимных
+    # блокировок.
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: kanban_test
+        ports:
+          - 55433:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d kanban_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Установить Go
+        uses: actions/setup-go@v7
+        with:
+          # Версия берётся из go.mod, чтобы не разъезжаться с проектом.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Проверить форматирование
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "Файлы не отформатированы gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Собрать
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Тесты
+        # -race ловит гонки по памяти внутри процесса Go. Блокировки и аномалии
+        # PostgreSQL он не видит — их проверяют интеграционные тесты
+        # репозитория, и им нужна настоящая база. Адрес передаётся переменной:
+        # без неё те же тесты просто пропускаются, чтобы `go test ./...` на
+        # машине без Docker оставался зелёным.
+        env:
+          KANBAN_TEST_DB_DSN: postgres://test:test@127.0.0.1:55433/kanban_test?sslmode=disable
+        run: go test -race ./...
+
+      - name: Убедиться, что интеграционные тесты действительно шли
+        # Пропущенный тест выглядит в логе почти как пройденный. Если база не
+        # поднялась или переменная потерялась, гейт обязан упасть, а не тихо
+        # проверить половину.
+        env:
+          KANBAN_TEST_DB_DSN: postgres://test:test@127.0.0.1:55433/kanban_test?sslmode=disable
+        run: |
+          output=$(go test -run 'TestMoveCardCounterMovesDoNotDeadlock' -v ./internal/repository/)
+          echo "$output"
+          if echo "$output" | grep -q -- "--- SKIP"; then
+            echo "Интеграционные тесты пропущены: база для них не поднялась."
+            exit 1
+          fi

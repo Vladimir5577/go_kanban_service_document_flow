@@ -185,10 +185,18 @@ func (h *BoardHandler) GetBoardArchive() http.HandlerFunc {
 	}
 }
 
+// maxPageNumber — потолок номера страницы (GK-04): page=10^18 переполнял
+// (page-1)*limit в отрицательное, и OFFSET за пределами bigint давал 500,
+// а page=10^15 заставлял Postgres перебирать OFFSET по всей выборке.
+const maxPageNumber = 1_000_000
+
 func parsePositiveInt(value string, fallback int) int {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed < 1 {
 		return fallback
+	}
+	if parsed > maxPageNumber {
+		return maxPageNumber
 	}
 	return parsed
 }

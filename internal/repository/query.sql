@@ -112,11 +112,35 @@ INSERT INTO kanban_card (title, description, position, due_date, priority, colum
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 RETURNING *;
 
--- name: UpdateCard :one
+-- Точечная правка содержимого карточки (GK-02). column_id/position, архив и
+-- отметка «выполнено» здесь не трогаются: у каждого свой запрос. Раньше общий
+-- UpdateCard писал всю строку из снимка, прочитанного до записи, и затирал
+-- параллельный перенос или отметку «выполнено».
+-- name: UpdateCardFields :one
 UPDATE kanban_card
-SET title = $1, description = $2, position = $3, due_date = $4, priority = $5, is_archived = $6, archived_at = $7, archived_by_id = $8, completed_at = $9, completed_by_id = $10, column_id = $11, border_color = $12, updated_at = CURRENT_TIMESTAMP
-WHERE id = $13
+SET title = $2, description = $3, due_date = $4, priority = $5, border_color = $6, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
 RETURNING *;
+
+-- Атомарный toggle «выполнено»: условие по текущему состоянию отсекает второй
+-- параллельный клик — он получит «нет строк», а не перезапишет чужой результат.
+-- name: SetCardCompletion :one
+UPDATE kanban_card
+SET completed_at = $2, completed_by_id = $3, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND (completed_at IS NULL) = sqlc.arg(expect_open)::boolean
+RETURNING *;
+
+-- name: ArchiveCardRow :one
+UPDATE kanban_card
+SET is_archived = TRUE, archived_at = $2, archived_by_id = $3, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND is_archived = FALSE
+RETURNING *;
+
+-- Позиции активных карточек колонки — отдаются клиентам после ребаланса (GK-01).
+-- name: GetColumnCardPositions :many
+SELECT id, position FROM kanban_card
+WHERE column_id = $1 AND is_archived = FALSE
+ORDER BY position ASC, id ASC;
 
 -- name: DeleteCard :exec
 DELETE FROM kanban_card
@@ -373,6 +397,18 @@ VALUES ($1, $2, $3, $4, COALESCE((
 ), 0) + 1)
 ON CONFLICT (kanban_project_id, user_id) DO UPDATE
 SET role = EXCLUDED.role;
+
+-- Точечное добавление (FE-04): уже участник — ничего не трогаем, в т.ч. роль,
+-- которую параллельно мог выставить другой админ. Возвращает строку только при
+-- фактической вставке — по этому признаку сервис шлёт уведомление.
+-- name: AddProjectMemberIfAbsent :one
+INSERT INTO kanban_project_user (kanban_project_id, user_id, role, folder_id, position)
+VALUES ($1, $2, $3, $4, COALESCE((
+    SELECT MAX(p.position) FROM kanban_project_user p
+    WHERE p.user_id = $2 AND p.folder_id IS NOT DISTINCT FROM $4
+), 0) + 1)
+ON CONFLICT (kanban_project_id, user_id) DO NOTHING
+RETURNING user_id;
 
 -- name: UpdateProjectMemberRole :exec
 UPDATE kanban_project_user

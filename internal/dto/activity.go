@@ -82,7 +82,7 @@ func MapActivityResponse(a *model.Activity) *ActivityResponse {
 	if a == nil {
 		return nil
 	}
-	
+
 	resp := &ActivityResponse{
 		ID:        a.ID,
 		CardID:    a.CardID,
@@ -93,7 +93,7 @@ func MapActivityResponse(a *model.Activity) *ActivityResponse {
 		NewValue:  a.NewValue,
 		CreatedAt: a.CreatedAt,
 	}
-	
+
 	if a.UserID != nil && a.UserName != nil {
 		resp.User = &ActivityUserResponse{
 			ID:   *a.UserID,

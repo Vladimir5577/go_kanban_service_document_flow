@@ -16,6 +16,7 @@ import (
 
 type ProjectMemberServiceInterface interface {
 	ReplaceMembers(ctx context.Context, projectID int64, reqs []dto.AddProjectMemberRequest) error
+	AddMember(ctx context.Context, projectID int64, req dto.AddProjectMemberRequest) error
 	UpdateMemberRole(ctx context.Context, projectID int64, userID int64, req dto.UpdateProjectMemberRequest) error
 	RemoveMember(ctx context.Context, projectID int64, userID int64) error
 }
@@ -101,6 +102,69 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 			if !existingUserIDs[m.UserID] && m.UserID != actor.ID {
 				s.notificationSvc.NotifyProjectUserAdded(ctx, projectID, actor.ID, m.UserID, project.Name)
 			}
+		}
+	}
+
+	return nil
+}
+
+// AddMember — точечное добавление одного участника (FE-04).
+//
+// Единственным способом изменить состав раньше был PUT ReplaceMembers, и фронт
+// собирал тело из своего кэша: назначая исполнителя, админ отправлял
+// устаревший список и молча выкидывал участников, добавленных другими. Здесь
+// состав не перечитывается и не заменяется — одна идемпотентная вставка.
+// Уже участник — ничего не меняем (роль тоже: за неё отвечает UpdateMemberRole).
+func (s *ProjectMemberService) AddMember(ctx context.Context, projectID int64, req dto.AddProjectMemberRequest) error {
+	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
+		return err
+	}
+	if req.UserID <= 0 {
+		return apperr.New(apperr.CodeUserNotFound, "user_id required")
+	}
+
+	project, err := s.permSvc.projectRepo.GetProject(ctx, projectID)
+	if err != nil {
+		return withNotFoundCode(err, apperr.CodeProjectNotFound)
+	}
+
+	if existing, err := s.repo.GetProjectMember(ctx, projectID, req.UserID); err == nil && existing != nil {
+		return nil
+	} else if err != nil && !errors.Is(err, apperr.ErrNotFound) {
+		return err
+	}
+
+	role := RoleAdmin
+	if req.UserID != project.OwnerID {
+		parsedRole, err := parseProjectMemberRole(req.Role)
+		if err != nil {
+			return apperr.New(apperr.CodeInvalidRoleForUser, fmt.Sprintf("invalid role for user %d", req.UserID))
+		}
+		role = parsedRole
+	}
+
+	member := model.ProjectUser{
+		KanbanProjectID: projectID,
+		UserID:          req.UserID,
+		Role:            string(role),
+		FolderID:        req.FolderID,
+	}
+	if err := s.requireExistingUsers(ctx, []model.ProjectUser{member}); err != nil {
+		return err
+	}
+	// INSERT … ON CONFLICT DO NOTHING, а не SELECT + upsert: два параллельных
+	// POST, увидевшие «участника нет», иначе перезаписывали бы роль друг друга.
+	inserted, err := s.repo.AddMemberIfAbsent(ctx, projectID, member)
+	if err != nil {
+		return err
+	}
+	if !inserted {
+		return nil
+	}
+
+	if s.notificationSvc != nil {
+		if actor, ok := middleware.GetUser(ctx); ok && actor.ID != req.UserID {
+			s.notificationSvc.NotifyProjectUserAdded(ctx, projectID, actor.ID, req.UserID, project.Name)
 		}
 	}
 

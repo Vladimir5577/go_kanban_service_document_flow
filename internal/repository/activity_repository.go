@@ -31,7 +31,7 @@ func (r *ActivityRepository) GetActivities(ctx context.Context, cardID int64) ([
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var activities []model.Activity
 	for _, a := range dbActivities {
 		act := model.Activity{

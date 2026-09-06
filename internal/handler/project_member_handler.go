@@ -53,6 +53,35 @@ func (h *ProjectMemberHandler) ReplaceMembers() http.HandlerFunc {
 	}
 }
 
+// AddMember — POST /projects/{id}/members: один участник, без замены состава (FE-04).
+func (h *ProjectMemberHandler) AddMember() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		var req dto.AddProjectMemberRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			helper.WriteError(w, invalidJSONError())
+			return
+		}
+		if err := h.service.AddMember(r.Context(), projectID, req); err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		project, err := h.projectSvc.GetProject(r.Context(), projectID)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		helper.WriteJSON(w, http.StatusOK, map[string]interface{}{"members": project.Members})
+	}
+}
+
 func decodeReplaceMembersRequest(raw json.RawMessage) ([]dto.AddProjectMemberRequest, error) {
 	var wrapped dto.ReplaceProjectMembersRequest
 	if err := json.Unmarshal(raw, &wrapped); err == nil && wrapped.Members != nil {

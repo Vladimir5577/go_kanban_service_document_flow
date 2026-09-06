@@ -19,7 +19,11 @@ import (
 )
 
 type CardServiceInterface interface {
-	CreateCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error)
+	// CreateCard/MoveCard вторым значением отдают позиции колонки после
+	// ребаланса (пусто, если его не было) — клиент обязан применить их ко всем
+	// карточкам колонки, иначе следующий drag посчитает позицию по устаревшим
+	// числам (GK-01).
+	CreateCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, []repository.CardPosition, error)
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error)
 	GetCardStandalone(ctx context.Context, id int64) (*dto.CardStandaloneResponse, error)
@@ -27,7 +31,7 @@ type CardServiceInterface interface {
 	UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error
-	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
+	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, []repository.CardPosition, error)
 	ArchiveCard(ctx context.Context, id int64) error
 	CompleteCard(ctx context.Context, id int64) (*model.Card, error)
 }
@@ -91,29 +95,31 @@ func NewCardService(
 	}
 }
 
-func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error) {
+func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, []repository.CardPosition, error) {
 	projectID, err := s.permSvc.GetProjectIDByColumn(ctx, req.ColumnID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	column, err := s.columnRepo.GetColumn(ctx, req.ColumnID)
 	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
-	}
-
-	activeCardsCount, err := s.repo.CountActiveCardsByBoard(ctx, column.BoardID)
-	if err != nil {
-		return nil, err
-	}
-	if activeCardsCount >= maxActiveCardsPerBoard {
-		return nil, apperr.New(apperr.CodeBoardCardLimitReached, "maximum number of cards (300) on board reached")
+		return nil, nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 
 	if len(req.AssigneeIDs) > 1 {
-		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
+		return nil, nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
+	}
+
+	// Связи карточки теперь действительно сохраняются, поэтому их надо
+	// проверять здесь так же, как их проверяет отдельный эндпоинт назначения
+	// (SetCardAssignees): иначе создание стало бы обходным путём мимо правил.
+	if err := s.validateProjectAssignees(ctx, projectID, req.AssigneeIDs); err != nil {
+		return nil, nil, err
+	}
+	if err := s.validateBoardLabels(ctx, column.BoardID, req.LabelIDs); err != nil {
+		return nil, nil, err
 	}
 
 	c := &model.Card{
@@ -129,45 +135,57 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	if authorID := currentUserID(ctx); authorID != nil {
 		c.CreatedByID = authorID
 	}
-	if req.Position != nil {
-		c.Position = *req.Position
-	} else {
-		cards, _ := s.repo.GetCardsByColumn(ctx, req.ColumnID)
-		if len(cards) > 0 {
-			// Prepend at the top using FIRST/2 (halving), matching the frontend's
-			// computePosition(undefined, next) = next/2. Subtracting a fixed step
-			// hit 0/negative on the first prepend and collided with the move math.
-			c.Position = cards[0].Position / 2.0
-		} else {
-			c.Position = 65536.0
+	// Позицию считает репозиторий внутри транзакции, под блокировкой колонки.
+	// Здесь её вычислять нельзя: между расчётом и вставкой успевает вклиниться
+	// чужая карточка, и обе получают одинаковое значение. Предел карточек на
+	// доске проверяется там же и по той же причине.
+	result, err := s.repo.CreateCard(ctx, repository.CreateCardInput{
+		BoardID:        column.BoardID,
+		ColumnID:       req.ColumnID,
+		Card:           c,
+		MaxActiveCards: maxActiveCardsPerBoard,
+	})
+	if err != nil || result == nil {
+		return nil, nil, err
+	}
+	created := result.Card
+
+	s.logActivity(ctx, created.ID, "created", nil, nil)
+	if s.realtimePublisher != nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			return s.realtimePublisher.PublishCardCreated(
+				ctx,
+				column.BoardID,
+				s.realtimePublisher.BuildCreatedCard(created, column),
+				realtimeSenderID(ctx),
+			)
+		})
+		s.publishRebalance(ctx, column.BoardID, column.ID, result.Rebalanced)
+	}
+
+	// Notifications via unified service
+	actorID := currentUserID(ctx)
+	if s.notificationSvc != nil {
+		s.notificationSvc.NotifyCardCreated(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), created.Title)
+
+		for _, aid := range created.AssigneeIDs {
+			s.notificationSvc.NotifyTaskAssigned(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), aid, created.Title, false)
 		}
 	}
-	created, err := s.repo.CreateCard(ctx, req.ColumnID, c)
-	if err == nil && created != nil {
-		s.logActivity(ctx, created.ID, "created", nil, nil)
-		if s.realtimePublisher != nil {
-			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-				return s.realtimePublisher.PublishCardCreated(
-					ctx,
-					column.BoardID,
-					s.realtimePublisher.BuildCreatedCard(created, column),
-					realtimeSenderID(ctx),
-				)
-			})
-		}
+	return created, result.Rebalanced, nil
+}
 
-		// Notifications via unified service
-		projectID, _ := s.permSvc.GetProjectIDByColumn(ctx, req.ColumnID)
-		actorID := currentUserID(ctx)
-		if s.notificationSvc != nil {
-			s.notificationSvc.NotifyCardCreated(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), created.Title)
-
-			for _, aid := range created.AssigneeIDs {
-				s.notificationSvc.NotifyTaskAssigned(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), aid, created.Title, false)
-			}
-		}
+// publishRebalance сообщает подписчикам доски новые позиции всех карточек
+// колонки после перенумерации. Отдельный тип события: патч по одной карточке
+// здесь не годится — позиции изменились у всех, включая те, о которых
+// никакого события не было (GK-01).
+func (s *CardService) publishRebalance(ctx context.Context, boardID, columnID int64, positions []repository.CardPosition) {
+	if s.realtimePublisher == nil || len(positions) == 0 {
+		return
 	}
-	return created, err
+	s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+		return s.realtimePublisher.PublishColumnRebalanced(ctx, boardID, columnID, positions, realtimeSenderID(ctx))
+	})
 }
 
 func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error) {
@@ -550,7 +568,9 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 		return c, nil
 	}
 
-	updatedCard, err := s.repo.UpdateCard(ctx, c)
+	// Точечный UPDATE содержимого: колонка/позиция, архив и «выполнено» из
+	// снимка не переписываются (GK-02).
+	updatedCard, err := s.repo.UpdateCardFields(ctx, c)
 	if err == nil {
 		if titleChanged {
 			s.logActivity(ctx, id, "renamed", oldTitle, newTitle)
@@ -693,10 +713,11 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 			})
 		}
 
-		// Notify assignee
-		if s.notificationSvc != nil && len(userIDs) > 0 {
-			projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
-			card, _ := s.repo.GetCard(ctx, id)
+		// Notify assignee. Назначение уже закоммичено — ошибка здесь не
+		// возвращается наружу: карточка могла быть удалена параллельно (GK-05),
+		// тогда card == nil, и раньше это была паника/500 после успешной записи.
+		// Заголовок берём из снимка, прочитанного выше: эта операция его не меняет.
+		if s.notificationSvc != nil && len(userIDs) > 0 && card != nil {
 			actorID := currentUserID(ctx)
 			newAssignee := userIDs[0]
 			// board may be resolved inside if not passed; here we don't have column loaded cheaply
@@ -704,6 +725,36 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 		}
 	}
 	return err
+}
+
+// validateBoardLabels проверяет, что все метки принадлежат доске карточки.
+//
+// Отдельного эндпоинта «навесить метку при создании» в сервисе нет, поэтому
+// и проверки для этого пути раньше не существовало — вместе с тем, что метки
+// вообще не сохранялись. Раз сохраняем, то и проверяем: иначе на карточку
+// вешалась бы метка чужой доски, а то и чужого проекта.
+func (s *CardService) validateBoardLabels(ctx context.Context, boardID int64, labelIDs []int64) error {
+	if len(labelIDs) == 0 {
+		return nil
+	}
+
+	boardLabels, err := s.labelRepo.GetLabels(ctx, boardID)
+	if err != nil {
+		return err
+	}
+
+	allowed := make(map[int64]struct{}, len(boardLabels))
+	for _, label := range boardLabels {
+		allowed[label.ID] = struct{}{}
+	}
+
+	for _, labelID := range labelIDs {
+		if _, ok := allowed[labelID]; !ok {
+			return apperr.New(apperr.CodeLabelNotFound, "label does not belong to the board")
+		}
+	}
+
+	return nil
 }
 
 func (s *CardService) validateProjectAssignees(ctx context.Context, projectID int64, userIDs []int64) error {
@@ -737,33 +788,33 @@ func (s *CardService) validateProjectAssignees(ctx context.Context, projectID in
 	return nil
 }
 
-func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
+func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, []repository.CardPosition, error) {
 	if columnID == 0 {
-		return nil, apperr.New(apperr.CodeColumnIDAndPositionRequired, "column_id and position required")
+		return nil, nil, apperr.New(apperr.CodeColumnIDAndPositionRequired, "column_id and position required")
 	}
 
 	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	cardBefore, err := s.repo.GetCard(ctx, id)
 	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+		return nil, nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 	sourceColumn, err := s.columnRepo.GetColumn(ctx, cardBefore.ColumnID)
 	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+		return nil, nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	targetColumn, err := s.columnRepo.GetColumn(ctx, columnID)
 	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+		return nil, nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	if targetColumn.BoardID != sourceColumn.BoardID {
-		return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
+		return nil, nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
 	}
 
 	columnChanged := cardBefore.ColumnID != columnID
@@ -778,11 +829,59 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 		newValue = &targetColumn.Title
 	}
 
-	card, err := s.repo.MoveCard(ctx, id, columnID, position)
-	if err == nil && columnChanged {
+	// Семантика колонки «сделано» (GK-03 / FE-32). Решение принимается на том
+	// же снимке, что проверка «одна доска», и пишется тем же UPDATE, что
+	// column_id/position: без окна «уже в колонке, ещё не выполнена».
+	//   в done-колонку и не выполнена  → поставить completed_at/completed_by_id;
+	//   из done-колонки и выполнена    → снять отметку (карточку вернули в работу).
+	// Перенос уже выполненной карточки внутри done-колонки ничего не меняет,
+	// поэтому автоперенос фронта после «Выполнено» остаётся идемпотентным.
+	board, err := s.boardRepo.GetBoard(ctx, targetColumn.BoardID)
+	if err != nil {
+		return nil, nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeBoardNotFound)
+	}
+	opts := repository.MoveCardOptions{}
+	completionActivity := ""
+	if board.DoneColumnID != nil {
+		switch {
+		// Только при ВХОДЕ в done-колонку (FE-32): перестановка внутри неё не
+		// должна снова завершать карточку, которую только что вернули в работу
+		// тумблером — иначе «снял отметку» отменялось первым же reorder.
+		case columnChanged && *board.DoneColumnID == columnID && cardBefore.CompletedAt == nil:
+			opts.Completion = repository.CompletionSet
+			opts.CompletedAt = s.cfg.Clock.Now()
+			opts.CompletedByID = currentUserID(ctx)
+			completionActivity = "completed"
+		case columnChanged && *board.DoneColumnID == cardBefore.ColumnID && cardBefore.CompletedAt != nil:
+			opts.Completion = repository.CompletionClear
+			completionActivity = "reopened"
+		}
+	}
+
+	result, err := s.repo.MoveCard(ctx, id, columnID, position, opts)
+	// Ошибку возвращаем сразу. Раньше проверка err стояла у логирования и у
+	// realtime, но НЕ у блока уведомлений ниже — а он разыменовывает card,
+	// который при ошибке равен nil. То есть любой сбой перемещения (не
+	// найдено, конфликт блокировок) заканчивался паникой в обработчике
+	// вместо нормального ответа с ошибкой.
+	if err != nil {
+		return nil, nil, err
+	}
+	card := result.Card
+	// Под блокировкой карточка могла оказаться уже в нужном состоянии —
+	// тогда репозиторий ничего не менял, и в историю писать нечего.
+	if result.Completion == repository.CompletionKeep {
+		completionActivity = ""
+	}
+
+	if columnChanged {
 		s.logActivity(ctx, id, "moved", oldValue, newValue)
 	}
-	if err == nil && s.realtimePublisher != nil {
+	if completionActivity != "" {
+		// В истории завершение не должно появляться «из ниоткуда».
+		s.logActivity(ctx, id, completionActivity, nil, nil)
+	}
+	if s.realtimePublisher != nil {
 		patch := map[string]any{
 			"id":        card.ID,
 			"position":  card.Position,
@@ -793,20 +892,26 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 			patch["columnTitle"] = targetColumn.Title
 			patch["status"] = strconv.FormatInt(targetColumn.ID, 10)
 		}
+		if completionActivity != "" {
+			// Иначе у остальных подписчиков карточка переедет, но останется
+			// «не выполненной» — баг просто переползёт в realtime-слой.
+			patch["completedAt"] = formatRealtimeTime(card.CompletedAt)
+			patch["completedById"] = card.CompletedByID
+		}
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 			return s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, patch, realtimeSenderID(ctx))
 		})
+		s.publishRebalance(ctx, targetColumn.BoardID, targetColumn.ID, result.Rebalanced)
 	}
 
 	// Notify on column change (moved)
 	if columnChanged && s.notificationSvc != nil {
-		projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
 		actorID := currentUserID(ctx)
 		// source and target are guaranteed to be on the same board
 		s.notificationSvc.NotifyTaskMoved(ctx, projectID, sourceColumn.BoardID, id, derefInt64(actorID), card.Title, sourceColumn.Title, targetColumn.Title)
 	}
 
-	return card, err
+	return card, result.Rebalanced, nil
 }
 
 func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
@@ -823,22 +928,29 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 		return withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 
-	activityType := "archived"
+	// Возврат из архива увеличивает число активных карточек, поэтому идёт
+	// отдельным путём — с проверкой предела под блокировкой доски, как при
+	// создании. Архивация предел только освобождает, ей блокировка не нужна.
 	if card.IsArchived {
-		activityType = "restored"
-		card.IsArchived = false
-		card.ArchivedAt = nil
-		card.ArchivedByID = nil
-	} else {
-		card.IsArchived = true
-		now := s.cfg.Clock.Now()
-		card.ArchivedAt = &now
-		card.ArchivedByID = currentUserID(ctx)
+		column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
+		if err != nil {
+			return withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+		}
+		rebalanced, err := s.repo.RestoreCard(ctx, id, column.BoardID, maxActiveCardsPerBoard)
+		if err != nil {
+			return err
+		}
+		s.logActivity(ctx, id, "restored", nil, nil)
+		s.publishRebalance(ctx, column.BoardID, column.ID, rebalanced)
+		return nil
 	}
 
-	_, err = s.repo.UpdateCard(ctx, card)
+	// Точечный UPDATE (GK-02): раньше архивация писала всю строку из снимка и
+	// могла «вернуть» карточку в колонку, из которой её только что перенесли.
+	// completed_* при архивации осознанно не трогаются.
+	_, err = s.repo.ArchiveCard(ctx, id, s.cfg.Clock.Now(), currentUserID(ctx))
 	if err == nil {
-		s.logActivity(ctx, id, activityType, nil, nil)
+		s.logActivity(ctx, id, "archived", nil, nil)
 	}
 	return err
 }
@@ -857,19 +969,26 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 
+	// Атомарный toggle (GK-02): пишутся только completed_*, а условие «ещё
+	// открыта / уже выполнена» проверяется в самом UPDATE. Второй параллельный
+	// клик получает CodeConflict, а не перезаписывает чужой результат; колонка
+	// и позиция из снимка не трогаются.
 	activityType := "completed"
-	if card.CompletedAt != nil {
-		activityType = "reopened"
-		card.CompletedAt = nil
-		card.CompletedByID = nil
-	} else {
+	expectOpen := card.CompletedAt == nil
+	var completedAt *time.Time
+	var completedBy *int64
+	if expectOpen {
 		now := s.cfg.Clock.Now()
-		card.CompletedAt = &now
-		card.CompletedByID = currentUserID(ctx)
+		completedAt = &now
+		completedBy = currentUserID(ctx)
+	} else {
+		activityType = "reopened"
 	}
 
-	updated, err := s.repo.UpdateCard(ctx, card)
+	updated, err := s.repo.SetCardCompletion(ctx, id, completedAt, completedBy, expectOpen)
 	if err == nil {
+		updated.AssigneeIDs = card.AssigneeIDs
+		updated.LabelIDs = card.LabelIDs
 		s.logActivity(ctx, id, activityType, nil, nil)
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
