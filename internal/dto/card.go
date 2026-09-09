@@ -134,6 +134,35 @@ type CardResponse struct {
 	CommentsCount  int                     `json:"commentsCount"`
 }
 
+// CardPositionResponse — новая позиция карточки после ребалансировки колонки.
+type CardPositionResponse struct {
+	ID       int64   `json:"id"`
+	Position float64 `json:"position"`
+}
+
+// MoveCardResponse — карточка после перемещения (поля лежат в корне ответа, как и раньше)
+// плюс позиции всех карточек колонки, если перемещение вызвало ребалансировку.
+// Без ребалансировки rebalancedCards = null — как rebalancedProjects в MoveProjectResponse.
+type MoveCardResponse struct {
+	*CardResponse
+	RebalancedCards []*CardPositionResponse `json:"rebalancedCards"`
+}
+
+// MapCardPositions возвращает nil для nil-среза, чтобы поле ушло на фронт как null.
+func MapCardPositions(cards []model.Card) []*CardPositionResponse {
+	if cards == nil {
+		return nil
+	}
+	positions := make([]*CardPositionResponse, 0, len(cards))
+	for i := range cards {
+		positions = append(positions, &CardPositionResponse{
+			ID:       cards[i].ID,
+			Position: cards[i].Position,
+		})
+	}
+	return positions
+}
+
 func MapCardResponse(c *model.Card) *CardResponse {
 	if c == nil {
 		return nil

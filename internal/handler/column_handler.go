@@ -87,12 +87,15 @@ func (h *ColumnHandler) UpdateColumn() http.HandlerFunc {
 			return
 		}
 
-		res, err := h.service.UpdateColumn(r.Context(), projectID, boardID, columnID, req)
+		res, rebalancedColumns, err := h.service.UpdateColumn(r.Context(), projectID, boardID, columnID, req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.MapColumnResponse(res))
+		helper.WriteJSON(w, http.StatusOK, &dto.UpdateColumnResponse{
+			ColumnResponse:    dto.MapColumnResponse(res),
+			RebalancedColumns: dto.MapColumnPositions(rebalancedColumns),
+		})
 	}
 }
 

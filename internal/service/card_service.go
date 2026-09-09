@@ -27,7 +27,7 @@ type CardServiceInterface interface {
 	UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error
-	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
+	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, []model.Card, error)
 	ArchiveCard(ctx context.Context, id int64) error
 	CompleteCard(ctx context.Context, id int64) (*model.Card, error)
 }
@@ -737,33 +737,33 @@ func (s *CardService) validateProjectAssignees(ctx context.Context, projectID in
 	return nil
 }
 
-func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
+func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, []model.Card, error) {
 	if columnID == 0 {
-		return nil, apperr.New(apperr.CodeColumnIDAndPositionRequired, "column_id and position required")
+		return nil, nil, apperr.New(apperr.CodeColumnIDAndPositionRequired, "column_id and position required")
 	}
 
 	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	cardBefore, err := s.repo.GetCard(ctx, id)
 	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+		return nil, nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 	sourceColumn, err := s.columnRepo.GetColumn(ctx, cardBefore.ColumnID)
 	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+		return nil, nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	targetColumn, err := s.columnRepo.GetColumn(ctx, columnID)
 	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+		return nil, nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	if targetColumn.BoardID != sourceColumn.BoardID {
-		return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
+		return nil, nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
 	}
 
 	columnChanged := cardBefore.ColumnID != columnID
@@ -778,7 +778,7 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 		newValue = &targetColumn.Title
 	}
 
-	card, err := s.repo.MoveCard(ctx, id, columnID, position)
+	card, rebalancedCards, err := s.repo.MoveCard(ctx, id, columnID, position)
 	if err == nil && columnChanged {
 		s.logActivity(ctx, id, "moved", oldValue, newValue)
 	}
@@ -794,19 +794,43 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 			patch["status"] = strconv.FormatInt(targetColumn.ID, 10)
 		}
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			return s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, patch, realtimeSenderID(ctx))
+			senderID := realtimeSenderID(ctx)
+			if err := s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, patch, senderID); err != nil {
+				return err
+			}
+			// Ребалансировка переписала позиции всей колонки — досылаем их соседям,
+			// иначе у чужих вкладок останутся старые позиции и следующее перетаскивание
+			// оттуда посчитает позицию по числам, которых в базе уже нет.
+			// На обычном перемещении rebalancedCards == nil и цикл не выполняется.
+			//
+			// ponytail: по сообщению на карточку, весь цикл под общим mercurePublishTimeout.
+			// При большой колонке хвост может не уйти — отдельное событие с массивом позиций,
+			// если упрёшься (нужен новый обработчик на фронте).
+			for _, c := range rebalancedCards {
+				if c.ID == card.ID {
+					continue // уже ушла патчем выше, вместе с колонкой и статусом
+				}
+				if err := s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, map[string]any{
+					"id":        c.ID,
+					"position":  c.Position,
+					"updatedAt": formatRealtimeTimeValue(c.UpdatedAt),
+				}, senderID); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 	}
 
 	// Notify on column change (moved)
-	if columnChanged && s.notificationSvc != nil {
+	if err == nil && columnChanged && s.notificationSvc != nil {
 		projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
 		actorID := currentUserID(ctx)
 		// source and target are guaranteed to be on the same board
 		s.notificationSvc.NotifyTaskMoved(ctx, projectID, sourceColumn.BoardID, id, derefInt64(actorID), card.Title, sourceColumn.Title, targetColumn.Title)
 	}
 
-	return card, err
+	return card, rebalancedCards, err
 }
 
 func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
@@ -836,11 +860,47 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 		card.ArchivedByID = currentUserID(ctx)
 	}
 
-	_, err = s.repo.UpdateCard(ctx, card)
-	if err == nil {
-		s.logActivity(ctx, id, activityType, nil, nil)
+	updated, err := s.repo.UpdateCard(ctx, card)
+	if err != nil {
+		return err
 	}
-	return err
+	s.logActivity(ctx, id, activityType, nil, nil)
+
+	// Архивация убирает карточку с доски, восстановление возвращает её обратно.
+	// Без события у чужих вкладок она висит (или не появляется) до перезагрузки.
+	if s.realtimePublisher != nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			column, err := s.columnRepo.GetColumn(ctx, updated.ColumnID)
+			if err != nil {
+				return err
+			}
+			senderID := realtimeSenderID(ctx)
+			if updated.IsArchived {
+				return s.realtimePublisher.PublishCardDeleted(ctx, column.BoardID, updated.ID, senderID)
+			}
+
+			// Восстановленная карточка, в отличие от новой, не пустая: BuildCreatedCard
+			// обнуляет метки, исполнителей и счётчики — дозаполняем готовыми билдерами.
+			created := s.realtimePublisher.BuildCreatedCard(updated, column)
+			created["updatedAt"] = formatRealtimeTimeValue(updated.UpdatedAt)
+			for _, build := range []func(context.Context, int64) (map[string]any, error){
+				s.realtimePublisher.BuildLabels,
+				s.realtimePublisher.BuildAssignees,
+				s.realtimePublisher.BuildChecklistCounters,
+				s.realtimePublisher.BuildCommentsCount,
+			} {
+				patch, err := build(ctx, updated.ID)
+				if err != nil {
+					return err
+				}
+				for key, value := range patch {
+					created[key] = value
+				}
+			}
+			return s.realtimePublisher.PublishCardCreated(ctx, column.BoardID, created, senderID)
+		})
+	}
+	return nil
 }
 
 func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, error) {

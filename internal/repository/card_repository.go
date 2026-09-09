@@ -25,7 +25,9 @@ type CardRepositoryInterface interface {
 	UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
-	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
+	// MoveCard возвращает перемещённую карточку и, если перемещение вызвало
+	// ребалансировку колонки, все её карточки с новыми позициями (иначе nil).
+	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, []model.Card, error)
 
 	// GetInvolvedUserIDsForNotifications returns distinct user IDs that are assignees on the card,
 	// assignees on any of its subtasks, or the card's author. Used to decide notification recipients.
@@ -566,17 +568,17 @@ func (r *CardRepository) UpdateCardAssignees(ctx context.Context, cardID int64, 
 	return nil
 }
 
-func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
+func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, []model.Card, error) {
 	// 1. Fetch card to check existence
 	card, err := r.GetCard(ctx, id)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// 2. Fetch all cards in the destination column
 	cards, err := r.GetCardsByColumn(ctx, columnID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// 3. Check for collision
@@ -595,20 +597,30 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 
 	updatedCard, err := r.UpdateCard(ctx, card)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// 8. Trigger rebalance if needed
 	if needsRebalance {
 		queries := dbgen.New(r.Db)
 		if err := queries.RebalanceColumnCards(ctx, columnID); err != nil {
-			return nil, err
+			return nil, nil, err
+		}
+		// ребалансировка переписала позиции всей колонки — перечитываем её целиком,
+		// иначе у клиента останутся устаревшие позиции соседних карточек
+		rebalanced, err := r.GetCardsByColumn(ctx, columnID)
+		if err != nil {
+			return nil, nil, err
 		}
 		// fetch card again to get the rebalanced position
-		return r.GetCard(ctx, id)
+		movedCard, err := r.GetCard(ctx, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		return movedCard, rebalanced, nil
 	}
 
-	return updatedCard, nil
+	return updatedCard, nil, nil
 }
 
 // GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users + card author.

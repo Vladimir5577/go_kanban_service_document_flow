@@ -67,6 +67,35 @@ type ColumnResponse struct {
 	Cards       []*CardResponse `json:"cards"`
 }
 
+// ColumnPositionResponse — новая позиция колонки после ребалансировки доски.
+type ColumnPositionResponse struct {
+	ID       int64   `json:"id"`
+	Position float64 `json:"position"`
+}
+
+// UpdateColumnResponse — обновлённая колонка (поля лежат в корне ответа, как и раньше)
+// плюс позиции всех колонок доски, если смена позиции вызвала ребалансировку.
+// Без ребалансировки rebalancedColumns = null — как rebalancedCards у карточек.
+type UpdateColumnResponse struct {
+	*ColumnResponse
+	RebalancedColumns []*ColumnPositionResponse `json:"rebalancedColumns"`
+}
+
+// MapColumnPositions возвращает nil для nil-среза, чтобы поле ушло на фронт как null.
+func MapColumnPositions(columns []model.Column) []*ColumnPositionResponse {
+	if columns == nil {
+		return nil
+	}
+	positions := make([]*ColumnPositionResponse, 0, len(columns))
+	for i := range columns {
+		positions = append(positions, &ColumnPositionResponse{
+			ID:       columns[i].ID,
+			Position: columns[i].Position,
+		})
+	}
+	return positions
+}
+
 func MapColumnResponse(c *model.Column) *ColumnResponse {
 	if c == nil {
 		return nil

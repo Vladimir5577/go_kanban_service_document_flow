@@ -16,6 +16,11 @@ type ColumnRepositoryInterface interface {
 	GetColumn(ctx context.Context, id int64) (*model.Column, error)
 	GetColumnsByBoard(ctx context.Context, boardID int64) ([]model.Column, error)
 	HasCardsByColumn(ctx context.Context, columnID int64) (bool, error)
+
+	// RebalanceBoardColumns перенумеровывает колонки доски, если позиции соседей
+	// сблизились настолько, что вставить между ними уже нечего. Возвращает true,
+	// если позиции были переписаны.
+	RebalanceBoardColumns(ctx context.Context, boardID int64) (bool, error)
 }
 
 type ColumnRepository struct {
@@ -107,6 +112,62 @@ func (r *ColumnRepository) UpdateColumn(ctx context.Context, c *model.Column) (*
 func (r *ColumnRepository) DeleteColumn(ctx context.Context, id int64) error {
 	queries := dbgen.New(r.Db)
 	return queries.DeleteColumn(ctx, id)
+}
+
+func (r *ColumnRepository) RebalanceBoardColumns(ctx context.Context, boardID int64) (bool, error) {
+	rows, err := r.Db.Query(ctx, `
+		SELECT position
+		FROM kanban_column
+		WHERE board_id = $1
+		ORDER BY position ASC, id ASC`, boardID)
+	if err != nil {
+		return false, NormalizeError(err)
+	}
+	defer rows.Close()
+
+	positions := make([]float64, 0)
+	for rows.Next() {
+		var p float64
+		if err := rows.Scan(&p); err != nil {
+			return false, err
+		}
+		positions = append(positions, p)
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+
+	const epsilon = 0.0001
+	needsRebalance := false
+	for i := 1; i < len(positions); i++ {
+		if positions[i]-positions[i-1] < epsilon {
+			needsRebalance = true
+			break
+		}
+	}
+	if !needsRebalance {
+		return false, nil
+	}
+
+	// Шаг 65536, как у RebalanceColumnCards: запас на вставки между соседями,
+	// чтобы следующая ребалансировка потребовалась не скоро.
+	//
+	// ponytail: отдельная транзакция не нужна — UPDATE сам пересчитывает ранги,
+	// а устаревший результат проверки выше в худшем случае даст лишнюю
+	// перенумерацию либо пропуск, который добьёт следующее перемещение.
+	if _, err := r.Db.Exec(ctx, `
+		WITH ranked AS (
+			SELECT id, ROW_NUMBER() OVER (ORDER BY position ASC, id ASC) AS rn
+			FROM kanban_column
+			WHERE board_id = $1
+		)
+		UPDATE kanban_column
+		SET position = ranked.rn * 65536.0
+		FROM ranked
+		WHERE kanban_column.id = ranked.id`, boardID); err != nil {
+		return false, NormalizeError(err)
+	}
+	return true, nil
 }
 
 func (r *ColumnRepository) HasCardsByColumn(ctx context.Context, columnID int64) (bool, error) {
