@@ -207,6 +207,7 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 		Join("kanban_column col ON c.column_id = col.id").
 		Where(sq.Eq{"col.board_id": boardID}).
 		Where(sq.Eq{"c.is_archived": true}).
+		Where("c.deleted_at IS NULL").
 		ToSql()
 	if err != nil {
 		return nil, err
@@ -368,7 +369,8 @@ func buildArchivedCardsQuery(boardID int64, filters model.BoardArchiveFilters) s
 		LeftJoin("users u ON c.archived_by_id = u.id").
 		LeftJoin("users cb ON c.completed_by_id = cb.id").
 		Where(sq.Eq{"col.board_id": boardID}).
-		Where(sq.Eq{"c.is_archived": true})
+		Where(sq.Eq{"c.is_archived": true}).
+		Where("c.deleted_at IS NULL")
 
 	if title := strings.TrimSpace(filters.Title); title != "" {
 		query = query.Where(sq.ILike{"c.title": "%" + title + "%"})
@@ -418,6 +420,7 @@ func (r *BoardRepository) HasActiveCardsByBoard(ctx context.Context, boardID int
 			JOIN kanban_column col ON c.column_id = col.id
 			WHERE col.board_id = $1
 				AND c.is_archived = FALSE
+				AND c.deleted_at IS NULL
 		)`
 	var exists bool
 	if err := r.Db.QueryRow(ctx, query, boardID).Scan(&exists); err != nil {

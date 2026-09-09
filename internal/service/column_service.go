@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -45,6 +46,7 @@ type ColumnService struct {
 	repo      repository.ColumnRepositoryInterface
 	permSvc   *PermissionService
 	boardRepo repository.BoardRepositoryInterface
+	History   HistoryLogger
 }
 
 func NewColumnService(repo repository.ColumnRepositoryInterface, permSvc *PermissionService, boardRepo repository.BoardRepositoryInterface) *ColumnService {
@@ -82,7 +84,17 @@ func (s *ColumnService) CreateColumn(ctx context.Context, projectID int64, board
 		Position:    position,
 		BoardID:     boardID,
 	}
-	return s.repo.CreateColumn(ctx, boardID, c)
+	created, err := s.repo.CreateColumn(ctx, boardID, c)
+	if err == nil && created != nil {
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:  projectID,
+			Action:      "column.created",
+			EntityTitle: created.Title,
+			EntityKeys:  historyKeys("column", created.ID),
+			Undo:       []model.UndoStep{{Op: "column.delete", ColumnID: created.ID}},
+		})
+	}
+	return created, err
 }
 
 func (s *ColumnService) UpdateColumn(ctx context.Context, projectID int64, boardID int64, columnID int64, req dto.UpdateColumnRequest) (*model.Column, error) {
@@ -97,6 +109,7 @@ func (s *ColumnService) UpdateColumn(ctx context.Context, projectID int64, board
 	if err != nil {
 		return nil, err
 	}
+	oldTitle, oldColor, oldPos := c.Title, c.HeaderColor, c.Position
 
 	title := ""
 	hasTitle := false
@@ -110,18 +123,50 @@ func (s *ColumnService) UpdateColumn(ctx context.Context, projectID int64, board
 		return nil, apperr.New(apperr.CodeUpdateFieldsRequired, "update fields required")
 	}
 
-	if hasTitle {
-		c.Title = title
-	}
+	titleChanged := hasTitle && title != oldTitle
+	colorChanged := false
 	if hasHeaderColor {
 		if color, ok := normalizeColumnColorForUpdate(*req.HeaderColor); ok {
+			colorChanged = color != oldColor
 			c.HeaderColor = color
 		}
+	}
+	if hasTitle {
+		c.Title = title
 	}
 	if hasPosition {
 		c.Position = *req.Position
 	}
-	return s.repo.UpdateColumn(ctx, c)
+	updated, err := s.repo.UpdateColumn(ctx, c)
+	if err == nil && updated != nil {
+		posChanged := hasPosition && updated.Position != oldPos
+		if !titleChanged && !colorChanged && !posChanged {
+			return updated, err
+		}
+		fields, _ := json.Marshal(map[string]any{"title": oldTitle, "headerColor": oldColor, "position": oldPos})
+		action := "column.updated"
+		before, after := "", ""
+		switch {
+		case titleChanged && !colorChanged && !posChanged:
+			action = "column.updated.renamed"
+			before, after = oldTitle, title
+		case colorChanged && !titleChanged && !posChanged:
+			action = "column.updated.color"
+			before, after = oldColor, c.HeaderColor
+		case posChanged && !titleChanged && !colorChanged:
+			action = "column.updated.moved"
+		}
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:  projectID,
+			Action:      action,
+			EntityTitle: updated.Title,
+			Before:      before,
+			After:      after,
+			EntityKeys: historyKeys("column", columnID),
+			Undo:       []model.UndoStep{{Op: "column.patch", ColumnID: columnID, Fields: fields}},
+		})
+	}
+	return updated, err
 }
 
 func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, boardID int64, columnID int64) error {
@@ -131,7 +176,8 @@ func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, board
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return err
 	}
-	if _, err := s.getColumnInBoard(ctx, boardID, columnID); err != nil {
+	col, err := s.getColumnInBoard(ctx, boardID, columnID)
+	if err != nil {
 		return err
 	}
 
@@ -151,6 +197,17 @@ func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, board
 		}
 		return err
 	}
+	snap, _ := json.Marshal(map[string]any{
+		"id": col.ID, "title": col.Title, "headerColor": col.HeaderColor, "position": col.Position, "boardId": col.BoardID,
+	})
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  projectID,
+		Action:      "column.deleted",
+		EntityTitle: col.Title,
+		EntityLink:  historyBoardPath(projectID, boardID),
+		EntityKeys:  historyKeys("column", columnID),
+		Undo:       []model.UndoStep{{Op: "column.insert", ColumnID: columnID, Snapshot: snap}},
+	})
 	return nil
 }
 

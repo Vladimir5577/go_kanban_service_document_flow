@@ -102,7 +102,9 @@ func statusForErrorCode(code apperr.ErrorCode) int {
 		apperr.CodeBoardCardLimitReached,
 		apperr.CodeBoardHasCards,
 		apperr.CodeColumnHasCards,
-		apperr.CodeCommentLimitReached:
+		apperr.CodeCommentLimitReached,
+		apperr.CodeUndoEmpty,
+		apperr.CodeUndoImpossible:
 		return http.StatusConflict
 	case apperr.CodeValidation,
 		apperr.CodeAttachmentLimitReached,

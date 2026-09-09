@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -44,17 +45,16 @@ type LabelServiceInterface interface {
 type LabelService struct {
 	repo              repository.LabelRepositoryInterface
 	permSvc           *PermissionService
-	activityRepo      repository.ActivityRepositoryInterface
 	boardRepo         repository.BoardRepositoryInterface
 	cardRepo          repository.CardRepositoryInterface
 	columnRepo        repository.ColumnRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
+	History           HistoryLogger
 }
 
 func NewLabelService(
 	repo repository.LabelRepositoryInterface,
 	permSvc *PermissionService,
-	activityRepo repository.ActivityRepositoryInterface,
 	boardRepo repository.BoardRepositoryInterface,
 	cardRepo repository.CardRepositoryInterface,
 	columnRepo repository.ColumnRepositoryInterface,
@@ -63,7 +63,6 @@ func NewLabelService(
 	return &LabelService{
 		repo:              repo,
 		permSvc:           permSvc,
-		activityRepo:      activityRepo,
 		boardRepo:         boardRepo,
 		cardRepo:          cardRepo,
 		columnRepo:        columnRepo,
@@ -98,7 +97,18 @@ func (s *LabelService) CreateLabel(ctx context.Context, projectID int64, boardID
 		Name:  name,
 		Color: normalizeLabelColor(req.Color),
 	}
-	return s.repo.CreateLabel(ctx, boardID, l)
+	created, err := s.repo.CreateLabel(ctx, boardID, l)
+	if err == nil && created != nil {
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:  projectID,
+			Action:      "label.created",
+			EntityTitle: created.Name,
+			EntityLink:  historyBoardPath(projectID, boardID),
+			EntityKeys:  historyKeys("label", created.ID),
+			Undo:       []model.UndoStep{{Op: "label.delete", LabelID: created.ID}},
+		})
+	}
+	return created, err
 }
 
 func (s *LabelService) DeleteLabel(ctx context.Context, projectID int64, boardID int64, labelID int64) error {
@@ -109,10 +119,26 @@ func (s *LabelService) DeleteLabel(ctx context.Context, projectID int64, boardID
 		return err
 	}
 
-	if _, err := s.getLabelInBoard(ctx, boardID, labelID); err != nil {
+	label, err := s.getLabelInBoard(ctx, boardID, labelID)
+	if err != nil {
 		return err
 	}
-	return s.repo.DeleteLabel(ctx, labelID)
+	cardIDs, _ := s.repo.GetCardIDsByLabel(ctx, labelID)
+	if err := s.repo.DeleteLabel(ctx, labelID); err != nil {
+		return err
+	}
+	snap, _ := json.Marshal(map[string]any{
+		"id": label.ID, "name": label.Name, "color": label.Color, "boardId": label.BoardID, "cardIds": cardIDs,
+	})
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  projectID,
+		Action:      "label.deleted",
+		EntityTitle: label.Name,
+		EntityLink:  historyBoardPath(projectID, boardID),
+		EntityKeys:  append(historyKeys("label", labelID), historyKeys("card", cardIDs...)...),
+		Undo:       []model.UndoStep{{Op: "label.insert", LabelID: labelID, Snapshot: snap}},
+	})
+	return nil
 }
 
 func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID int64, cardID int64, labelID int64) (string, error) {
@@ -122,7 +148,8 @@ func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return "", err
 	}
-	if err := s.ensureCardInBoard(ctx, boardID, cardID); err != nil {
+	card, err := s.ensureCardInBoard(ctx, boardID, cardID)
+	if err != nil {
 		return "", err
 	}
 
@@ -135,13 +162,25 @@ func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID
 	if err != nil {
 		return "", err
 	}
+	on := !added
+	action := "label.removed"
+	if added {
+		action = "label.added"
+	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  projectID,
+		Action:      action,
+		EntityTitle: label.Name,
+		EntityLink:  historyTaskPath(projectID, boardID, cardID),
+		After:       card.Title,
+		EntityKeys:  []string{HistoryKey("card", cardID), HistoryKey("label", labelID)},
+		Undo:       []model.UndoStep{{Op: "label.toggle", CardID: cardID, LabelID: labelID, On: &on}},
+	})
 
 	if added {
-		s.logActivity(ctx, cardID, "label_added", nil, &label.Name)
 		s.publishLabelsPatch(ctx, cardID)
 		return "attached", nil
 	}
-	s.logActivity(ctx, cardID, "label_removed", &label.Name, nil)
 	s.publishLabelsPatch(ctx, cardID)
 	return "detached", nil
 }
@@ -181,19 +220,19 @@ func (s *LabelService) getLabelInBoard(ctx context.Context, boardID int64, label
 	return label, nil
 }
 
-func (s *LabelService) ensureCardInBoard(ctx context.Context, boardID int64, cardID int64) error {
+func (s *LabelService) ensureCardInBoard(ctx context.Context, boardID int64, cardID int64) (*model.Card, error) {
 	card, err := s.cardRepo.GetCard(ctx, cardID)
 	if err != nil {
-		return withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeCardNotFound)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeCardNotFound)
 	}
 	column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
 	if err != nil {
-		return withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	if column.BoardID != boardID {
-		return apperr.New(apperr.CodeCardNotFound, "card not found")
+		return nil, apperr.New(apperr.CodeCardNotFound, "card not found")
 	}
-	return nil
+	return card, nil
 }
 
 func normalizeLabelName(name string) (string, error) {
@@ -219,6 +258,3 @@ func mapNoRowsToNotFound(err error) error {
 	return err
 }
 
-func (s *LabelService) logActivity(ctx context.Context, cardID int64, action string, oldValue, newValue *string) {
-	_ = s.activityRepo.LogActivity(ctx, cardID, currentUserID(ctx), action, oldValue, newValue)
-}

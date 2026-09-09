@@ -49,6 +49,34 @@ func (h *CardHandler) CreateCard() http.HandlerFunc {
 	}
 }
 
+func (h *CardHandler) DuplicateCard() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		var req dto.DuplicateCardRequest
+		if r.Body != nil && r.ContentLength != 0 {
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				helper.WriteError(w, invalidJSONError())
+				return
+			}
+		}
+		created, err := h.service.DuplicateCard(r.Context(), id, req.ColumnID)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		detail, err := h.service.GetCardDetail(r.Context(), created.ID)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusCreated, detail)
+	}
+}
+
 func (h *CardHandler) GetCard() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := helper.IDParam(r, "id")

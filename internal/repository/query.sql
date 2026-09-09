@@ -48,6 +48,11 @@ SET title = $1, position = $2, updated_at = CURRENT_TIMESTAMP
 WHERE id = $3 AND deleted_at IS NULL
 RETURNING *;
 
+-- name: SetDoneColumnID :exec
+UPDATE kanban_board
+SET done_column_id = $1, updated_at = CURRENT_TIMESTAMP
+WHERE id = $2 AND deleted_at IS NULL;
+
 -- name: DeleteBoard :exec
 UPDATE kanban_board
 SET deleted_at = CURRENT_TIMESTAMP
@@ -84,7 +89,7 @@ WHERE id = $1;
 
 -- name: HasCardsByColumn :one
 SELECT EXISTS(
-    SELECT 1 FROM kanban_card WHERE column_id = $1 AND is_archived = FALSE
+    SELECT 1 FROM kanban_card WHERE column_id = $1 AND is_archived = FALSE AND deleted_at IS NULL
 );
 
 
@@ -94,17 +99,17 @@ SELECT EXISTS(
 
 -- name: GetCard :one
 SELECT * FROM kanban_card
-WHERE id = $1 LIMIT 1;
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
 
 -- name: GetCardsByColumn :many
 SELECT * FROM kanban_card
-WHERE column_id = $1 AND is_archived = FALSE
+WHERE column_id = $1 AND is_archived = FALSE AND deleted_at IS NULL
 ORDER BY position ASC;
 
 -- name: GetCardsByBoard :many
 SELECT c.* FROM kanban_card c
 JOIN kanban_column col ON col.id = c.column_id
-WHERE col.board_id = $1 AND c.is_archived = FALSE
+WHERE col.board_id = $1 AND c.is_archived = FALSE AND c.deleted_at IS NULL
 ORDER BY col.position ASC, c.position ASC;
 
 -- name: CreateCard :one
@@ -119,7 +124,13 @@ WHERE id = $13
 RETURNING *;
 
 -- name: DeleteCard :exec
-DELETE FROM kanban_card
+UPDATE kanban_card
+SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: RestoreCard :exec
+UPDATE kanban_card
+SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
 WHERE id = $1;
 
 -- name: HasColumnsByBoard :one
@@ -131,7 +142,7 @@ SELECT EXISTS(
 WITH ranked AS (
   SELECT id, ROW_NUMBER() OVER(ORDER BY position ASC, id ASC) as rn
   FROM kanban_card
-  WHERE kanban_card.column_id = $1 AND kanban_card.is_archived = FALSE
+  WHERE kanban_card.column_id = $1 AND kanban_card.is_archived = FALSE AND kanban_card.deleted_at IS NULL
 )
 UPDATE kanban_card
 SET position = ranked.rn * 65536.0
@@ -185,6 +196,10 @@ RETURNING *;
 -- name: DeleteLabel :exec
 DELETE FROM kanban_label
 WHERE id = $1;
+
+-- name: GetCardIDsByLabel :many
+SELECT kanban_card_id FROM kanban_card_label
+WHERE kanban_label_id = $1;
 
 
 -- ==============================
@@ -287,17 +302,17 @@ WHERE id = $1;
 
 -- name: GetAttachment :one
 SELECT * FROM kanban_attachment
-WHERE id = $1 LIMIT 1;
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
 
 -- name: GetAttachmentsByCard :many
 SELECT * FROM kanban_attachment
-WHERE card_id = $1 AND context = $2
+WHERE card_id = $1 AND context = $2 AND deleted_at IS NULL
 ORDER BY created_at ASC;
 
 -- name: GetChatAttachmentCountsByCardIDs :many
 SELECT card_id, COUNT(*) AS count
 FROM kanban_attachment
-WHERE card_id = ANY($1::bigint[]) AND context = 'chat'
+WHERE card_id = ANY($1::bigint[]) AND context = 'chat' AND deleted_at IS NULL
 GROUP BY card_id;
 
 -- name: CreateAttachment :one
@@ -306,23 +321,14 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING *;
 
 -- name: DeleteAttachment :exec
-DELETE FROM kanban_attachment
+UPDATE kanban_attachment
+SET deleted_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: RestoreAttachment :exec
+UPDATE kanban_attachment
+SET deleted_at = NULL
 WHERE id = $1;
-
-
--- ==============================
--- ACTIVITY
--- ==============================
-
--- name: GetActivitiesByCard :many
-SELECT * FROM kanban_card_activity
-WHERE card_id = $1
-ORDER BY created_at DESC;
-
--- name: CreateActivity :one
-INSERT INTO kanban_card_activity (type, card_id, user_id, old_value, new_value)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING *;
 
 
 -- ==============================
@@ -459,6 +465,7 @@ JOIN kanban_project p   ON p.id  = b.kanban_project_id
 WHERE ca.user_id = $1
   AND c.completed_at IS NULL
   AND c.is_archived = FALSE
+  AND c.deleted_at IS NULL
   AND b.deleted_at IS NULL
   AND p.deleted_at IS NULL
   AND (
@@ -495,6 +502,7 @@ JOIN kanban_project p   ON p.id  = b.kanban_project_id
 WHERE ca.user_id = $1
   AND c.completed_at IS NOT NULL
   AND c.is_archived = FALSE
+  AND c.deleted_at IS NULL
   AND b.deleted_at IS NULL
   AND p.deleted_at IS NULL
   AND (
@@ -528,6 +536,7 @@ JOIN kanban_board   b   ON b.id  = col.board_id
 JOIN kanban_project p   ON p.id  = b.kanban_project_id
 WHERE s.user_id = $1::bigint
   AND s.status <> 'done'
+  AND c.deleted_at IS NULL
   AND b.deleted_at IS NULL
   AND p.deleted_at IS NULL
   AND (
@@ -561,6 +570,7 @@ JOIN kanban_board   b   ON b.id  = col.board_id
 JOIN kanban_project p   ON p.id  = b.kanban_project_id
 WHERE s.user_id = $1::bigint
   AND s.status = 'done'
+  AND c.deleted_at IS NULL
   AND b.deleted_at IS NULL
   AND p.deleted_at IS NULL
   AND (
@@ -572,3 +582,101 @@ WHERE s.user_id = $1::bigint
       )
   )
 ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id, s.position, s.id;
+
+-- ==============================
+-- PROJECT HISTORY
+-- ==============================
+
+-- name: CreateProjectHistoryEntry :one
+INSERT INTO kanban_project_history (project_id, user_id, action, entity_title, entity_link, entity_keys, payload)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING *;
+
+-- name: ListProjectHistory :many
+SELECT
+    j.id,
+    j.project_id,
+    j.user_id,
+    j.action,
+    j.entity_title,
+    j.entity_link,
+    j.entity_keys,
+    j.payload,
+    j.created_at,
+    u.lastname,
+    u.firstname,
+    u.patronymic
+FROM kanban_project_history j
+LEFT JOIN users u ON u.id = j.user_id
+WHERE j.project_id = sqlc.arg(project_id)
+  AND (sqlc.arg(card_id)::bigint = 0 OR j.entity_keys && ARRAY['card:' || sqlc.arg(card_id)::text])
+  AND (sqlc.arg(user_id)::bigint = 0 OR j.user_id = sqlc.arg(user_id))
+  AND (sqlc.arg(title_query)::text = '' OR j.entity_title ILIKE '%' || sqlc.arg(title_query) || '%' ESCAPE '\')
+  AND (sqlc.arg(cursor)::bigint = 0 OR j.id < sqlc.arg(cursor))
+ORDER BY j.id DESC
+LIMIT sqlc.arg(page_limit);
+
+-- name: GetProjectHistoryEntry :one
+SELECT * FROM kanban_project_history
+WHERE id = $1 LIMIT 1;
+
+-- name: GetLastProjectHistoryByUser :one
+SELECT * FROM kanban_project_history
+WHERE project_id = sqlc.arg(project_id) AND user_id = sqlc.arg(user_id)
+ORDER BY id DESC
+LIMIT 1;
+
+-- name: HasForeignNewerHistoryOverlap :one
+SELECT EXISTS(
+    SELECT 1 FROM kanban_project_history
+    WHERE project_id = sqlc.arg(project_id)
+      AND id > sqlc.arg(after_id)
+      AND user_id IS DISTINCT FROM sqlc.arg(user_id)
+      AND entity_keys && sqlc.arg(entity_keys)::text[]
+);
+
+-- name: DeleteProjectHistoryEntry :exec
+DELETE FROM kanban_project_history
+WHERE id = $1;
+
+-- name: RestoreProject :exec
+UPDATE kanban_project
+SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1;
+
+-- name: RestoreBoard :exec
+UPDATE kanban_board
+SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1;
+
+-- name: InsertColumnWithID :one
+INSERT INTO kanban_column (id, title, header_color, position, board_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: InsertLabelWithID :one
+INSERT INTO kanban_label (id, name, color, board_id)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: InsertCommentWithID :one
+INSERT INTO kanban_card_comment (id, body, card_id, author_id, created_at)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: InsertSubtaskWithID :one
+INSERT INTO kanban_card_subtask (id, title, status, position, card_id, user_id)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING *;
+
+-- name: SyncColumnIDSeq :exec
+SELECT setval(pg_get_serial_sequence('kanban_column', 'id'), COALESCE((SELECT MAX(id) FROM kanban_column), 1), true);
+
+-- name: SyncLabelIDSeq :exec
+SELECT setval(pg_get_serial_sequence('kanban_label', 'id'), COALESCE((SELECT MAX(id) FROM kanban_label), 1), true);
+
+-- name: SyncCommentIDSeq :exec
+SELECT setval(pg_get_serial_sequence('kanban_card_comment', 'id'), COALESCE((SELECT MAX(id) FROM kanban_card_comment), 1), true);
+
+-- name: SyncSubtaskIDSeq :exec
+SELECT setval(pg_get_serial_sequence('kanban_card_subtask', 'id'), COALESCE((SELECT MAX(id) FROM kanban_card_subtask), 1), true);

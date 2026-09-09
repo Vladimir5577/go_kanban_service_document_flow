@@ -177,7 +177,6 @@ func (h *AttachmentHandler) DeleteAttachment() http.HandlerFunc {
 			return
 		}
 
-		_ = h.minioSvc.DeleteObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
 		if err := h.service.DeleteAttachment(r.Context(), att); err != nil {
 			helper.WriteError(w, err)
 			return

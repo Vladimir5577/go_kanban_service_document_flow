@@ -7,6 +7,10 @@ import (
 	"go_kanban_service/internal/model"
 )
 
+type DuplicateCardRequest struct {
+	ColumnID int64 `json:"column_id"`
+}
+
 type CreateCardRequest struct {
 	Title       string     `json:"title" validate:"required,max=500"`
 	ColumnID    int64      `json:"column_id" validate:"required"`

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -35,6 +36,7 @@ type ProjectService struct {
 	userRepo   repository.UserRepositoryInterface
 	permSvc    *PermissionService
 	cfg        *config.Config
+	History    HistoryLogger
 }
 
 func NewProjectService(
@@ -113,6 +115,13 @@ func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjec
 		return nil, apperr.New(apperr.CodeProjectCreateFailed, "project create failed")
 	}
 	created.EntryBoardID = &board.ID
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  created.ID,
+		Action:      "project.created",
+		EntityTitle: created.Name,
+		EntityKeys:  historyKeys("project", created.ID),
+		Undo:       []model.UndoStep{{Op: "project.soft_delete", ProjectID: created.ID}},
+	})
 	return created, nil
 }
 
@@ -231,6 +240,7 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.Up
 	if err != nil {
 		return nil, withNotFoundCode(err, apperr.CodeProjectNotFound)
 	}
+	oldName, oldDesc := p.Name, p.Description
 	if req.Name == nil && req.Description == nil {
 		return nil, apperr.New(apperr.CodeUpdateFieldsRequired, "update fields required")
 	}
@@ -243,7 +253,27 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.Up
 	if req.Description != nil {
 		p.Description = req.Description
 	}
-	return s.repo.UpdateProject(ctx, p)
+	updated, err := s.repo.UpdateProject(ctx, p)
+	if err == nil && updated != nil {
+		fields := map[string]any{"name": oldName, "description": nilString(oldDesc)}
+		raw, _ := json.Marshal(fields)
+		before, after := "", ""
+		if updated.Name != oldName {
+			before, after = oldName, updated.Name
+		} else {
+			before, after = clipHistory(historyText(oldDesc)), clipHistory(historyText(updated.Description))
+		}
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:  id,
+			Action:      "project.updated",
+			EntityTitle: updated.Name,
+			Before:      before,
+			After:      after,
+			EntityKeys: historyKeys("project", id),
+			Undo:       []model.UndoStep{{Op: "project.patch", ProjectID: id, Fields: raw}},
+		})
+	}
+	return updated, err
 }
 
 func (s *ProjectService) MoveProject(ctx context.Context, id int64, req dto.MoveProjectRequest) (*dto.MoveProjectResponse, error) {
@@ -335,6 +365,12 @@ func (s *ProjectService) DeleteProject(ctx context.Context, id int64) error {
 		}
 		return err
 	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  id,
+		Action:     "project.deleted",
+		EntityKeys: historyKeys("project", id),
+		Undo:       []model.UndoStep{{Op: "project.restore", ProjectID: id}},
+	})
 	return nil
 }
 

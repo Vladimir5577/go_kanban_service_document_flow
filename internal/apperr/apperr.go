@@ -69,6 +69,8 @@ const (
 	CodeUpdateFieldsRequired        ErrorCode = "update_fields_required"
 	CodeUserNotFound                ErrorCode = "user_not_found"
 	CodeUserNotProjectMember        ErrorCode = "user_not_project_member"
+	CodeUndoEmpty                   ErrorCode = "undo_empty"
+	CodeUndoImpossible              ErrorCode = "undo_impossible"
 )
 
 type Error struct {
@@ -127,7 +129,9 @@ func categoryCode(code ErrorCode) ErrorCode {
 	case CodeBoardCardLimitReached,
 		CodeBoardHasCards,
 		CodeColumnHasCards,
-		CodeCommentLimitReached:
+		CodeCommentLimitReached,
+		CodeUndoEmpty,
+		CodeUndoImpossible:
 		return CodeConflict
 	case CodeAttachmentLimitReached,
 		CodeBoardHasNoProject,

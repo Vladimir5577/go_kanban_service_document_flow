@@ -34,7 +34,6 @@ type App struct {
 type Handlers struct {
 	User          *handler.UserHandler
 	Project       *handler.ProjectHandler
-	Activity      *handler.ActivityHandler
 	Attachment    *handler.AttachmentHandler
 	Board         *handler.BoardHandler
 	Card          *handler.CardHandler
@@ -44,6 +43,7 @@ type Handlers struct {
 	ProjectFolder *handler.ProjectFolderHandler
 	ProjectMember *handler.ProjectMemberHandler
 	Subtask       *handler.SubtaskHandler
+	History       *handler.HistoryHandler
 }
 
 func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
@@ -73,10 +73,6 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	userRepo := repository.NewUserRepository(db, symfonyClient, cfg.Clock)
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
-
-	activityRepo := repository.NewActivityRepository(db)
-	activitySvc := service.NewActivityService(activityRepo, permSvc)
-	activityHandler := handler.NewActivityHandler(activitySvc)
 
 	attachmentRepo := repository.NewAttachmentRepository(db)
 	subtaskRepo := repository.NewSubtaskRepository(db)
@@ -111,10 +107,10 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		columnRepo,
 	)
 
-	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, activityRepo, realtimePublisher, userRepo)
+	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, realtimePublisher, userRepo)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
-	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, activityRepo, columnRepo, boardRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
+	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
@@ -123,8 +119,17 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	commentSvc := service.NewCommentService(commentRepo, permSvc, userRepo, realtimePublisher, kanbanNotificationSvc)
 	commentHandler := handler.NewCommentHandler(commentSvc)
 
-	labelSvc := service.NewLabelService(labelRepo, permSvc, activityRepo, boardRepo, cardRepo, columnRepo, realtimePublisher)
+	labelSvc := service.NewLabelService(labelRepo, permSvc, boardRepo, cardRepo, columnRepo, realtimePublisher)
 	labelHandler := handler.NewLabelHandler(labelSvc)
+
+	historyRepo := repository.NewHistoryRepository(db)
+	historySvc := service.NewHistoryService(historyRepo, projectMemberRepo, permSvc, realtimePublisher, cardRepo, columnRepo)
+	historyHandler := handler.NewHistoryHandler(historySvc)
+	attachmentSvc.History = historySvc
+	cardSvc.History = historySvc
+	columnSvc.History = historySvc
+	commentSvc.History = historySvc
+	labelSvc.History = historySvc
 
 	projectFolderRepo := repository.NewProjectFolderRepository(db)
 	projectFolderSvc := service.NewProjectFolderService(projectFolderRepo, permSvc)
@@ -136,16 +141,19 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc, kanbanNotificationSvc)
 	projectMemberHandler := handler.NewProjectMemberHandler(projectMemberSvc, projectSvc)
 
-	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, activityRepo, userRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc)
+	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, userRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc)
 	subtaskHandler := handler.NewSubtaskHandler(subtaskSvc)
 
 	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, subtaskRepo, commentRepo, attachmentRepo, permSvc, cfg)
 	boardHandler := handler.NewBoardHandler(boardSvc)
+	projectSvc.History = historySvc
+	projectMemberSvc.History = historySvc
+	subtaskSvc.History = historySvc
+	boardSvc.History = historySvc
 
 	h := Handlers{
 		User:          userHandler,
 		Project:       projectHandler,
-		Activity:      activityHandler,
 		Attachment:    attachmentHandler,
 		Board:         boardHandler,
 		Card:          cardHandler,
@@ -155,6 +163,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		ProjectFolder: projectFolderHandler,
 		ProjectMember: projectMemberHandler,
 		Subtask:       subtaskHandler,
+		History:       historyHandler,
 	}
 
 	r := setupRouter(h, authMw)

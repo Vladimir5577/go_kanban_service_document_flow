@@ -18,6 +18,7 @@ type KanbanAttachment struct {
 	Context     string             `json:"context"`
 	AuthorID    pgtype.Int8        `json:"author_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	DeletedAt   pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type KanbanBoard struct {
@@ -49,16 +50,7 @@ type KanbanCard struct {
 	BorderColor   pgtype.Text        `json:"border_color"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-}
-
-type KanbanCardActivity struct {
-	ID        int64              `json:"id"`
-	CardID    int64              `json:"card_id"`
-	UserID    pgtype.Int8        `json:"user_id"`
-	Type      string             `json:"type"`
-	OldValue  pgtype.Text        `json:"old_value"`
-	NewValue  pgtype.Text        `json:"new_value"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	DeletedAt     pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type KanbanCardAssignee struct {
@@ -113,6 +105,18 @@ type KanbanProject struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 	DeletedAt   pgtype.Timestamptz `json:"deleted_at"`
+}
+
+type KanbanProjectHistory struct {
+	ID          int64              `json:"id"`
+	ProjectID   int64              `json:"project_id"`
+	UserID      pgtype.Int8        `json:"user_id"`
+	Action      string             `json:"action"`
+	EntityTitle string             `json:"entity_title"`
+	EntityLink  string             `json:"entity_link"`
+	EntityKeys  []string           `json:"entity_keys"`
+	Payload     []byte             `json:"payload"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
 type KanbanProjectUser struct {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"go_kanban_service/internal/apperr"
@@ -20,18 +21,17 @@ type SubtaskServiceInterface interface {
 type SubtaskService struct {
 	repo              repository.SubtaskRepositoryInterface
 	permSvc           *PermissionService
-	activityRepo      repository.ActivityRepositoryInterface
 	userRepo          repository.UserRepositoryInterface
 	projectRepo       repository.ProjectRepositoryInterface
 	projectMemberRepo repository.ProjectMemberRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
 	notificationSvc   *KanbanNotificationService
+	History           HistoryLogger
 }
 
 func NewSubtaskService(
 	repo repository.SubtaskRepositoryInterface,
 	permSvc *PermissionService,
-	activityRepo repository.ActivityRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
 	projectRepo repository.ProjectRepositoryInterface,
 	projectMemberRepo repository.ProjectMemberRepositoryInterface,
@@ -41,7 +41,6 @@ func NewSubtaskService(
 	return &SubtaskService{
 		repo:              repo,
 		permSvc:           permSvc,
-		activityRepo:      activityRepo,
 		userRepo:          userRepo,
 		projectRepo:       projectRepo,
 		projectMemberRepo: projectMemberRepo,
@@ -94,7 +93,13 @@ func (s *SubtaskService) CreateSubtask(ctx context.Context, cardID int64, req dt
 	}
 	st, err = s.repo.CreateSubtask(ctx, cardID, st)
 	if err == nil {
-		s.logActivity(ctx, cardID, "subtask_added", nil, &req.Title)
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:  projectID,
+			Action:      "subtask.created",
+			EntityTitle: st.Title,
+			EntityKeys:  []string{HistoryKey("card", cardID), HistoryKey("subtask", st.ID)},
+			Undo:       []model.UndoStep{{Op: "subtask.delete", SubtaskID: st.ID, CardID: cardID}},
+		})
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 				patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, cardID)
@@ -125,11 +130,15 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 		return nil, apperr.New(apperr.CodeSubtaskNotFound, "subtask not found")
 	}
 
+	prevTitle := st.Title
 	var oldIsCompleted bool
 	if st.Status == "done" {
 		oldIsCompleted = true
 	}
 	oldUserID := st.UserID
+	oldFields, _ := json.Marshal(map[string]any{
+		"title": st.Title, "status": st.Status, "position": st.Position, "userId": nilInt(st.UserID),
+	})
 
 	if req.Title != nil {
 		st.Title = *req.Title
@@ -164,17 +173,30 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 		}
 	}
 	if err == nil && updatedSt != nil {
+		before, after := prevTitle, updatedSt.Title
+		if before == after {
+			if oldIsCompleted != (updatedSt.Status == "done") {
+				before, after = "не выполнена", "выполнена"
+				if oldIsCompleted {
+					before, after = after, before
+				}
+			}
+		}
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:  projectID,
+			Action:      "subtask.updated",
+			EntityTitle: updatedSt.Title,
+			Before:      before,
+			After:      after,
+			EntityKeys: []string{HistoryKey("card", cardID), HistoryKey("subtask", subtaskID)},
+			Undo:       []model.UndoStep{{Op: "subtask.patch", SubtaskID: subtaskID, CardID: cardID, Fields: oldFields}},
+		})
 		var newIsCompleted bool
 		if updatedSt.Status == "done" {
 			newIsCompleted = true
 		}
 
 		if oldIsCompleted != newIsCompleted {
-			if newIsCompleted {
-				s.logActivity(ctx, updatedSt.CardID, "subtask_completed", nil, &updatedSt.Title)
-			} else {
-				s.logActivity(ctx, updatedSt.CardID, "subtask_reopened", nil, &updatedSt.Title)
-			}
 			if s.realtimePublisher != nil {
 				s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 					patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, updatedSt.CardID)
@@ -187,15 +209,6 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 		}
 
 		if req.HasUserID && !sameOptionalID(oldUserID, updatedSt.UserID) {
-			if oldUserID != nil {
-				oldValue := s.subtaskAssigneeActivityValue(ctx, *oldUserID, updatedSt.Title)
-				s.logActivity(ctx, updatedSt.CardID, "subtask_unassigned", &oldValue, nil)
-			}
-			if updatedSt.UserID != nil {
-				newValue := s.subtaskAssigneeActivityValue(ctx, *updatedSt.UserID, updatedSt.Title)
-				s.logActivity(ctx, updatedSt.CardID, "subtask_assigned", nil, &newValue)
-			}
-
 			// Notification for subtask assignment
 			if s.notificationSvc != nil && updatedSt.UserID != nil {
 				actorID := currentUserID(ctx)
@@ -234,7 +247,16 @@ func (s *SubtaskService) DeleteSubtask(ctx context.Context, cardID int64, subtas
 
 	err = s.repo.DeleteSubtask(ctx, subtaskID)
 	if err == nil {
-		s.logActivity(ctx, st.CardID, "subtask_removed", &st.Title, nil)
+		snap, _ := json.Marshal(map[string]any{
+			"id": st.ID, "title": st.Title, "status": st.Status, "position": st.Position, "cardId": st.CardID, "userId": nilInt(st.UserID),
+		})
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:  projectID,
+			Action:      "subtask.deleted",
+			EntityTitle: st.Title,
+			EntityKeys:  []string{HistoryKey("card", cardID), HistoryKey("subtask", subtaskID)},
+			Undo:       []model.UndoStep{{Op: "subtask.insert", SubtaskID: subtaskID, CardID: cardID, Snapshot: snap}},
+		})
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 				patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, st.CardID)
@@ -331,21 +353,6 @@ func (s *SubtaskService) ensureSubtaskAssignee(ctx context.Context, projectID in
 	}
 
 	return nil
-}
-
-func (s *SubtaskService) logActivity(ctx context.Context, cardID int64, action string, oldValue, newValue *string) {
-	_ = s.activityRepo.LogActivity(ctx, cardID, currentUserID(ctx), action, oldValue, newValue)
-}
-
-func (s *SubtaskService) subtaskAssigneeActivityValue(ctx context.Context, userID int64, subtaskTitle string) string {
-	name := ""
-	if users, err := s.userRepo.GetUsersByIDs(ctx, []int64{userID}); err == nil && len(users) > 0 {
-		name = dto.UserDisplayName(users[0])
-	}
-	if name == "" {
-		name = "Пользователь"
-	}
-	return name + " (подзадача: " + subtaskTitle + ")"
 }
 
 func sameOptionalID(a, b *int64) bool {

@@ -108,6 +108,7 @@ func (r *ProjectRepository) ListProjects(ctx context.Context, f model.ProjectLis
 				WHERE b.kanban_project_id = p.id
 				  AND b.deleted_at IS NULL
 				  AND c.is_archived = FALSE
+				  AND c.deleted_at IS NULL
 			) AS tasks_count,
 			p.owner_id,
 			u.login,

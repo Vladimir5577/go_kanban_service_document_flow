@@ -32,7 +32,7 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 	var attachments []model.Attachment
 
 	if contextStr == "" {
-		rows, err := r.Db.Query(ctx, "SELECT id, filename, storage_key, content_type, size_bytes, context, card_id, author_id, created_at FROM kanban_attachment WHERE card_id = $1 ORDER BY created_at ASC", cardID)
+		rows, err := r.Db.Query(ctx, "SELECT id, filename, storage_key, content_type, size_bytes, context, card_id, author_id, created_at FROM kanban_attachment WHERE card_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC", cardID)
 		if err != nil {
 			return nil, err
 		}

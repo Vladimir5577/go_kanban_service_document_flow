@@ -213,7 +213,7 @@ func (r *CardRepository) CountActiveCardsByBoard(ctx context.Context, boardID in
 		SELECT COUNT(c.id)
 		FROM kanban_card c
 		JOIN kanban_column col ON col.id = c.column_id
-		WHERE col.board_id = $1 AND c.is_archived = FALSE`
+		WHERE col.board_id = $1 AND c.is_archived = FALSE AND c.deleted_at IS NULL`
 
 	var count int
 	if err := r.Db.QueryRow(ctx, query, boardID).Scan(&count); err != nil {

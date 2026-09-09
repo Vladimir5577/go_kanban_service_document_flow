@@ -25,6 +25,7 @@ type ProjectMemberService struct {
 	userRepo        repository.UserRepositoryInterface
 	permSvc         *PermissionService
 	notificationSvc *KanbanNotificationService
+	History         HistoryLogger
 }
 
 func NewProjectMemberService(repo repository.ProjectMemberRepositoryInterface, userRepo repository.UserRepositoryInterface, permSvc *PermissionService, notificationSvc *KanbanNotificationService) *ProjectMemberService {
@@ -90,9 +91,23 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 		return err
 	}
 
+	before, _ := s.repo.GetMembers(ctx, projectID)
 	if err := s.repo.ReplaceMembers(ctx, projectID, members); err != nil {
 		return err
 	}
+	keys := historyKeys("project", projectID)
+	for _, m := range before {
+		keys = append(keys, HistoryKey("member", m.UserID))
+	}
+	for _, m := range members {
+		keys = append(keys, HistoryKey("member", m.UserID))
+	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  projectID,
+		Action:     "members.replaced",
+		EntityKeys: keys,
+		Undo:       []model.UndoStep{{Op: "members.replace", ProjectID: projectID, Snapshot: memberSnapshot(before)}},
+	})
 
 	// Notify newly added members
 	if s.notificationSvc != nil {
@@ -132,7 +147,17 @@ func (s *ProjectMemberService) UpdateMemberRole(ctx context.Context, projectID i
 	if err := s.requireProjectMember(ctx, projectID, userID); err != nil {
 		return err
 	}
-	return s.repo.UpdateMemberRole(ctx, projectID, userID, string(role))
+	before, _ := s.repo.GetMembers(ctx, projectID)
+	if err := s.repo.UpdateMemberRole(ctx, projectID, userID, string(role)); err != nil {
+		return err
+	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  projectID,
+		Action:     "member.role",
+		EntityKeys: []string{HistoryKey("project", projectID), HistoryKey("member", userID)},
+		Undo:       []model.UndoStep{{Op: "members.replace", ProjectID: projectID, Snapshot: memberSnapshot(before)}},
+	})
+	return nil
 }
 
 func (s *ProjectMemberService) RemoveMember(ctx context.Context, projectID int64, userID int64) error {
@@ -159,9 +184,16 @@ func (s *ProjectMemberService) RemoveMember(ctx context.Context, projectID int64
 	if err := s.requireProjectMember(ctx, projectID, userID); err != nil {
 		return err
 	}
+	before, _ := s.repo.GetMembers(ctx, projectID)
 	if err := s.repo.RemoveMember(ctx, projectID, userID); err != nil {
 		return err
 	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  projectID,
+		Action:     "member.removed",
+		EntityKeys: []string{HistoryKey("project", projectID), HistoryKey("member", userID)},
+		Undo:       []model.UndoStep{{Op: "members.replace", ProjectID: projectID, Snapshot: memberSnapshot(before)}},
+	})
 
 	// Notify the removed user
 	if s.notificationSvc != nil {
