@@ -29,6 +29,28 @@ type Card struct {
 	LabelIDs    []int64 `json:"label_ids,omitempty"`
 }
 
+// CardPosition — место карточки в колонке. Отдельный тип, потому что для порядка
+// нужны два поля, а чтение полной Card тянет за собой ещё два запроса — за
+// метками и исполнителями, которые к порядку отношения не имеют.
+type CardPosition struct {
+	ID        int64
+	Position  float64
+	UpdatedAt time.Time
+}
+
+// CardMove — результат перемещения карточки: только то, что при этом меняется.
+// Rebalanced заполняется, лишь если перемещение вызвало перенумерацию колонки,
+// иначе остаётся nil.
+type CardMove struct {
+	ID           int64
+	Title        string
+	FromColumnID int64
+	ToColumnID   int64
+	Position     float64
+	UpdatedAt    time.Time
+	Rebalanced   []CardPosition
+}
+
 type BoardArchiveFilters struct {
 	Title       string
 	Description string

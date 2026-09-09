@@ -140,16 +140,32 @@ type CardPositionResponse struct {
 	Position float64 `json:"position"`
 }
 
-// MoveCardResponse — карточка после перемещения (поля лежат в корне ответа, как и раньше)
-// плюс позиции всех карточек колонки, если перемещение вызвало ребалансировку.
+// MoveCardResponse — только то, что меняет перемещение. Полную карточку фронт
+// уже держит на доске: собирать её заново — это 12 запросов ради двух полей.
 // Без ребалансировки rebalancedCards = null — как rebalancedProjects в MoveProjectResponse.
 type MoveCardResponse struct {
-	*CardResponse
+	ID              int64                   `json:"id"`
+	ColumnID        int64                   `json:"columnId"`
+	Position        float64                 `json:"position"`
+	UpdatedAt       time.Time               `json:"updatedAt"`
 	RebalancedCards []*CardPositionResponse `json:"rebalancedCards"`
 }
 
+func MapMoveCardResponse(m *model.CardMove) *MoveCardResponse {
+	if m == nil {
+		return nil
+	}
+	return &MoveCardResponse{
+		ID:              m.ID,
+		ColumnID:        m.ToColumnID,
+		Position:        m.Position,
+		UpdatedAt:       m.UpdatedAt,
+		RebalancedCards: MapCardPositions(m.Rebalanced),
+	}
+}
+
 // MapCardPositions возвращает nil для nil-среза, чтобы поле ушло на фронт как null.
-func MapCardPositions(cards []model.Card) []*CardPositionResponse {
+func MapCardPositions(cards []model.CardPosition) []*CardPositionResponse {
 	if cards == nil {
 		return nil
 	}

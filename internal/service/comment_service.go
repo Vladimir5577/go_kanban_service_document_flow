@@ -130,10 +130,13 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 
 	// Comment notification (unified)
 	if s.notificationSvc != nil {
-		projectID, _ := s.permSvc.GetProjectIDByCard(ctx, cardID)
-		actorID := currentUserID(ctx)
-		// boardID may be resolved inside the notification service via the card
-		s.notificationSvc.NotifyCommentAdded(ctx, projectID, 0, cardID, derefInt64(actorID), "")
+		actorID := derefInt64(currentUserID(ctx))
+		runDetached(ctx, notifyTimeout, "failed to notify kanban comment added", func(ctx context.Context) error {
+			projectID, _ := s.permSvc.GetProjectIDByCard(ctx, cardID)
+			// boardID may be resolved inside the notification service via the card
+			s.notificationSvc.NotifyCommentAdded(ctx, projectID, 0, cardID, actorID, "")
+			return nil
+		})
 	}
 	return created, nil
 }

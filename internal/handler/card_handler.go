@@ -201,21 +201,12 @@ func (h *CardHandler) MoveCard() http.HandlerFunc {
 			return
 		}
 
-		_, rebalancedCards, err := h.service.MoveCard(r.Context(), id, payload.ColumnID, payload.Position)
+		move, err := h.service.MoveCard(r.Context(), id, payload.ColumnID, payload.Position)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		// Return full enriched card (with boardId, createdBy, etc.)
-		detail, err := h.service.GetCardDetail(r.Context(), id)
-		if err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-		helper.WriteJSON(w, http.StatusOK, &dto.MoveCardResponse{
-			CardResponse:    detail,
-			RebalancedCards: dto.MapCardPositions(rebalancedCards),
-		})
+		helper.WriteJSON(w, http.StatusOK, dto.MapMoveCardResponse(move))
 	}
 }
 

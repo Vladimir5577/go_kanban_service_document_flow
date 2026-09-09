@@ -25,9 +25,10 @@ type CardRepositoryInterface interface {
 	UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
-	// MoveCard возвращает перемещённую карточку и, если перемещение вызвало
-	// ребалансировку колонки, все её карточки с новыми позициями (иначе nil).
-	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, []model.Card, error)
+	// MoveCard читает и пишет только поля, которые участвуют в перемещении.
+	// Если оно вызвало ребалансировку, в CardMove.Rebalanced лягут новые позиции
+	// всей колонки, иначе там nil.
+	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.CardMove, error)
 
 	// GetInvolvedUserIDsForNotifications returns distinct user IDs that are assignees on the card,
 	// assignees on any of its subtasks, or the card's author. Used to decide notification recipients.
@@ -568,59 +569,98 @@ func (r *CardRepository) UpdateCardAssignees(ctx context.Context, cardID int64, 
 	return nil
 }
 
-func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, []model.Card, error) {
-	// 1. Fetch card to check existence
-	card, err := r.GetCard(ctx, id)
+// columnCardPositions — порядок колонки и ничего лишнего: GetCardsByColumn ради
+// тех же двух полей делает ещё два запроса, за исполнителями и метками.
+func (r *CardRepository) columnCardPositions(ctx context.Context, columnID int64) ([]model.CardPosition, error) {
+	rows, err := r.Db.Query(ctx, `
+		SELECT id, position, updated_at
+		FROM kanban_card
+		WHERE column_id = $1 AND is_archived = FALSE
+		ORDER BY position ASC, id ASC`, columnID)
 	if err != nil {
-		return nil, nil, err
+		return nil, NormalizeError(err)
+	}
+	defer rows.Close()
+
+	positions := make([]model.CardPosition, 0)
+	for rows.Next() {
+		var (
+			p         model.CardPosition
+			updatedAt pgtype.Timestamptz
+		)
+		if err := rows.Scan(&p.ID, &p.Position, &updatedAt); err != nil {
+			return nil, err
+		}
+		p.UpdatedAt = updatedAt.Time
+		positions = append(positions, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return positions, nil
+}
+
+func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.CardMove, error) {
+	move := &model.CardMove{ID: id, ToColumnID: columnID}
+
+	// 1. Исходная колонка и заголовок — всё, что от карточки нужно перемещению.
+	// Заголовок уедет в уведомление о смене колонки.
+	if err := r.Db.QueryRow(ctx, `
+		SELECT column_id, title FROM kanban_card WHERE id = $1
+	`, id).Scan(&move.FromColumnID, &move.Title); err != nil {
+		return nil, NormalizeError(err)
 	}
 
-	// 2. Fetch all cards in the destination column
-	cards, err := r.GetCardsByColumn(ctx, columnID)
+	// 2. Позиции колонки назначения
+	positions, err := r.columnCardPositions(ctx, columnID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// 3. Check for collision
 	const epsilon = 0.0001
 	needsRebalance := false
-	for _, c := range cards {
-		if c.ID != id && (c.Position-position > -epsilon && c.Position-position < epsilon) {
+	for _, p := range positions {
+		if p.ID != id && (p.Position-position > -epsilon && p.Position-position < epsilon) {
 			needsRebalance = true
 			break
 		}
 	}
 
-	// 4. Update card
-	card.ColumnID = columnID
-	card.Position = position
+	// 4. Узкий UPDATE вместо перезаписи всей строки: перемещение больше не затирает
+	// заголовок или описание, которые в этот же момент правит кто-то другой.
+	var updatedAt pgtype.Timestamptz
+	if err := r.Db.QueryRow(ctx, `
+		UPDATE kanban_card
+		SET column_id = $1, position = $2, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $3
+		RETURNING position, updated_at
+	`, columnID, position, id).Scan(&move.Position, &updatedAt); err != nil {
+		return nil, NormalizeError(err)
+	}
+	move.UpdatedAt = updatedAt.Time
 
-	updatedCard, err := r.UpdateCard(ctx, card)
+	if !needsRebalance {
+		return move, nil
+	}
+
+	// 5. Ребалансировка переписала позиции всей колонки — перечитываем, иначе
+	// у клиента останутся устаревшие позиции соседних карточек.
+	if err := dbgen.New(r.Db).RebalanceColumnCards(ctx, columnID); err != nil {
+		return nil, err
+	}
+	rebalanced, err := r.columnCardPositions(ctx, columnID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-
-	// 8. Trigger rebalance if needed
-	if needsRebalance {
-		queries := dbgen.New(r.Db)
-		if err := queries.RebalanceColumnCards(ctx, columnID); err != nil {
-			return nil, nil, err
+	move.Rebalanced = rebalanced
+	for _, p := range rebalanced {
+		if p.ID == id {
+			move.Position = p.Position
+			break
 		}
-		// ребалансировка переписала позиции всей колонки — перечитываем её целиком,
-		// иначе у клиента останутся устаревшие позиции соседних карточек
-		rebalanced, err := r.GetCardsByColumn(ctx, columnID)
-		if err != nil {
-			return nil, nil, err
-		}
-		// fetch card again to get the rebalanced position
-		movedCard, err := r.GetCard(ctx, id)
-		if err != nil {
-			return nil, nil, err
-		}
-		return movedCard, rebalanced, nil
 	}
-
-	return updatedCard, nil, nil
+	return move, nil
 }
 
 // GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users + card author.

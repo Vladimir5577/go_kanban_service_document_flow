@@ -97,11 +97,14 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 	// Notify newly added members
 	if s.notificationSvc != nil {
 		actor, _ := middleware.GetUser(ctx)
-		for _, m := range members {
-			if !existingUserIDs[m.UserID] && m.UserID != actor.ID {
-				s.notificationSvc.NotifyProjectUserAdded(ctx, projectID, actor.ID, m.UserID, project.Name)
+		runDetached(ctx, notifyTimeout, "failed to notify kanban project members added", func(ctx context.Context) error {
+			for _, m := range members {
+				if !existingUserIDs[m.UserID] && m.UserID != actor.ID {
+					s.notificationSvc.NotifyProjectUserAdded(ctx, projectID, actor.ID, m.UserID, project.Name)
+				}
 			}
-		}
+			return nil
+		})
 	}
 
 	return nil
@@ -166,7 +169,10 @@ func (s *ProjectMemberService) RemoveMember(ctx context.Context, projectID int64
 	// Notify the removed user
 	if s.notificationSvc != nil {
 		actor, _ := middleware.GetUser(ctx)
-		s.notificationSvc.NotifyProjectUserRemoved(ctx, projectID, actor.ID, userID, project.Name)
+		runDetached(ctx, notifyTimeout, "failed to notify kanban project member removed", func(ctx context.Context) error {
+			s.notificationSvc.NotifyProjectUserRemoved(ctx, projectID, actor.ID, userID, project.Name)
+			return nil
+		})
 	}
 
 	return nil

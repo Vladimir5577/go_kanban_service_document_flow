@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -91,26 +90,13 @@ func (p *KanbanRealtimePublisher) PublishCardDeleted(ctx context.Context, boardI
 	})
 }
 
+// TryPublish уносит отправку в Mercure в фон: при тормозящем хабе иначе тормозят
+// все операции доски. Про снятие отмены контекста — см. runDetached.
 func (p *KanbanRealtimePublisher) TryPublish(ctx context.Context, publish func(context.Context) error) {
-	if p == nil || publish == nil {
+	if p == nil {
 		return
 	}
-	// Best-effort отправка в Mercure не должна держать HTTP-ответ: при тормозящем
-	// хабе иначе тормозят все операции доски. Уносим в фон.
-	// context.WithoutCancel сохраняет значения ctx (user id → senderID, см.
-	// realtimeSenderID), но снимает отмену запроса — иначе фон отменится сразу
-	// после ответа и событие не уйдёт. Таймаут на фоновую отправку — свой.
-	//
-	// ponytail: горутина на мутацию, без лимита. Для трафика доски норм; при
-	// лежащем Mercure каждая висит до mercurePublishTimeout. Пул воркеров — если упрёшься.
-	detached := context.WithoutCancel(ctx)
-	go func() {
-		ctx, cancel := context.WithTimeout(detached, mercurePublishTimeout)
-		defer cancel()
-		if err := publish(ctx); err != nil {
-			slog.WarnContext(ctx, "failed to publish kanban realtime event", "error", err)
-		}
-	}()
+	runDetached(ctx, mercurePublishTimeout, "failed to publish kanban realtime event", publish)
 }
 
 func (p *KanbanRealtimePublisher) PublishCardPatch(ctx context.Context, card *model.Card, partial map[string]any, senderID int64) error {

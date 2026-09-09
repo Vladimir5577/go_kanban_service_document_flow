@@ -13,29 +13,27 @@ import (
 // Поля самой сущности при этом остаются в корне ответа, как до правки.
 
 func TestMoveCardResponseRebalancedCards(t *testing.T) {
-	card := &CardResponse{ID: 7, Title: "card", Position: 3.5, ColumnID: 2}
+	move := &model.CardMove{ID: 7, ToColumnID: 2, Position: 3.5}
 
-	body, err := json.Marshal(&MoveCardResponse{
-		CardResponse:    card,
-		RebalancedCards: MapCardPositions(nil),
-	})
+	body, err := json.Marshal(MapMoveCardResponse(move))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(body), `"rebalancedCards":null`) {
 		t.Fatalf("без ребалансировки ожидали null, получили: %s", body)
 	}
-	if !strings.Contains(string(body), `"id":7`) || !strings.Contains(string(body), `"position":3.5`) {
-		t.Fatalf("поля карточки должны лежать в корне ответа: %s", body)
+	if !strings.Contains(string(body), `"id":7`) ||
+		!strings.Contains(string(body), `"columnId":2`) ||
+		!strings.Contains(string(body), `"position":3.5`) {
+		t.Fatalf("в ответе должны быть id, columnId и position: %s", body)
 	}
 
-	body, err = json.Marshal(&MoveCardResponse{
-		CardResponse: card,
-		RebalancedCards: MapCardPositions([]model.Card{
-			{ID: 7, Position: 65536},
-			{ID: 9, Position: 131072},
-		}),
-	})
+	move.Position = 65536
+	move.Rebalanced = []model.CardPosition{
+		{ID: 7, Position: 65536},
+		{ID: 9, Position: 131072},
+	}
+	body, err = json.Marshal(MapMoveCardResponse(move))
 	if err != nil {
 		t.Fatal(err)
 	}

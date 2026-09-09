@@ -198,17 +198,22 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 
 			// Notification for subtask assignment
 			if s.notificationSvc != nil && updatedSt.UserID != nil {
-				actorID := currentUserID(ctx)
-				s.notificationSvc.NotifySubtaskAssigned(ctx, projectID, cardID, derefInt64(actorID), *updatedSt.UserID, updatedSt.Title)
+				actorID := derefInt64(currentUserID(ctx))
+				assigneeID := *updatedSt.UserID
+				title := updatedSt.Title
+				runDetached(ctx, notifyTimeout, "failed to notify kanban subtask assigned", func(ctx context.Context) error {
+					s.notificationSvc.NotifySubtaskAssigned(ctx, projectID, cardID, actorID, assigneeID, title)
 
-				if assigneeAddedToProject {
-					proj, _ := s.projectRepo.GetProject(ctx, projectID)
-					projName := ""
-					if proj != nil {
-						projName = proj.Name
+					if assigneeAddedToProject {
+						proj, _ := s.projectRepo.GetProject(ctx, projectID)
+						projName := ""
+						if proj != nil {
+							projName = proj.Name
+						}
+						s.notificationSvc.NotifyProjectUserAdded(ctx, projectID, actorID, assigneeID, projName)
 					}
-					s.notificationSvc.NotifyProjectUserAdded(ctx, projectID, derefInt64(actorID), *updatedSt.UserID, projName)
-				}
+					return nil
+				})
 			}
 		}
 	}
