@@ -274,6 +274,7 @@ func (r *ProjectMemberRepository) RemoveMember(ctx context.Context, projectID in
 		JOIN kanban_board b ON col.board_id = b.id
 		WHERE st.card_id = c.id
 			AND st.user_id = $2
+			AND st.deleted_at IS NULL
 			AND b.kanban_project_id = $1
 	`, projectID, userID); err != nil {
 		return err

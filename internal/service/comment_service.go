@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"unicode/utf8"
 
@@ -123,8 +122,9 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:  projectID,
 		Action:     "comment.created",
-		EntityKeys: []string{HistoryKey("card", cardID), HistoryKey("comment", created.ID)},
-		Undo:       []model.UndoStep{{Op: "comment.delete", CommentID: created.ID, CardID: cardID}},
+		EntityType: "comment",
+		EntityID:   created.ID,
+		CardID:     cardID,
 	})
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
@@ -186,12 +186,14 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 		return nil, err
 	}
 	s.populateAuthorName(ctx, updated)
-	fields, _ := json.Marshal(map[string]any{"body": oldBody})
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:  projectID,
 		Action:     "comment.updated",
-		EntityKeys: []string{HistoryKey("card", cardID), HistoryKey("comment", commentID)},
-		Undo:       []model.UndoStep{{Op: "comment.patch", CommentID: commentID, CardID: cardID, Fields: fields}},
+		EntityType: "comment",
+		EntityID:   commentID,
+		CardID:     cardID,
+		Before:     oldBody,
+		After:      body,
 	})
 	return updated, nil
 }
@@ -224,14 +226,12 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 	if err := s.repo.DeleteComment(ctx, commentID); err != nil {
 		return err
 	}
-	snap, _ := json.Marshal(map[string]any{
-		"id": c.ID, "body": c.Body, "cardId": c.CardID, "authorId": c.AuthorID, "createdAt": c.CreatedAt,
-	})
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:  projectID,
 		Action:     "comment.deleted",
-		EntityKeys: []string{HistoryKey("card", cardID), HistoryKey("comment", commentID)},
-		Undo:       []model.UndoStep{{Op: "comment.insert", CommentID: commentID, CardID: cardID, Snapshot: snap}},
+		EntityType: "comment",
+		EntityID:   commentID,
+		CardID:     cardID,
 	})
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {

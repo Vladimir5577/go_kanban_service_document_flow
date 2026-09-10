@@ -95,18 +95,13 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 	if err := s.repo.ReplaceMembers(ctx, projectID, members); err != nil {
 		return err
 	}
-	keys := historyKeys("project", projectID)
-	for _, m := range before {
-		keys = append(keys, HistoryKey("member", m.UserID))
-	}
-	for _, m := range members {
-		keys = append(keys, HistoryKey("member", m.UserID))
-	}
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:  projectID,
 		Action:     "members.replaced",
-		EntityKeys: keys,
-		Undo:       []model.UndoStep{{Op: "members.replace", ProjectID: projectID, Snapshot: memberSnapshot(before)}},
+		EntityType: "project",
+		EntityID:   projectID,
+		Before:     membersHistoryJSON(before),
+		After:      membersHistoryJSON(members),
 	})
 
 	// Notify newly added members
@@ -154,8 +149,9 @@ func (s *ProjectMemberService) UpdateMemberRole(ctx context.Context, projectID i
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:  projectID,
 		Action:     "member.role",
-		EntityKeys: []string{HistoryKey("project", projectID), HistoryKey("member", userID)},
-		Undo:       []model.UndoStep{{Op: "members.replace", ProjectID: projectID, Snapshot: memberSnapshot(before)}},
+		EntityType: "project",
+		EntityID:   projectID,
+		Before:     membersHistoryJSON(before),
 	})
 	return nil
 }
@@ -191,8 +187,9 @@ func (s *ProjectMemberService) RemoveMember(ctx context.Context, projectID int64
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:  projectID,
 		Action:     "member.removed",
-		EntityKeys: []string{HistoryKey("project", projectID), HistoryKey("member", userID)},
-		Undo:       []model.UndoStep{{Op: "members.replace", ProjectID: projectID, Snapshot: memberSnapshot(before)}},
+		EntityType: "project",
+		EntityID:   projectID,
+		Before:     membersHistoryJSON(before),
 	})
 
 	// Notify the removed user

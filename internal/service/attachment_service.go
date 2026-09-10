@@ -110,11 +110,12 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 	if err == nil && created != nil {
 		s.populateAuthorName(ctx, created)
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      "attachment.created",
+			EntityType:  "attachment",
+			EntityID:    created.ID,
+			CardID:      cardID,
 			EntityTitle: created.Filename,
-			EntityKeys:  []string{HistoryKey("card", cardID), HistoryKey("attachment", created.ID)},
-			Undo:       []model.UndoStep{{Op: "attachment.soft_delete", AttachID: created.ID, CardID: cardID}},
 		})
 	}
 	if err == nil && created != nil && created.Context == "chat" && s.realtimePublisher != nil {
@@ -144,11 +145,12 @@ func (s *AttachmentService) DeleteAttachment(ctx context.Context, attachment *mo
 	err = s.repo.DeleteAttachment(ctx, attachment.ID)
 	if err == nil {
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      "attachment.deleted",
+			EntityType:  "attachment",
+			EntityID:    attachment.ID,
+			CardID:      attachment.CardID,
 			EntityTitle: attachment.Filename,
-			EntityKeys:  []string{HistoryKey("card", attachment.CardID), HistoryKey("attachment", attachment.ID)},
-			Undo:       []model.UndoStep{{Op: "attachment.restore", AttachID: attachment.ID, CardID: attachment.CardID}},
 		})
 	}
 	if err == nil && attachment.Context == "chat" && s.realtimePublisher != nil {

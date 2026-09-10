@@ -8,23 +8,48 @@ ALTER TABLE kanban_attachment
     ADD COLUMN deleted_at TIMESTAMPTZ(0);
 CREATE INDEX idx_kanban_attachment_deleted_at ON kanban_attachment (deleted_at);
 
+ALTER TABLE kanban_column
+    ADD COLUMN deleted_at TIMESTAMPTZ(0);
+CREATE INDEX idx_kanban_column_deleted_at ON kanban_column (deleted_at);
+
+ALTER TABLE kanban_label
+    ADD COLUMN deleted_at TIMESTAMPTZ(0);
+CREATE INDEX idx_kanban_label_deleted_at ON kanban_label (deleted_at);
+
+ALTER TABLE kanban_card_comment
+    ADD COLUMN deleted_at TIMESTAMPTZ(0);
+CREATE INDEX idx_kanban_card_comment_deleted_at ON kanban_card_comment (deleted_at);
+
+ALTER TABLE kanban_card_subtask
+    ADD COLUMN deleted_at TIMESTAMPTZ(0);
+CREATE INDEX idx_kanban_card_subtask_deleted_at ON kanban_card_subtask (deleted_at);
+
 -- История жестов проекта. Soft-delete проекта строки не трогает.
 CREATE TABLE kanban_project_history (
-    id          BIGSERIAL PRIMARY KEY,
-    project_id  BIGINT NOT NULL REFERENCES kanban_project(id),
-    user_id     BIGINT,
+    id           BIGSERIAL PRIMARY KEY,
+    project_id   BIGINT NOT NULL REFERENCES kanban_project(id),
+    user_id      BIGINT,
     action       VARCHAR(64) NOT NULL,
+    entity_type  VARCHAR(32) NOT NULL,
+    entity_id    BIGINT NOT NULL,
+    -- Список карточки: card.*, comment.*, subtask.*, attachment.*, label.added/removed.
+    -- NULL: колонка/доска/проект/участники, label.deleted (метка целиком, не карточка).
+    card_id      BIGINT,
     entity_title TEXT NOT NULL DEFAULT '',
     entity_link  TEXT NOT NULL DEFAULT '',
-    entity_keys  TEXT[] NOT NULL DEFAULT '{}',
-    payload     JSONB NOT NULL,
-    created_at  TIMESTAMPTZ(0) NOT NULL DEFAULT NOW()
+    payload      JSONB NOT NULL,
+    created_at   TIMESTAMPTZ(0) NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_project_history_project_created ON kanban_project_history (project_id, id DESC);
 CREATE INDEX idx_project_history_project_user ON kanban_project_history (project_id, user_id, id DESC);
-CREATE INDEX idx_project_history_entity_keys ON kanban_project_history USING GIN (entity_keys);
+CREATE INDEX idx_project_history_entity ON kanban_project_history (project_id, entity_type, entity_id, id DESC);
+CREATE INDEX idx_project_history_card ON kanban_project_history (card_id, id DESC) WHERE card_id IS NOT NULL;
 
-INSERT INTO kanban_project_history (project_id, user_id, action, entity_title, entity_link, entity_keys, payload, created_at)
+-- Старые activity: без снапшота, undo нет (payload null/null).
+INSERT INTO kanban_project_history (
+    project_id, user_id, action, entity_type, entity_id, card_id,
+    entity_title, entity_link, payload, created_at
+)
 SELECT
     b.kanban_project_id,
     a.user_id,
@@ -44,17 +69,20 @@ SELECT
         WHEN 'attachment_added' THEN 'attachment.created'
         WHEN 'attachment_removed' THEN 'attachment.deleted'
         WHEN 'subtask_added' THEN 'subtask.created'
-        WHEN 'subtask_completed' THEN 'subtask.updated'
-        WHEN 'subtask_reopened' THEN 'subtask.updated'
+        WHEN 'subtask_completed' THEN 'subtask.completed'
+        WHEN 'subtask_reopened' THEN 'subtask.reopened'
         WHEN 'subtask_removed' THEN 'subtask.deleted'
-        WHEN 'subtask_assigned' THEN 'subtask.updated'
-        WHEN 'subtask_unassigned' THEN 'subtask.updated'
+        WHEN 'subtask_assigned' THEN 'subtask.assigned'
+        WHEN 'subtask_unassigned' THEN 'subtask.unassigned'
         WHEN 'archived' THEN 'card.archived'
         WHEN 'restored' THEN 'card.restored'
         WHEN 'completed' THEN 'card.completed'
         WHEN 'reopened' THEN 'card.reopened'
         ELSE 'card.updated'
     END,
+    'card',
+    a.card_id,
+    a.card_id,
     CASE
         WHEN a.type IN ('label_added', 'label_removed') THEN
             COALESCE(NULLIF(a.new_value, ''), NULLIF(a.old_value, ''), '')
@@ -66,13 +94,7 @@ SELECT
         ELSE
             '/projects/' || b.kanban_project_id::text || '/board-' || b.id::text || '/task-' || a.card_id::text
     END,
-    ARRAY['card:' || a.card_id::text],
-    CASE
-        WHEN a.type IN ('label_added', 'label_removed') THEN
-            jsonb_build_object('before', '', 'after', c.title)
-        ELSE
-            jsonb_build_object('before', COALESCE(a.old_value, ''), 'after', COALESCE(a.new_value, ''))
-    END,
+    '{"before":null,"after":null}'::jsonb,
     a.created_at
 FROM kanban_card_activity a
 JOIN kanban_card c ON c.id = a.card_id
@@ -98,6 +120,14 @@ CREATE INDEX idx_card_activity_card_created ON kanban_card_activity (card_id, cr
 CREATE INDEX idx_kanban_card_activity_user_id ON kanban_card_activity (user_id);
 
 DROP TABLE IF EXISTS kanban_project_history;
+DROP INDEX IF EXISTS idx_kanban_card_subtask_deleted_at;
+ALTER TABLE kanban_card_subtask DROP COLUMN IF EXISTS deleted_at;
+DROP INDEX IF EXISTS idx_kanban_card_comment_deleted_at;
+ALTER TABLE kanban_card_comment DROP COLUMN IF EXISTS deleted_at;
+DROP INDEX IF EXISTS idx_kanban_label_deleted_at;
+ALTER TABLE kanban_label DROP COLUMN IF EXISTS deleted_at;
+DROP INDEX IF EXISTS idx_kanban_column_deleted_at;
+ALTER TABLE kanban_column DROP COLUMN IF EXISTS deleted_at;
 DROP INDEX IF EXISTS idx_kanban_attachment_deleted_at;
 ALTER TABLE kanban_attachment DROP COLUMN IF EXISTS deleted_at;
 DROP INDEX IF EXISTS idx_kanban_card_deleted_at;

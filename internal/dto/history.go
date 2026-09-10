@@ -1,6 +1,10 @@
 package dto
 
-import "go_kanban_service/internal/model"
+import (
+	"strings"
+
+	"go_kanban_service/internal/model"
+)
 
 type HistoryUserResponse struct {
 	ID   int64  `json:"id"`
@@ -41,8 +45,8 @@ func MapHistoryList(items []model.HistoryListItem, hasMore bool, nextCursor int6
 			Action:      item.Action,
 			EntityTitle: item.EntityTitle,
 			EntityLink:  item.EntityLink,
-			Before:      item.Before,
-			After:     item.After,
+			Before:    clipHistory(item.Before),
+			After:     clipHistory(item.After),
 			CreatedAt: item.CreatedAt,
 		}
 		if item.UserID != nil {
@@ -51,4 +55,13 @@ func MapHistoryList(items []model.HistoryListItem, hasMore bool, nextCursor int6
 		resp.Items = append(resp.Items, row)
 	}
 	return resp
+}
+
+func clipHistory(s string) string {
+	s = strings.TrimSpace(s)
+	r := []rune(s)
+	if len(r) > 80 {
+		return string(r[:80]) + "…"
+	}
+	return s
 }

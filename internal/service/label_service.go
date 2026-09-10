@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 
@@ -100,12 +99,12 @@ func (s *LabelService) CreateLabel(ctx context.Context, projectID int64, boardID
 	created, err := s.repo.CreateLabel(ctx, boardID, l)
 	if err == nil && created != nil {
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      "label.created",
+			EntityType:  "label",
+			EntityID:    created.ID,
 			EntityTitle: created.Name,
 			EntityLink:  historyBoardPath(projectID, boardID),
-			EntityKeys:  historyKeys("label", created.ID),
-			Undo:       []model.UndoStep{{Op: "label.delete", LabelID: created.ID}},
 		})
 	}
 	return created, err
@@ -127,16 +126,15 @@ func (s *LabelService) DeleteLabel(ctx context.Context, projectID int64, boardID
 	if err := s.repo.DeleteLabel(ctx, labelID); err != nil {
 		return err
 	}
-	snap, _ := json.Marshal(map[string]any{
-		"id": label.ID, "name": label.Name, "color": label.Color, "boardId": label.BoardID, "cardIds": cardIDs,
-	})
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  projectID,
+		ProjectID:   projectID,
 		Action:      "label.deleted",
+		EntityType:  "label",
+		EntityID:    labelID,
 		EntityTitle: label.Name,
 		EntityLink:  historyBoardPath(projectID, boardID),
-		EntityKeys:  append(historyKeys("label", labelID), historyKeys("card", cardIDs...)...),
-		Undo:       []model.UndoStep{{Op: "label.insert", LabelID: labelID, Snapshot: snap}},
+		// before = сколько карточек имели метку; id не пишем, undo = RestoreLabel.
+		Before: historyLabelCardsCount(len(cardIDs)),
 	})
 	return nil
 }
@@ -148,8 +146,7 @@ func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return "", err
 	}
-	card, err := s.ensureCardInBoard(ctx, boardID, cardID)
-	if err != nil {
+	if _, err := s.ensureCardInBoard(ctx, boardID, cardID); err != nil {
 		return "", err
 	}
 
@@ -162,19 +159,18 @@ func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID
 	if err != nil {
 		return "", err
 	}
-	on := !added
 	action := "label.removed"
 	if added {
 		action = "label.added"
 	}
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  projectID,
+		ProjectID:   projectID,
 		Action:      action,
+		EntityType:  "label",
+		EntityID:    labelID,
+		CardID:      cardID,
 		EntityTitle: label.Name,
 		EntityLink:  historyTaskPath(projectID, boardID, cardID),
-		After:       card.Title,
-		EntityKeys:  []string{HistoryKey("card", cardID), HistoryKey("label", labelID)},
-		Undo:       []model.UndoStep{{Op: "label.toggle", CardID: cardID, LabelID: labelID, On: &on}},
 	})
 
 	if added {

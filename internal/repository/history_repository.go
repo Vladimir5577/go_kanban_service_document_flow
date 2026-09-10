@@ -15,9 +15,10 @@ import (
 type HistoryRepositoryInterface interface {
 	Append(ctx context.Context, userID *int64, e model.HistoryWrite) error
 	List(ctx context.Context, projectID, cardID, userID, cursor int64, title string, limit int32) ([]model.HistoryListItem, error)
-	LastByUser(ctx context.Context, projectID, userID int64) (*dbgen.KanbanProjectHistory, error)
-	HasForeignOverlap(ctx context.Context, projectID, afterID, userID int64, keys []string) (bool, error)
-	ApplyUndo(ctx context.Context, entryID int64, steps []model.UndoStep) error
+	LastByUser(ctx context.Context, projectID, userID int64) (*model.HistoryUndoEntry, error)
+	HasForeignOverlap(ctx context.Context, projectID, afterID, userID int64, entityType string, entityID int64) (bool, error)
+	ApplyUndo(ctx context.Context, entry model.HistoryUndoEntry) error
+	DeleteEntry(ctx context.Context, id int64) error
 }
 
 type HistoryRepository struct {
@@ -29,7 +30,10 @@ func NewHistoryRepository(db *pgxpool.Pool) *HistoryRepository {
 }
 
 func (r *HistoryRepository) Append(ctx context.Context, userID *int64, e model.HistoryWrite) error {
-	payload, err := json.Marshal(model.HistoryPayload{Steps: e.Undo, Before: e.Before, After: e.After})
+	payload, err := json.Marshal(model.HistoryPayload{
+		Before: emptyToNil(e.Before),
+		After:  emptyToNil(e.After),
+	})
 	if err != nil {
 		return err
 	}
@@ -38,11 +42,15 @@ func (r *HistoryRepository) Append(ctx context.Context, userID *int64, e model.H
 		Action:      e.Action,
 		EntityTitle: e.EntityTitle,
 		EntityLink:  e.EntityLink,
-		EntityKeys:  e.EntityKeys,
+		EntityType:  e.EntityType,
+		EntityID:    e.EntityID,
 		Payload:     payload,
 	}
 	if userID != nil {
 		params.UserID = pgtype.Int8{Int64: *userID, Valid: true}
+	}
+	if e.CardID != 0 {
+		params.CardID = pgtype.Int8{Int64: e.CardID, Valid: true}
 	}
 	_, err = dbgen.New(r.Db).CreateProjectHistoryEntry(ctx, params)
 	return err
@@ -71,8 +79,8 @@ func (r *HistoryRepository) List(ctx context.Context, projectID, cardID, userID,
 		}
 		var payload model.HistoryPayload
 		if len(row.Payload) > 0 && json.Unmarshal(row.Payload, &payload) == nil {
-			item.Before = payload.Before
-			item.After = payload.After
+			item.Before = derefPayload(payload.Before)
+			item.After = derefPayload(payload.After)
 		}
 		if row.UserID.Valid {
 			id := row.UserID.Int64
@@ -84,7 +92,7 @@ func (r *HistoryRepository) List(ctx context.Context, projectID, cardID, userID,
 	return items, nil
 }
 
-func (r *HistoryRepository) LastByUser(ctx context.Context, projectID, userID int64) (*dbgen.KanbanProjectHistory, error) {
+func (r *HistoryRepository) LastByUser(ctx context.Context, projectID, userID int64) (*model.HistoryUndoEntry, error) {
 	row, err := dbgen.New(r.Db).GetLastProjectHistoryByUser(ctx, dbgen.GetLastProjectHistoryByUserParams{
 		ProjectID: projectID,
 		UserID:    pgtype.Int8{Int64: userID, Valid: true},
@@ -92,27 +100,63 @@ func (r *HistoryRepository) LastByUser(ctx context.Context, projectID, userID in
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
-	return &row, nil
+	entry := model.HistoryUndoEntry{
+		ID:          row.ID,
+		Action:      row.Action,
+		EntityType:  row.EntityType,
+		EntityID:    row.EntityID,
+		EntityTitle: row.EntityTitle,
+		ProjectID:   row.ProjectID,
+	}
+	if row.CardID.Valid {
+		entry.CardID = row.CardID.Int64
+	}
+	var payload model.HistoryPayload
+	if len(row.Payload) > 0 && json.Unmarshal(row.Payload, &payload) == nil {
+		entry.Before = derefPayload(payload.Before)
+		entry.After = derefPayload(payload.After)
+	}
+	if row.CreatedAt.Valid {
+		entry.CreatedAt = row.CreatedAt.Time
+	}
+	return &entry, nil
 }
 
-func (r *HistoryRepository) HasForeignOverlap(ctx context.Context, projectID, afterID, userID int64, keys []string) (bool, error) {
+func (r *HistoryRepository) HasForeignOverlap(ctx context.Context, projectID, afterID, userID int64, entityType string, entityID int64) (bool, error) {
 	return dbgen.New(r.Db).HasForeignNewerHistoryOverlap(ctx, dbgen.HasForeignNewerHistoryOverlapParams{
 		ProjectID:  projectID,
 		AfterID:    afterID,
 		UserID:     pgtype.Int8{Int64: userID, Valid: true},
-		EntityKeys: keys,
+		EntityType: entityType,
+		EntityID:   entityID,
 	})
 }
 
-func (r *HistoryRepository) ApplyUndo(ctx context.Context, entryID int64, steps []model.UndoStep) error {
+func (r *HistoryRepository) ApplyUndo(ctx context.Context, entry model.HistoryUndoEntry) error {
 	return ExecTx(ctx, r.Db, func(q *dbgen.Queries) error {
-		for _, step := range steps {
-			if err := applyUndoStep(ctx, q, step); err != nil {
-				return err
-			}
+		if err := applyHistoryUndo(ctx, q, entry); err != nil {
+			return err
 		}
-		return q.DeleteProjectHistoryEntry(ctx, entryID)
+		return q.DeleteProjectHistoryEntry(ctx, entry.ID)
 	})
+}
+
+func (r *HistoryRepository) DeleteEntry(ctx context.Context, id int64) error {
+	return dbgen.New(r.Db).DeleteProjectHistoryEntry(ctx, id)
+}
+
+func emptyToNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func derefPayload(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func joinPersonName(last, first pgtype.Text, patronymic pgtype.Text) string {

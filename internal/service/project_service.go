@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 
@@ -116,11 +115,11 @@ func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjec
 	}
 	created.EntryBoardID = &board.ID
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  created.ID,
+		ProjectID:   created.ID,
 		Action:      "project.created",
+		EntityType:  "project",
+		EntityID:    created.ID,
 		EntityTitle: created.Name,
-		EntityKeys:  historyKeys("project", created.ID),
-		Undo:       []model.UndoStep{{Op: "project.soft_delete", ProjectID: created.ID}},
 	})
 	return created, nil
 }
@@ -255,22 +254,26 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.Up
 	}
 	updated, err := s.repo.UpdateProject(ctx, p)
 	if err == nil && updated != nil {
-		fields := map[string]any{"name": oldName, "description": nilString(oldDesc)}
-		raw, _ := json.Marshal(fields)
+		nameChanged := updated.Name != oldName
+		descChanged := historyText(oldDesc) != historyText(updated.Description)
+		action := "project.updated"
 		before, after := "", ""
-		if updated.Name != oldName {
+		switch {
+		case nameChanged && !descChanged:
+			action = "project.updated.renamed"
 			before, after = oldName, updated.Name
-		} else {
-			before, after = clipHistory(historyText(oldDesc)), clipHistory(historyText(updated.Description))
+		case descChanged && !nameChanged:
+			action = "project.updated.description"
+			before, after = historyText(oldDesc), historyText(updated.Description)
 		}
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  id,
-			Action:      "project.updated",
+			ProjectID:   id,
+			Action:      action,
+			EntityType:  "project",
+			EntityID:    id,
 			EntityTitle: updated.Name,
 			Before:      before,
-			After:      after,
-			EntityKeys: historyKeys("project", id),
-			Undo:       []model.UndoStep{{Op: "project.patch", ProjectID: id, Fields: raw}},
+			After:       after,
 		})
 	}
 	return updated, err
@@ -368,8 +371,8 @@ func (s *ProjectService) DeleteProject(ctx context.Context, id int64) error {
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:  id,
 		Action:     "project.deleted",
-		EntityKeys: historyKeys("project", id),
-		Undo:       []model.UndoStep{{Op: "project.restore", ProjectID: id}},
+		EntityType: "project",
+		EntityID:   id,
 	})
 	return nil
 }

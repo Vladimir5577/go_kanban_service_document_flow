@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"go_kanban_service/internal/apperr"
@@ -94,11 +93,12 @@ func (s *SubtaskService) CreateSubtask(ctx context.Context, cardID int64, req dt
 	st, err = s.repo.CreateSubtask(ctx, cardID, st)
 	if err == nil {
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      "subtask.created",
+			EntityType:  "subtask",
+			EntityID:    st.ID,
+			CardID:      cardID,
 			EntityTitle: st.Title,
-			EntityKeys:  []string{HistoryKey("card", cardID), HistoryKey("subtask", st.ID)},
-			Undo:       []model.UndoStep{{Op: "subtask.delete", SubtaskID: st.ID, CardID: cardID}},
 		})
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
@@ -131,15 +131,9 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 	}
 
 	prevTitle := st.Title
-	var oldIsCompleted bool
-	if st.Status == "done" {
-		oldIsCompleted = true
-	}
+	oldPos := st.Position
+	oldIsCompleted := st.Status == "done"
 	oldUserID := st.UserID
-	oldFields, _ := json.Marshal(map[string]any{
-		"title": st.Title, "status": st.Status, "position": st.Position, "userId": nilInt(st.UserID),
-	})
-
 	if req.Title != nil {
 		st.Title = *req.Title
 	}
@@ -173,30 +167,31 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 		}
 	}
 	if err == nil && updatedSt != nil {
-		before, after := prevTitle, updatedSt.Title
-		if before == after {
-			if oldIsCompleted != (updatedSt.Status == "done") {
-				before, after = "не выполнена", "выполнена"
-				if oldIsCompleted {
-					before, after = after, before
-				}
-			}
-		}
+		newIsCompleted := updatedSt.Status == "done"
+		titleChanged := prevTitle != updatedSt.Title
+		statusChanged := oldIsCompleted != newIsCompleted
+		posChanged := oldPos != updatedSt.Position
+		assigneeChanged := req.HasUserID && !sameOptionalID(oldUserID, updatedSt.UserID)
+
+		action, before, after := subtaskUpdateAction(subtaskUpdateSummary{
+			titleChanged: titleChanged, prevTitle: prevTitle, newTitle: updatedSt.Title,
+			statusChanged:   statusChanged, nowCompleted: newIsCompleted,
+			posChanged:      posChanged, oldPos: oldPos, newPos: updatedSt.Position,
+			assigneeChanged: assigneeChanged, oldUserID: oldUserID, newUserID: updatedSt.UserID,
+		})
+
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
-			Action:      "subtask.updated",
+			ProjectID:   projectID,
+			Action:      action,
+			EntityType:  "subtask",
+			EntityID:    subtaskID,
+			CardID:      cardID,
 			EntityTitle: updatedSt.Title,
 			Before:      before,
-			After:      after,
-			EntityKeys: []string{HistoryKey("card", cardID), HistoryKey("subtask", subtaskID)},
-			Undo:       []model.UndoStep{{Op: "subtask.patch", SubtaskID: subtaskID, CardID: cardID, Fields: oldFields}},
+			After:       after,
 		})
-		var newIsCompleted bool
-		if updatedSt.Status == "done" {
-			newIsCompleted = true
-		}
 
-		if oldIsCompleted != newIsCompleted {
+		if statusChanged {
 			if s.realtimePublisher != nil {
 				s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 					patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, updatedSt.CardID)
@@ -247,15 +242,13 @@ func (s *SubtaskService) DeleteSubtask(ctx context.Context, cardID int64, subtas
 
 	err = s.repo.DeleteSubtask(ctx, subtaskID)
 	if err == nil {
-		snap, _ := json.Marshal(map[string]any{
-			"id": st.ID, "title": st.Title, "status": st.Status, "position": st.Position, "cardId": st.CardID, "userId": nilInt(st.UserID),
-		})
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      "subtask.deleted",
+			EntityType:  "subtask",
+			EntityID:    subtaskID,
+			CardID:      cardID,
 			EntityTitle: st.Title,
-			EntityKeys:  []string{HistoryKey("card", cardID), HistoryKey("subtask", subtaskID)},
-			Undo:       []model.UndoStep{{Op: "subtask.insert", SubtaskID: subtaskID, CardID: cardID, Snapshot: snap}},
 		})
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {

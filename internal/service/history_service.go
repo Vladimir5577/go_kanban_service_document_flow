@@ -57,27 +57,29 @@ func (s *HistoryService) Append(ctx context.Context, e model.HistoryWrite) error
 }
 
 func (s *HistoryService) historyEntityLink(ctx context.Context, e model.HistoryWrite) string {
-	if s.cardRepo != nil && s.columnRepo != nil {
-		if cardID := firstHistoryID(e.EntityKeys, "card"); cardID != 0 {
-			if card, err := s.cardRepo.GetCard(ctx, cardID); err == nil && card != nil {
-				if col, err := s.columnRepo.GetColumn(ctx, card.ColumnID); err == nil && col != nil {
-					if e.Action == "card.archived" {
-						return historyArchivePath(e.ProjectID, col.BoardID)
-					}
-					return historyTaskPath(e.ProjectID, col.BoardID, cardID)
+	cardID := e.CardID
+	if cardID == 0 && e.EntityType == "card" {
+		cardID = e.EntityID
+	}
+	if s.cardRepo != nil && s.columnRepo != nil && cardID != 0 {
+		if card, err := s.cardRepo.GetCard(ctx, cardID); err == nil && card != nil {
+			if col, err := s.columnRepo.GetColumn(ctx, card.ColumnID); err == nil && col != nil {
+				if e.Action == "card.archived" {
+					return historyArchivePath(e.ProjectID, col.BoardID)
 				}
-			}
-		}
-		if columnID := firstHistoryID(e.EntityKeys, "column"); columnID != 0 {
-			if col, err := s.columnRepo.GetColumn(ctx, columnID); err == nil && col != nil {
-				return historyBoardPath(e.ProjectID, col.BoardID)
+				return historyTaskPath(e.ProjectID, col.BoardID, cardID)
 			}
 		}
 	}
-	if boardID := firstHistoryID(e.EntityKeys, "board"); boardID != 0 {
-		return historyBoardPath(e.ProjectID, boardID)
+	if e.EntityType == "column" && s.columnRepo != nil {
+		if col, err := s.columnRepo.GetColumn(ctx, e.EntityID); err == nil && col != nil {
+			return historyBoardPath(e.ProjectID, col.BoardID)
+		}
 	}
-	if strings.HasPrefix(e.Action, "member") || e.Action == "members.replaced" {
+	if e.EntityType == "board" {
+		return historyBoardPath(e.ProjectID, e.EntityID)
+	}
+	if e.EntityType == "project" && (strings.HasPrefix(e.Action, "member") || e.Action == "members.replaced") {
 		return historyEditPath(e.ProjectID)
 	}
 	return historyProjectPath(e.ProjectID)
@@ -137,11 +139,11 @@ func (s *HistoryService) Undo(ctx context.Context, projectID int64) (string, str
 		}
 		return "", "", err
 	}
-	if !entry.CreatedAt.Valid || time.Since(entry.CreatedAt.Time) > undoMaxAge {
+	if entry.CreatedAt.IsZero() || time.Since(entry.CreatedAt) > undoMaxAge {
 		return "", "", apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
 	}
 
-	overlap, err := s.repo.HasForeignOverlap(ctx, projectID, entry.ID, user.ID, entry.EntityKeys)
+	overlap, err := s.repo.HasForeignOverlap(ctx, projectID, entry.ID, user.ID, entry.EntityType, entry.EntityID)
 	if err != nil {
 		return "", "", err
 	}
@@ -149,94 +151,71 @@ func (s *HistoryService) Undo(ctx context.Context, projectID int64) (string, str
 		return "", "", apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
 	}
 
-	var payload model.HistoryPayload
-	if err := json.Unmarshal(entry.Payload, &payload); err != nil {
-		return "", "", err
-	}
-	if len(payload.Steps) == 0 {
-		return "", "", apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
-	}
-
-	var rest []model.UndoStep
-	for _, step := range payload.Steps {
-		if step.Op == "members.replace" {
-			if err := s.applyMembersReplace(ctx, step); err != nil {
-				return "", "", err
-			}
-			continue
+	if isMembersHistoryAction(entry.Action) {
+		if err := s.applyMembersUndo(ctx, entry); err != nil {
+			return "", "", err
 		}
-		rest = append(rest, step)
-	}
-	if err := s.repo.ApplyUndo(ctx, entry.ID, rest); err != nil {
-		return "", "", err
+		if err := s.repo.DeleteEntry(ctx, entry.ID); err != nil {
+			return "", "", err
+		}
+	} else {
+		if err := s.repo.ApplyUndo(ctx, *entry); err != nil {
+			return "", "", err
+		}
 	}
 
-	s.publishUndo(ctx, payload.Steps)
+	s.publishUndo(ctx, *entry)
 	return entry.Action, entry.EntityTitle, nil
 }
 
-func (s *HistoryService) applyMembersReplace(ctx context.Context, step model.UndoStep) error {
+func isMembersHistoryAction(action string) bool {
+	return action == "members.replaced" || action == "member.role" || action == "member.removed"
+}
+
+func (s *HistoryService) applyMembersUndo(ctx context.Context, entry *model.HistoryUndoEntry) error {
+	if entry.Before == "" {
+		return apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
+	}
 	var rows []struct {
 		UserID   int64   `json:"userId"`
 		Role     string  `json:"role"`
 		FolderID *int64  `json:"folderId"`
 		Position float64 `json:"position"`
 	}
-	if err := json.Unmarshal(step.Snapshot, &rows); err != nil {
-		return err
+	if err := json.Unmarshal([]byte(entry.Before), &rows); err != nil {
+		return apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
 	}
 	members := make([]model.ProjectUser, 0, len(rows))
 	for _, row := range rows {
 		members = append(members, model.ProjectUser{
-			KanbanProjectID: step.ProjectID,
+			KanbanProjectID: entry.ProjectID,
 			UserID:          row.UserID,
 			Role:            row.Role,
 			FolderID:        row.FolderID,
 			Position:        row.Position,
 		})
 	}
-	return s.memberRepo.ReplaceMembers(ctx, step.ProjectID, members)
+	return s.memberRepo.ReplaceMembers(ctx, entry.ProjectID, members)
 }
 
-func (s *HistoryService) publishUndo(ctx context.Context, steps []model.UndoStep) {
-	if s.realtime == nil {
+func (s *HistoryService) publishUndo(ctx context.Context, entry model.HistoryUndoEntry) {
+	if s.realtime == nil || entry.CardID == 0 || s.cardRepo == nil {
 		return
 	}
-	seen := map[int64]struct{}{}
-	for _, step := range steps {
-		if step.CardID == 0 {
-			continue
+	cardID := entry.CardID
+	s.realtime.TryPublish(ctx, func(ctx context.Context) error {
+		card, err := s.cardRepo.GetCard(ctx, cardID)
+		if err != nil {
+			return s.realtime.PublishCardDeleted(ctx, 0, cardID, realtimeSenderID(ctx))
 		}
-		if _, ok := seen[step.CardID]; ok {
-			continue
-		}
-		seen[step.CardID] = struct{}{}
-		cardID := step.CardID
-		s.realtime.TryPublish(ctx, func(ctx context.Context) error {
-			card, err := s.cardRepo.GetCard(ctx, cardID)
-			if err != nil {
-				colID := step.ColumnID
-				if colID == 0 && s.columnRepo != nil {
-					return s.realtime.PublishCardDeleted(ctx, 0, cardID, realtimeSenderID(ctx))
-				}
-				if s.columnRepo == nil {
-					return nil
-				}
-				col, colErr := s.columnRepo.GetColumn(ctx, colID)
-				if colErr != nil {
-					return nil
-				}
-				return s.realtime.PublishCardDeleted(ctx, col.BoardID, cardID, realtimeSenderID(ctx))
-			}
-			return s.realtime.PublishCardPatch(ctx, card, map[string]any{
-				"id":         card.ID,
-				"title":      card.Title,
-				"position":   card.Position,
-				"columnId":   card.ColumnID,
-				"isArchived": card.IsArchived,
-			}, realtimeSenderID(ctx))
-		})
-	}
+		return s.realtime.PublishCardPatch(ctx, card, map[string]any{
+			"id":         card.ID,
+			"title":      card.Title,
+			"position":   card.Position,
+			"columnId":   card.ColumnID,
+			"isArchived": card.IsArchived,
+		}, realtimeSenderID(ctx))
+	})
 }
 
 func likeContains(q string) string {

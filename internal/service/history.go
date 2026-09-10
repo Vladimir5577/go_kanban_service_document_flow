@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
-	"time"
 
 	"go_kanban_service/internal/model"
 )
@@ -14,22 +13,8 @@ type HistoryLogger interface {
 	Append(ctx context.Context, e model.HistoryWrite) error
 }
 
-func HistoryKey(kind string, id int64) string {
-	return kind + ":" + strconv.FormatInt(id, 10)
-}
-
-func historyKeys(kind string, ids ...int64) []string {
-	keys := make([]string, 0, len(ids))
-	for _, id := range ids {
-		if id != 0 {
-			keys = append(keys, HistoryKey(kind, id))
-		}
-	}
-	return keys
-}
-
 func appendHistory(j HistoryLogger, ctx context.Context, e model.HistoryWrite) {
-	if j == nil || e.ProjectID == 0 {
+	if j == nil || e.ProjectID == 0 || e.EntityID == 0 {
 		return
 	}
 	e.EntityTitle = strings.TrimSpace(e.EntityTitle)
@@ -56,20 +41,6 @@ func historyEditPath(projectID int64) string {
 	return historyProjectPath(projectID) + "/edit"
 }
 
-func firstHistoryID(keys []string, kind string) int64 {
-	prefix := kind + ":"
-	for _, key := range keys {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
-		id, err := strconv.ParseInt(key[len(prefix):], 10, 64)
-		if err == nil && id != 0 {
-			return id
-		}
-	}
-	return 0
-}
-
 func historyText(v *string) string {
 	if v == nil {
 		return ""
@@ -77,13 +48,95 @@ func historyText(v *string) string {
 	return strings.TrimSpace(*v)
 }
 
-func clipHistory(s string) string {
-	s = strings.TrimSpace(s)
-	r := []rune(s)
-	if len(r) > 80 {
-		return string(r[:80]) + "…"
+func historyLabelCardsCount(n int) string {
+	b, err := json.Marshal(struct {
+		LabelCardsCount int `json:"labelCardsCount"`
+	}{LabelCardsCount: n})
+	if err != nil {
+		return ""
 	}
-	return s
+	return string(b)
+}
+
+func historyPlacement(columnID int64, pos float64) string {
+	b, err := json.Marshal(struct {
+		ColumnID int64   `json:"columnId"`
+		Position float64 `json:"position"`
+	}{ColumnID: columnID, Position: pos})
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func historyPos(pos float64) string {
+	return strconv.FormatFloat(pos, 'f', -1, 64)
+}
+
+func historyOptID(id *int64) string {
+	if id == nil {
+		return ""
+	}
+	return strconv.FormatInt(*id, 10)
+}
+
+func historyIDsJSON(ids []int64) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(ids)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+type subtaskUpdateSummary struct {
+	titleChanged    bool
+	prevTitle       string
+	newTitle        string
+	statusChanged   bool
+	nowCompleted    bool
+	posChanged      bool
+	oldPos          float64
+	newPos          float64
+	assigneeChanged bool
+	oldUserID       *int64
+	newUserID       *int64
+}
+
+func subtaskUpdateAction(s subtaskUpdateSummary) (action, before, after string) {
+	n := 0
+	if s.titleChanged {
+		n++
+		action, before, after = "subtask.renamed", s.prevTitle, s.newTitle
+	}
+	if s.statusChanged {
+		n++
+		if s.nowCompleted {
+			action = "subtask.completed"
+		} else {
+			action = "subtask.reopened"
+		}
+		before, after = "", ""
+	}
+	if s.posChanged {
+		n++
+		action, before, after = "subtask.moved", historyPos(s.oldPos), historyPos(s.newPos)
+	}
+	if s.assigneeChanged {
+		n++
+		before, after = historyOptID(s.oldUserID), historyOptID(s.newUserID)
+		if s.newUserID != nil {
+			action = "subtask.assigned"
+		} else {
+			action = "subtask.unassigned"
+		}
+	}
+	if n != 1 {
+		return "subtask.updated", "", ""
+	}
+	return action, before, after
 }
 
 func cardFieldAction(title, desc, due, priority, color bool) string {
@@ -115,79 +168,20 @@ func cardFieldAction(title, desc, due, priority, color bool) string {
 	return action
 }
 
-func historyUserName(lastname, firstname, patronymic string) string {
-	parts := compactHistoryName(lastname, firstname, patronymic)
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.Join(parts, " ")
-}
-
-func compactHistoryName(values ...string) []string {
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		v = strings.TrimSpace(v)
-		if v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-func cardPatchFields(c *model.Card) json.RawMessage {
-	if c == nil {
-		return nil
-	}
-	m := map[string]any{
-		"title":         c.Title,
-		"description":   nilString(c.Description),
-		"priority":      nilString(c.Priority),
-		"borderColor":   nilString(c.BorderColor),
-		"dueDate":       nilTime(c.DueDate),
-		"completedAt":   nilTime(c.CompletedAt),
-		"completedById": nilInt(c.CompletedByID),
-		"isArchived":    c.IsArchived,
-		"archivedAt":    nilTime(c.ArchivedAt),
-		"archivedById":  nilInt(c.ArchivedByID),
-		"columnId":      c.ColumnID,
-		"position":      c.Position,
-	}
-	b, _ := json.Marshal(m)
-	return b
-}
-
-func nilString(v *string) any {
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
-func nilInt(v *int64) any {
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
-func nilTime(v *time.Time) any {
-	if v == nil {
-		return nil
-	}
-	return v.Format(time.RFC3339)
-}
-
-func memberSnapshot(members []model.ProjectUser) json.RawMessage {
+func membersHistoryJSON(members []model.ProjectUser) string {
 	type row struct {
-		UserID   int64  `json:"userId"`
-		Role     string `json:"role"`
-		FolderID *int64 `json:"folderId,omitempty"`
+		UserID   int64   `json:"userId"`
+		Role     string  `json:"role"`
+		FolderID *int64  `json:"folderId,omitempty"`
 		Position float64 `json:"position"`
 	}
 	rows := make([]row, 0, len(members))
 	for _, m := range members {
 		rows = append(rows, row{UserID: m.UserID, Role: m.Role, FolderID: m.FolderID, Position: m.Position})
 	}
-	b, _ := json.Marshal(rows)
-	return b
+	b, err := json.Marshal(rows)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

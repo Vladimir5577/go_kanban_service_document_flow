@@ -145,10 +145,11 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	if err == nil && created != nil {
 		appendHistory(s.History, ctx, model.HistoryWrite{
 			ProjectID:  projectID,
-			Action:      "card.created",
+			Action:     "card.created",
+			EntityType: "card",
+			EntityID:   created.ID,
+			CardID:     created.ID,
 			EntityTitle: created.Title,
-			EntityKeys:  historyKeys("card", created.ID),
-			Undo:       []model.UndoStep{{Op: "card.soft_delete", CardID: created.ID}},
 		})
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
@@ -488,8 +489,6 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 	if err != nil {
 		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
-	undoFields := cardPatchFields(c)
-
 	var titleChanged, descChanged, dueChanged, priorityChanged, colorChanged bool
 	var oldTitle, newTitle *string
 	var oldDescription *string
@@ -563,7 +562,7 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 		case "card.updated.renamed":
 			before, after = historyText(oldTitle), historyText(newTitle)
 		case "card.updated.description":
-			before, after = clipHistory(historyText(oldDescription)), clipHistory(historyText(req.Description))
+			before, after = historyText(oldDescription), historyText(req.Description)
 		case "card.updated.due_date":
 			before, after = historyText(oldDue), historyText(newDue)
 		case "card.updated.priority":
@@ -572,13 +571,14 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 			before, after = oldColorKey, newColorKey
 		}
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      action,
+			EntityType:  "card",
+			EntityID:    id,
+			CardID:      id,
 			EntityTitle: updatedCard.Title,
 			Before:      before,
-			After:      after,
-			EntityKeys: historyKeys("card", id),
-			Undo:       []model.UndoStep{{Op: "card.patch", CardID: id, Fields: undoFields}},
+			After:       after,
 		})
 		if s.realtimePublisher != nil {
 			patch := map[string]any{}
@@ -630,12 +630,13 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 		return err
 	}
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  projectID,
+		ProjectID:   projectID,
 		Action:      "card.deleted",
+		EntityType:  "card",
+		EntityID:    id,
+		CardID:      id,
 		EntityTitle: card.Title,
 		EntityLink:  historyTaskPath(projectID, column.BoardID, id),
-		EntityKeys:  historyKeys("card", id),
-		Undo:       []model.UndoStep{{Op: "card.restore", CardID: id, ColumnID: card.ColumnID}},
 	})
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
@@ -660,27 +661,12 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 	if err := s.validateProjectAssignees(ctx, projectID, userIDs); err != nil {
 		return err
 	}
-	var oldValue *string
 	card, _ := s.repo.GetCard(ctx, id)
-	if card != nil && len(card.AssigneeIDs) > 0 {
-		if users, _ := s.userRepo.GetUsersByIDs(ctx, []int64{card.AssigneeIDs[0]}); len(users) > 0 {
-			n := dto.UserDisplayName(users[0])
-			oldValue = &n
-		}
-	}
-
-	var newValue *string
-	if len(userIDs) > 0 {
-		if users, _ := s.userRepo.GetUsersByIDs(ctx, []int64{userIDs[0]}); len(users) > 0 {
-			n := dto.UserDisplayName(users[0])
-			newValue = &n
-		}
-	}
-
-	oldIDs := []int64(nil)
+	var oldIDs []int64
 	if card != nil {
-		oldIDs = append([]int64(nil), card.AssigneeIDs...)
+		oldIDs = card.AssigneeIDs
 	}
+
 	err = s.repo.UpdateCardAssignees(ctx, id, userIDs)
 	if err == nil {
 		title := ""
@@ -688,19 +674,20 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 			title = card.Title
 		}
 		action := "card.assignees"
-		if oldValue != nil && newValue == nil {
+		if len(oldIDs) > 0 && len(userIDs) == 0 {
 			action = "card.assignee_removed"
-		} else if oldValue == nil && newValue != nil {
+		} else if len(oldIDs) == 0 && len(userIDs) > 0 {
 			action = "card.assignee_added"
 		}
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      action,
+			EntityType:  "card",
+			EntityID:    id,
+			CardID:      id,
 			EntityTitle: title,
-			Before:      historyText(oldValue),
-			After:      historyText(newValue),
-			EntityKeys: historyKeys("card", id),
-			Undo:       []model.UndoStep{{Op: "card.assignees", CardID: id, UserIDs: oldIDs}},
+			Before:      historyIDsJSON(oldIDs),
+			After:       historyIDsJSON(userIDs),
 		})
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
@@ -792,11 +779,14 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 	card, err := s.repo.MoveCard(ctx, id, columnID, position)
 	if err == nil {
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      "card.moved",
+			EntityType:  "card",
+			EntityID:    id,
+			CardID:      id,
 			EntityTitle: cardBefore.Title,
-			EntityKeys:  historyKeys("card", id),
-			Undo:       []model.UndoStep{{Op: "card.move", CardID: id, ColumnID: oldCol, Position: &oldPos}},
+			Before:      historyPlacement(oldCol, oldPos),
+			After:       historyPlacement(columnID, card.Position),
 		})
 	}
 	if err == nil && s.realtimePublisher != nil {
@@ -839,8 +829,6 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 	if err != nil {
 		return withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
-	undoFields := cardPatchFields(card)
-
 	action := "card.archived"
 	if card.IsArchived {
 		action = "card.restored"
@@ -857,11 +845,12 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 	_, err = s.repo.UpdateCard(ctx, card)
 	if err == nil {
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      action,
+			EntityType:  "card",
+			EntityID:    id,
+			CardID:      id,
 			EntityTitle: card.Title,
-			EntityKeys:  historyKeys("card", id),
-			Undo:       []model.UndoStep{{Op: "card.patch", CardID: id, Fields: undoFields}},
 		})
 	}
 	return err
@@ -882,7 +871,6 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 	}
 	oldCol := card.ColumnID
 	oldPos := card.Position
-	undoFields := cardPatchFields(card)
 
 	completing := card.CompletedAt == nil
 	if !completing {
@@ -899,7 +887,18 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 		return nil, err
 	}
 
-	undo := []model.UndoStep{{Op: "card.patch", CardID: id, Fields: undoFields}}
+	action := "card.completed"
+	if !completing {
+		action = "card.reopened"
+	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   projectID,
+		Action:      action,
+		EntityType:  "card",
+		EntityID:    id,
+		CardID:      id,
+		EntityTitle: updated.Title,
+	})
 	if completing {
 		if col, colErr := s.columnRepo.GetColumn(ctx, updated.ColumnID); colErr == nil {
 			if board, boardErr := s.boardRepo.GetBoard(ctx, col.BoardID); boardErr == nil && board.DoneColumnID != nil && *board.DoneColumnID != updated.ColumnID {
@@ -909,26 +908,20 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 				}
 				if moved, moveErr := s.repo.MoveCard(ctx, id, *board.DoneColumnID, pos); moveErr == nil && moved != nil {
 					updated = moved
-					undo = []model.UndoStep{
-						{Op: "card.move", CardID: id, ColumnID: oldCol, Position: &oldPos},
-						{Op: "card.patch", CardID: id, Fields: undoFields},
-					}
+					appendHistory(s.History, ctx, model.HistoryWrite{
+						ProjectID:   projectID,
+						Action:      "card.moved",
+						EntityType:  "card",
+						EntityID:    id,
+						CardID:      id,
+						EntityTitle: updated.Title,
+						Before:      historyPlacement(oldCol, oldPos),
+						After:       historyPlacement(updated.ColumnID, updated.Position),
+					})
 				}
 			}
 		}
 	}
-
-	action := "card.completed"
-	if !completing {
-		action = "card.reopened"
-	}
-	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  projectID,
-		Action:      action,
-		EntityTitle: updated.Title,
-		EntityKeys:  historyKeys("card", id),
-		Undo:       undo,
-	})
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 			return s.realtimePublisher.PublishCardPatch(ctx, updated, map[string]any{
@@ -1010,11 +1003,12 @@ func (s *CardService) DuplicateCard(ctx context.Context, id int64, columnID int6
 	}
 
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  projectID,
+		ProjectID:   projectID,
 		Action:      "card.duplicated",
+		EntityType:  "card",
+		EntityID:    created.ID,
+		CardID:      created.ID,
 		EntityTitle: source.Title,
-		EntityKeys:  historyKeys("card", created.ID),
-		Undo:       []model.UndoStep{{Op: "card.soft_delete", CardID: created.ID}},
 	})
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {

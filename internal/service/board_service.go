@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -121,11 +120,11 @@ func (s *BoardService) CreateBoard(ctx context.Context, projectID int64, req dto
 	created, err := s.repo.CreateBoardWithColumns(ctx, projectID, b, modelColumns)
 	if err == nil && created != nil {
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      "board.created",
+			EntityType:  "board",
+			EntityID:    created.ID,
 			EntityTitle: created.Title,
-			EntityKeys:  historyKeys("board", created.ID),
-			Undo:       []model.UndoStep{{Op: "board.soft_delete", BoardID: created.ID}},
 		})
 	}
 	return created, err
@@ -380,13 +379,6 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 			return nil, err2
 		}
 	}
-	fields := map[string]any{"title": oldTitle, "position": oldPos}
-	if oldDone != nil {
-		fields["doneColumnId"] = *oldDone
-	} else {
-		fields["doneColumnId"] = nil
-	}
-	raw, _ := json.Marshal(fields)
 	titleChanged := updated.Title != oldTitle
 	posChanged := req.Position != nil && updated.Position != oldPos
 	doneChanged := !sameOptionalID(oldDone, updated.DoneColumnID)
@@ -399,19 +391,19 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 			before, after = oldTitle, updated.Title
 		case posChanged && !titleChanged && !doneChanged:
 			action = "board.updated.moved"
+			before, after = historyPos(oldPos), historyPos(updated.Position)
 		case doneChanged && !titleChanged && !posChanged:
 			action = "board.updated.done_column"
-			before = s.historyColumnTitle(ctx, oldDone)
-			after = s.historyColumnTitle(ctx, updated.DoneColumnID)
+			before, after = historyOptID(oldDone), historyOptID(updated.DoneColumnID)
 		}
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
+			ProjectID:   projectID,
 			Action:      action,
+			EntityType:  "board",
+			EntityID:    boardID,
 			EntityTitle: updated.Title,
 			Before:      before,
-			After:      after,
-			EntityKeys: historyKeys("board", boardID),
-			Undo:       []model.UndoStep{{Op: "board.patch", BoardID: boardID, Fields: raw}},
+			After:       after,
 		})
 	}
 	return updated, nil
@@ -446,12 +438,12 @@ func (s *BoardService) DeleteBoard(ctx context.Context, projectID int64, boardID
 		return nil, err
 	}
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  projectID,
+		ProjectID:   projectID,
 		Action:      "board.deleted",
+		EntityType:  "board",
+		EntityID:    boardID,
 		EntityTitle: b.Title,
 		EntityLink:  historyProjectPath(projectID),
-		EntityKeys:  historyKeys("board", boardID),
-		Undo:       []model.UndoStep{{Op: "board.restore", BoardID: boardID}},
 	})
 
 	return &dto.DeleteBoardResponse{Success: true, NextBoardID: nextBoardID}, nil
@@ -564,17 +556,6 @@ func boardColumnColor(color *string, index int) string {
 		return defaultColumnColor
 	}
 	return defaultBoardColumnColors[index%len(defaultBoardColumnColors)]
-}
-
-func (s *BoardService) historyColumnTitle(ctx context.Context, id *int64) string {
-	if id == nil || *id == 0 {
-		return ""
-	}
-	col, err := s.columnRepo.GetColumn(ctx, *id)
-	if err != nil || col == nil {
-		return ""
-	}
-	return col.Title
 }
 
 func boardColorPtr(color string) *string {
