@@ -612,23 +612,17 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 		return nil, NormalizeError(err)
 	}
 
-	// 2. Позиции колонки назначения
-	positions, err := r.columnCardPositions(ctx, columnID)
+	// 2. Занята ли целевая позиция — один EXISTS вместо чтения всей колонки.
+	needsRebalance, err := dbgen.New(r.Db).ColumnPositionTaken(ctx, dbgen.ColumnPositionTakenParams{
+		ColumnID: columnID,
+		ID:       id,
+		Position: position,
+	})
 	if err != nil {
-		return nil, err
+		return nil, NormalizeError(err)
 	}
 
-	// 3. Check for collision
-	const epsilon = 0.0001
-	needsRebalance := false
-	for _, p := range positions {
-		if p.ID != id && (p.Position-position > -epsilon && p.Position-position < epsilon) {
-			needsRebalance = true
-			break
-		}
-	}
-
-	// 4. Узкий UPDATE вместо перезаписи всей строки: перемещение больше не затирает
+	// 3. Узкий UPDATE вместо перезаписи всей строки: перемещение больше не затирает
 	// заголовок или описание, которые в этот же момент правит кто-то другой.
 	var updatedAt pgtype.Timestamptz
 	if err := r.Db.QueryRow(ctx, `
@@ -645,7 +639,7 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 		return move, nil
 	}
 
-	// 5. Ребалансировка переписала позиции всей колонки — перечитываем, иначе
+	// 4. Ребалансировка переписала позиции всей колонки — перечитываем, иначе
 	// у клиента останутся устаревшие позиции соседних карточек.
 	if err := dbgen.New(r.Db).RebalanceColumnCards(ctx, columnID); err != nil {
 		return nil, err

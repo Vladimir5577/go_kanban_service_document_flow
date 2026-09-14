@@ -84,6 +84,32 @@ func (q *Queries) ClearCardAssignees(ctx context.Context, cardID int64) error {
 	return err
 }
 
+const columnPositionTaken = `-- name: ColumnPositionTaken :one
+SELECT EXISTS(
+    SELECT 1 FROM kanban_card
+    WHERE column_id = $1 AND id <> $2 AND is_archived = FALSE
+      AND abs(position - $3::double precision) < 0.0001
+)
+`
+
+type ColumnPositionTakenParams struct {
+	ColumnID int64   `json:"column_id"`
+	ID       int64   `json:"id"`
+	Position float64 `json:"position"`
+}
+
+// Занята ли позиция в целевой колонке. Допуск нужен потому, что позиции дробные
+// и приходят от клиента, — точное равенство double precision тут не работает.
+// EXISTS выходит на первом совпадении: раньше ради ответа «да/нет» читались и
+// ехали по сети все карточки колонки целиком.
+// Фильтр тот же, что был у прежней проверки, — только is_archived.
+func (q *Queries) ColumnPositionTaken(ctx context.Context, arg ColumnPositionTakenParams) (bool, error) {
+	row := q.db.QueryRow(ctx, columnPositionTaken, arg.ColumnID, arg.ID, arg.Position)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const createAttachment = `-- name: CreateAttachment :one
 INSERT INTO kanban_attachment (filename, storage_key, content_type, size_bytes, context, card_id, author_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1182,38 +1208,56 @@ const getCardContext = `-- name: GetCardContext :one
 SELECT
     b.kanban_project_id,
     b.id AS board_id,
+    b.title AS board_title,
     col.title AS column_title,
     p.owner_id,
-    p.deleted_at AS project_deleted_at
+    p.deleted_at AS project_deleted_at,
+    pu.role AS member_role
 FROM kanban_card card
 JOIN kanban_column col ON card.column_id = col.id
 JOIN kanban_board b ON col.board_id = b.id
 JOIN kanban_project p ON b.kanban_project_id = p.id
+LEFT JOIN kanban_project_user pu
+       ON pu.kanban_project_id = p.id AND pu.user_id = $2
 WHERE card.id = $1
 `
+
+type GetCardContextParams struct {
+	ID     int64 `json:"id"`
+	UserID int64 `json:"user_id"`
+}
 
 type GetCardContextRow struct {
 	KanbanProjectID  int64              `json:"kanban_project_id"`
 	BoardID          int64              `json:"board_id"`
+	BoardTitle       string             `json:"board_title"`
 	ColumnTitle      string             `json:"column_title"`
 	OwnerID          int64              `json:"owner_id"`
 	ProjectDeletedAt pgtype.Timestamptz `json:"project_deleted_at"`
+	MemberRole       pgtype.Text        `json:"member_role"`
 }
 
 // Всё, что нужно для проверки прав и для шапки карточки, одним запросом:
-// проект, доска, заголовок колонки, владелец. Джойны те же, что в
-// GetProjectIDByCard, плюс проект — все по первичным ключам.
+// проект, доска с названием, заголовок колонки, владелец и роль вызывающего.
+// Джойны те же, что в GetProjectIDByCard, плюс проект — все по первичным
+// ключам, членство — по уникальному (kanban_project_id, user_id).
+// Роль берём LEFT JOIN'ом, а не отдельным GetProjectMember: членства может не
+// быть вовсе (владелец, чужой пользователь), и NULL здесь — это отказ, который
+// разбирает resolveRole.
+// Название доски нужно уведомлениям: без него они ходили за ним в GetBoard.
 // deleted_at проекта не фильтруем в WHERE, а возвращаем: иначе «карточки нет»
 // и «проект удалён» схлопнутся в одну ошибку и фронт получит не тот код.
-func (q *Queries) GetCardContext(ctx context.Context, id int64) (GetCardContextRow, error) {
-	row := q.db.QueryRow(ctx, getCardContext, id)
+func (q *Queries) GetCardContext(ctx context.Context, arg GetCardContextParams) (GetCardContextRow, error) {
+	row := q.db.QueryRow(ctx, getCardContext, arg.ID, arg.UserID)
 	var i GetCardContextRow
 	err := row.Scan(
 		&i.KanbanProjectID,
 		&i.BoardID,
+		&i.BoardTitle,
 		&i.ColumnTitle,
 		&i.OwnerID,
 		&i.ProjectDeletedAt,
+		&i.MemberRole,
 	)
 	return i, err
 }

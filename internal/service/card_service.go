@@ -785,8 +785,12 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 		EntityID:    id,
 		CardID:      id,
 		EntityTitle: move.Title,
-		Before:      historyPlacement(move.FromColumnID, move.FromPosition),
-		After:       historyPlacement(columnID, move.Position),
+		// Ссылку собираем сами: без неё HistoryService пойдёт её вычислять и
+		// перечитает карточку вместе с исполнителями и метками, а следом колонку —
+		// четыре запроса ради строки, все части которой уже лежат здесь.
+		EntityLink: historyTaskPath(acc.ProjectID, acc.BoardID, id),
+		Before:     historyPlacement(move.FromColumnID, move.FromPosition),
+		After:      historyPlacement(columnID, move.Position),
 	})
 
 	if s.realtimePublisher != nil {
@@ -834,7 +838,7 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 		actorID := derefInt64(currentUserID(ctx))
 		runDetached(ctx, notifyTimeout, "failed to notify kanban task moved", func(ctx context.Context) error {
 			// source and target are guaranteed to be on the same board
-			s.notificationSvc.NotifyTaskMoved(ctx, acc.ProjectID, acc.BoardID, id, actorID, move.Title, acc.ColumnTitle, targetColumn.Title)
+			s.notificationSvc.NotifyTaskMoved(ctx, acc.ProjectID, acc.BoardID, acc.BoardTitle, id, actorID, move.Title, acc.ColumnTitle, targetColumn.Title)
 			return nil
 		})
 	}

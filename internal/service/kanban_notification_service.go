@@ -211,9 +211,13 @@ func (s *KanbanNotificationService) NotifyTaskAssigned(
 }
 
 // NotifyTaskMoved notifies relevant users when a card is moved to another column.
+// boardTitle приходит от вызывающего: он получил его тем же запросом, которым
+// проверял права, и лезть за ним в GetBoard больше незачем.
 func (s *KanbanNotificationService) NotifyTaskMoved(
 	ctx context.Context,
-	projectID, boardID, cardID int64,
+	projectID, boardID int64,
+	boardTitle string,
+	cardID int64,
 	actorID int64,
 	title, fromColumn, toColumn string,
 ) {
@@ -241,7 +245,9 @@ func (s *KanbanNotificationService) NotifyTaskMoved(
 
 	authorName := s.getAuthorName(ctx, actorID)
 	resolvedBoardID := s.resolveBoardID(ctx, boardID, cardID)
-	boardTitle := s.getBoardTitle(ctx, resolvedBoardID)
+	if boardTitle == "" {
+		boardTitle = s.getBoardTitle(ctx, resolvedBoardID)
+	}
 
 	link := projectTaskLink(projectID, resolvedBoardID, cardID)
 	evt := events.KanbanNotificationEvent{

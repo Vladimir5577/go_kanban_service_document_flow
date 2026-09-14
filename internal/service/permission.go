@@ -101,12 +101,13 @@ func (s *PermissionService) RequireRole(ctx context.Context, projectID int64, mi
 	return nil
 }
 
-// CardAccess — разрешённый контекст карточки: проект, доска, заголовок колонки,
-// владелец и роль текущего пользователя. Всё это добывается одним запросом
-// вместо цепочки GetProjectIDByCard → GetProject → GetColumn.
+// CardAccess — разрешённый контекст карточки: проект, доска с названием,
+// заголовок колонки, владелец и роль текущего пользователя. Всё это добывается
+// одним запросом вместо цепочки GetProjectIDByCard → GetProject → GetColumn.
 type CardAccess struct {
 	ProjectID   int64
 	BoardID     int64
+	BoardTitle  string
 	ColumnTitle string
 	OwnerID     int64
 	Role        Role
@@ -124,7 +125,7 @@ func (s *PermissionService) RequireCardRole(ctx context.Context, cardID int64, m
 		return CardAccess{}, apperr.ErrUnauthorized
 	}
 
-	row, err := dbgen.New(s.db).GetCardContext(ctx, cardID)
+	row, err := dbgen.New(s.db).GetCardContext(ctx, dbgen.GetCardContextParams{ID: cardID, UserID: user.ID})
 	if err != nil {
 		return CardAccess{}, withNotFoundCode(repository.NormalizeError(err), apperr.CodeCardNotFound)
 	}
@@ -133,9 +134,11 @@ func (s *PermissionService) RequireCardRole(ctx context.Context, cardID int64, m
 		return CardAccess{}, apperr.New(apperr.CodeProjectNotFound, string(apperr.CodeProjectNotFound))
 	}
 
+	// Членство приехало тем же запросом. NULL означает ровно то же, что раньше
+	// означал промах GetProjectMember, — членства нет, и решает это resolveRole.
 	var member *model.ProjectUser
-	if row.OwnerID != user.ID {
-		member, _ = s.memberRepo.GetProjectMember(ctx, row.KanbanProjectID, user.ID)
+	if row.MemberRole.Valid {
+		member = &model.ProjectUser{Role: row.MemberRole.String}
 	}
 
 	role, err := resolveRole(user.ID, row.OwnerID, member)
@@ -149,6 +152,7 @@ func (s *PermissionService) RequireCardRole(ctx context.Context, cardID int64, m
 	return CardAccess{
 		ProjectID:   row.KanbanProjectID,
 		BoardID:     row.BoardID,
+		BoardTitle:  row.BoardTitle,
 		ColumnTitle: row.ColumnTitle,
 		OwnerID:     row.OwnerID,
 		Role:        role,

@@ -144,6 +144,18 @@ SELECT EXISTS(
     SELECT 1 FROM kanban_column WHERE board_id = $1 AND deleted_at IS NULL
 );
 
+-- name: ColumnPositionTaken :one
+-- Занята ли позиция в целевой колонке. Допуск нужен потому, что позиции дробные
+-- и приходят от клиента, — точное равенство double precision тут не работает.
+-- EXISTS выходит на первом совпадении: раньше ради ответа «да/нет» читались и
+-- ехали по сети все карточки колонки целиком.
+-- Фильтр тот же, что был у прежней проверки, — только is_archived.
+SELECT EXISTS(
+    SELECT 1 FROM kanban_card
+    WHERE column_id = $1 AND id <> $2 AND is_archived = FALSE
+      AND abs(position - sqlc.arg(position)::double precision) < 0.0001
+);
+
 -- name: RebalanceColumnCards :exec
 WITH ranked AS (
   SELECT id, ROW_NUMBER() OVER(ORDER BY position ASC, id ASC) as rn
@@ -443,20 +455,29 @@ WHERE card.id = $1;
 
 -- name: GetCardContext :one
 -- Всё, что нужно для проверки прав и для шапки карточки, одним запросом:
--- проект, доска, заголовок колонки, владелец. Джойны те же, что в
--- GetProjectIDByCard, плюс проект — все по первичным ключам.
+-- проект, доска с названием, заголовок колонки, владелец и роль вызывающего.
+-- Джойны те же, что в GetProjectIDByCard, плюс проект — все по первичным
+-- ключам, членство — по уникальному (kanban_project_id, user_id).
+-- Роль берём LEFT JOIN'ом, а не отдельным GetProjectMember: членства может не
+-- быть вовсе (владелец, чужой пользователь), и NULL здесь — это отказ, который
+-- разбирает resolveRole.
+-- Название доски нужно уведомлениям: без него они ходили за ним в GetBoard.
 -- deleted_at проекта не фильтруем в WHERE, а возвращаем: иначе «карточки нет»
 -- и «проект удалён» схлопнутся в одну ошибку и фронт получит не тот код.
 SELECT
     b.kanban_project_id,
     b.id AS board_id,
+    b.title AS board_title,
     col.title AS column_title,
     p.owner_id,
-    p.deleted_at AS project_deleted_at
+    p.deleted_at AS project_deleted_at,
+    pu.role AS member_role
 FROM kanban_card card
 JOIN kanban_column col ON card.column_id = col.id
 JOIN kanban_board b ON col.board_id = b.id
 JOIN kanban_project p ON b.kanban_project_id = p.id
+LEFT JOIN kanban_project_user pu
+       ON pu.kanban_project_id = p.id AND pu.user_id = $2
 WHERE card.id = $1;
 
 -- name: RemoveProjectMember :exec
