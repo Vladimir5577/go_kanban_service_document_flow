@@ -51,6 +51,7 @@ type BoardService struct {
 	attachmentRepo repository.AttachmentRepositoryInterface
 	permSvc        *PermissionService
 	cfg            *config.Config
+	History        HistoryLogger
 }
 
 func NewBoardService(
@@ -116,7 +117,17 @@ func (s *BoardService) CreateBoard(ctx context.Context, projectID int64, req dto
 		})
 	}
 
-	return s.repo.CreateBoardWithColumns(ctx, projectID, b, modelColumns)
+	created, err := s.repo.CreateBoardWithColumns(ctx, projectID, b, modelColumns)
+	if err == nil && created != nil {
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   projectID,
+			Action:      "board.created",
+			EntityType:  "board",
+			EntityID:    created.ID,
+			EntityTitle: created.Title,
+		})
+	}
+	return created, err
 }
 
 func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID int64) (*dto.BoardResponse, error) {
@@ -323,6 +334,7 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 	if err := s.permSvc.RequireRole(ctx, b.KanbanProjectID, RoleAdmin); err != nil {
 		return nil, err
 	}
+	oldTitle, oldPos, oldDone := b.Title, b.Position, b.DoneColumnID
 
 	changed := false
 	if req.Title != nil {
@@ -356,10 +368,45 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 		}
 		b.DoneColumnID = next
 	}
-	if !changed {
+	if !changed && req.DoneColumnID == nil {
 		return b, nil
 	}
-	return s.repo.UpdateBoard(ctx, b)
+	updated := b
+	var err2 error
+	if changed {
+		updated, err2 = s.repo.UpdateBoard(ctx, b)
+		if err2 != nil {
+			return nil, err2
+		}
+	}
+	titleChanged := updated.Title != oldTitle
+	posChanged := req.Position != nil && updated.Position != oldPos
+	doneChanged := !sameOptionalID(oldDone, updated.DoneColumnID)
+	if titleChanged || posChanged || doneChanged {
+		action := "board.updated"
+		before, after := "", ""
+		switch {
+		case titleChanged && !posChanged && !doneChanged:
+			action = "board.updated.renamed"
+			before, after = oldTitle, updated.Title
+		case posChanged && !titleChanged && !doneChanged:
+			action = "board.updated.moved"
+			before, after = historyPos(oldPos), historyPos(updated.Position)
+		case doneChanged && !titleChanged && !posChanged:
+			action = "board.updated.done_column"
+			before, after = historyOptID(oldDone), historyOptID(updated.DoneColumnID)
+		}
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   projectID,
+			Action:      action,
+			EntityType:  "board",
+			EntityID:    boardID,
+			EntityTitle: updated.Title,
+			Before:      before,
+			After:       after,
+		})
+	}
+	return updated, nil
 }
 
 func (s *BoardService) DeleteBoard(ctx context.Context, projectID int64, boardID int64) (*dto.DeleteBoardResponse, error) {
@@ -390,6 +437,14 @@ func (s *BoardService) DeleteBoard(ctx context.Context, projectID int64, boardID
 		}
 		return nil, err
 	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   projectID,
+		Action:      "board.deleted",
+		EntityType:  "board",
+		EntityID:    boardID,
+		EntityTitle: b.Title,
+		EntityLink:  historyProjectPath(projectID),
+	})
 
 	return &dto.DeleteBoardResponse{Success: true, NextBoardID: nextBoardID}, nil
 }

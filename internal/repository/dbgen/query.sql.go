@@ -84,45 +84,10 @@ func (q *Queries) ClearCardAssignees(ctx context.Context, cardID int64) error {
 	return err
 }
 
-const createActivity = `-- name: CreateActivity :one
-INSERT INTO kanban_card_activity (type, card_id, user_id, old_value, new_value)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, card_id, user_id, type, old_value, new_value, created_at
-`
-
-type CreateActivityParams struct {
-	Type     string      `json:"type"`
-	CardID   int64       `json:"card_id"`
-	UserID   pgtype.Int8 `json:"user_id"`
-	OldValue pgtype.Text `json:"old_value"`
-	NewValue pgtype.Text `json:"new_value"`
-}
-
-func (q *Queries) CreateActivity(ctx context.Context, arg CreateActivityParams) (KanbanCardActivity, error) {
-	row := q.db.QueryRow(ctx, createActivity,
-		arg.Type,
-		arg.CardID,
-		arg.UserID,
-		arg.OldValue,
-		arg.NewValue,
-	)
-	var i KanbanCardActivity
-	err := row.Scan(
-		&i.ID,
-		&i.CardID,
-		&i.UserID,
-		&i.Type,
-		&i.OldValue,
-		&i.NewValue,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const createAttachment = `-- name: CreateAttachment :one
 INSERT INTO kanban_attachment (filename, storage_key, content_type, size_bytes, context, card_id, author_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at
+RETURNING id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at, deleted_at
 `
 
 type CreateAttachmentParams struct {
@@ -156,6 +121,7 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 		&i.Context,
 		&i.AuthorID,
 		&i.CreatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -198,7 +164,7 @@ func (q *Queries) CreateBoard(ctx context.Context, arg CreateBoardParams) (Kanba
 const createCard = `-- name: CreateCard :one
 INSERT INTO kanban_card (title, description, position, due_date, priority, column_id, created_by_id, border_color)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at
+RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at
 `
 
 type CreateCardParams struct {
@@ -241,6 +207,7 @@ func (q *Queries) CreateCard(ctx context.Context, arg CreateCardParams) (KanbanC
 		&i.BorderColor,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -248,7 +215,7 @@ func (q *Queries) CreateCard(ctx context.Context, arg CreateCardParams) (KanbanC
 const createColumn = `-- name: CreateColumn :one
 INSERT INTO kanban_column (title, header_color, position, board_id)
 VALUES ($1, $2, $3, $4)
-RETURNING id, title, header_color, position, board_id
+RETURNING id, title, header_color, position, board_id, deleted_at
 `
 
 type CreateColumnParams struct {
@@ -272,6 +239,7 @@ func (q *Queries) CreateColumn(ctx context.Context, arg CreateColumnParams) (Kan
 		&i.HeaderColor,
 		&i.Position,
 		&i.BoardID,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -279,7 +247,7 @@ func (q *Queries) CreateColumn(ctx context.Context, arg CreateColumnParams) (Kan
 const createComment = `-- name: CreateComment :one
 INSERT INTO kanban_card_comment (body, card_id, author_id)
 VALUES ($1, $2, $3)
-RETURNING id, body, card_id, author_id, created_at, updated_at
+RETURNING id, body, card_id, author_id, created_at, updated_at, deleted_at
 `
 
 type CreateCommentParams struct {
@@ -298,6 +266,7 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (K
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -305,7 +274,7 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (K
 const createLabel = `-- name: CreateLabel :one
 INSERT INTO kanban_label (name, color, board_id)
 VALUES ($1, $2, $3)
-RETURNING id, name, color, board_id
+RETURNING id, name, color, board_id, deleted_at
 `
 
 type CreateLabelParams struct {
@@ -322,6 +291,7 @@ func (q *Queries) CreateLabel(ctx context.Context, arg CreateLabelParams) (Kanba
 		&i.Name,
 		&i.Color,
 		&i.BoardID,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -386,10 +356,64 @@ func (q *Queries) CreateProjectFolder(ctx context.Context, arg CreateProjectFold
 	return i, err
 }
 
+const createProjectHistoryEntry = `-- name: CreateProjectHistoryEntry :one
+
+INSERT INTO kanban_project_history (
+    project_id, user_id, action, entity_title, entity_link,
+    entity_type, entity_id, card_id, payload
+)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, project_id, user_id, action, entity_type, entity_id, card_id, entity_title, entity_link, payload, created_at
+`
+
+type CreateProjectHistoryEntryParams struct {
+	ProjectID   int64       `json:"project_id"`
+	UserID      pgtype.Int8 `json:"user_id"`
+	Action      string      `json:"action"`
+	EntityTitle string      `json:"entity_title"`
+	EntityLink  string      `json:"entity_link"`
+	EntityType  string      `json:"entity_type"`
+	EntityID    int64       `json:"entity_id"`
+	CardID      pgtype.Int8 `json:"card_id"`
+	Payload     []byte      `json:"payload"`
+}
+
+// ==============================
+// PROJECT HISTORY
+// ==============================
+func (q *Queries) CreateProjectHistoryEntry(ctx context.Context, arg CreateProjectHistoryEntryParams) (KanbanProjectHistory, error) {
+	row := q.db.QueryRow(ctx, createProjectHistoryEntry,
+		arg.ProjectID,
+		arg.UserID,
+		arg.Action,
+		arg.EntityTitle,
+		arg.EntityLink,
+		arg.EntityType,
+		arg.EntityID,
+		arg.CardID,
+		arg.Payload,
+	)
+	var i KanbanProjectHistory
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.UserID,
+		&i.Action,
+		&i.EntityType,
+		&i.EntityID,
+		&i.CardID,
+		&i.EntityTitle,
+		&i.EntityLink,
+		&i.Payload,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createSubtask = `-- name: CreateSubtask :one
 INSERT INTO kanban_card_subtask (title, status, position, card_id, user_id)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, title, status, position, card_id, user_id
+RETURNING id, title, status, position, card_id, user_id, deleted_at
 `
 
 type CreateSubtaskParams struct {
@@ -416,13 +440,15 @@ func (q *Queries) CreateSubtask(ctx context.Context, arg CreateSubtaskParams) (K
 		&i.Position,
 		&i.CardID,
 		&i.UserID,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const deleteAttachment = `-- name: DeleteAttachment :exec
-DELETE FROM kanban_attachment
-WHERE id = $1
+UPDATE kanban_attachment
+SET deleted_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) DeleteAttachment(ctx context.Context, id int64) error {
@@ -442,8 +468,9 @@ func (q *Queries) DeleteBoard(ctx context.Context, id int64) error {
 }
 
 const deleteCard = `-- name: DeleteCard :exec
-DELETE FROM kanban_card
-WHERE id = $1
+UPDATE kanban_card
+SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) DeleteCard(ctx context.Context, id int64) error {
@@ -452,8 +479,9 @@ func (q *Queries) DeleteCard(ctx context.Context, id int64) error {
 }
 
 const deleteColumn = `-- name: DeleteColumn :exec
-DELETE FROM kanban_column
-WHERE id = $1
+UPDATE kanban_column
+SET deleted_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) DeleteColumn(ctx context.Context, id int64) error {
@@ -462,8 +490,9 @@ func (q *Queries) DeleteColumn(ctx context.Context, id int64) error {
 }
 
 const deleteComment = `-- name: DeleteComment :exec
-DELETE FROM kanban_card_comment
-WHERE id = $1
+UPDATE kanban_card_comment
+SET deleted_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) DeleteComment(ctx context.Context, id int64) error {
@@ -472,8 +501,9 @@ func (q *Queries) DeleteComment(ctx context.Context, id int64) error {
 }
 
 const deleteLabel = `-- name: DeleteLabel :exec
-DELETE FROM kanban_label
-WHERE id = $1
+UPDATE kanban_label
+SET deleted_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) DeleteLabel(ctx context.Context, id int64) error {
@@ -502,6 +532,16 @@ func (q *Queries) DeleteProjectFolder(ctx context.Context, id int64) error {
 	return err
 }
 
+const deleteProjectHistoryEntry = `-- name: DeleteProjectHistoryEntry :exec
+DELETE FROM kanban_project_history
+WHERE id = $1
+`
+
+func (q *Queries) DeleteProjectHistoryEntry(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deleteProjectHistoryEntry, id)
+	return err
+}
+
 const deleteProjectMembersExcept = `-- name: DeleteProjectMembersExcept :exec
 DELETE FROM kanban_project_user
 WHERE kanban_project_id = $1 AND NOT (user_id = ANY($2::bigint[]))
@@ -518,51 +558,14 @@ func (q *Queries) DeleteProjectMembersExcept(ctx context.Context, arg DeleteProj
 }
 
 const deleteSubtask = `-- name: DeleteSubtask :exec
-DELETE FROM kanban_card_subtask
-WHERE id = $1
+UPDATE kanban_card_subtask
+SET deleted_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) DeleteSubtask(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, deleteSubtask, id)
 	return err
-}
-
-const getActivitiesByCard = `-- name: GetActivitiesByCard :many
-
-SELECT id, card_id, user_id, type, old_value, new_value, created_at FROM kanban_card_activity
-WHERE card_id = $1
-ORDER BY created_at DESC
-`
-
-// ==============================
-// ACTIVITY
-// ==============================
-func (q *Queries) GetActivitiesByCard(ctx context.Context, cardID int64) ([]KanbanCardActivity, error) {
-	rows, err := q.db.Query(ctx, getActivitiesByCard, cardID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []KanbanCardActivity{}
-	for rows.Next() {
-		var i KanbanCardActivity
-		if err := rows.Scan(
-			&i.ID,
-			&i.CardID,
-			&i.UserID,
-			&i.Type,
-			&i.OldValue,
-			&i.NewValue,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const getAllProjects = `-- name: GetAllProjects :many
@@ -624,6 +627,8 @@ JOIN kanban_project p   ON p.id  = b.kanban_project_id
 WHERE ca.user_id = $1
   AND c.completed_at IS NOT NULL
   AND c.is_archived = FALSE
+  AND c.deleted_at IS NULL
+  AND col.deleted_at IS NULL
   AND b.deleted_at IS NULL
   AND p.deleted_at IS NULL
   AND (
@@ -714,6 +719,8 @@ JOIN kanban_project p   ON p.id  = b.kanban_project_id
 WHERE ca.user_id = $1
   AND c.completed_at IS NULL
   AND c.is_archived = FALSE
+  AND c.deleted_at IS NULL
+  AND col.deleted_at IS NULL
   AND b.deleted_at IS NULL
   AND p.deleted_at IS NULL
   AND (
@@ -803,6 +810,9 @@ JOIN kanban_board   b   ON b.id  = col.board_id
 JOIN kanban_project p   ON p.id  = b.kanban_project_id
 WHERE s.user_id = $1::bigint
   AND s.status = 'done'
+  AND s.deleted_at IS NULL
+  AND c.deleted_at IS NULL
+  AND col.deleted_at IS NULL
   AND b.deleted_at IS NULL
   AND p.deleted_at IS NULL
   AND (
@@ -885,6 +895,9 @@ JOIN kanban_board   b   ON b.id  = col.board_id
 JOIN kanban_project p   ON p.id  = b.kanban_project_id
 WHERE s.user_id = $1::bigint
   AND s.status <> 'done'
+  AND s.deleted_at IS NULL
+  AND c.deleted_at IS NULL
+  AND col.deleted_at IS NULL
   AND b.deleted_at IS NULL
   AND p.deleted_at IS NULL
   AND (
@@ -948,8 +961,8 @@ func (q *Queries) GetAssignedSubtasksOpen(ctx context.Context, dollar_1 int64) (
 
 const getAttachment = `-- name: GetAttachment :one
 
-SELECT id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at FROM kanban_attachment
-WHERE id = $1 LIMIT 1
+SELECT id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at, deleted_at FROM kanban_attachment
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
 // ==============================
@@ -968,13 +981,14 @@ func (q *Queries) GetAttachment(ctx context.Context, id int64) (KanbanAttachment
 		&i.Context,
 		&i.AuthorID,
 		&i.CreatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getAttachmentsByCard = `-- name: GetAttachmentsByCard :many
-SELECT id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at FROM kanban_attachment
-WHERE card_id = $1 AND context = $2
+SELECT id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at, deleted_at FROM kanban_attachment
+WHERE card_id = $1 AND context = $2 AND deleted_at IS NULL
 ORDER BY created_at ASC
 `
 
@@ -1002,6 +1016,7 @@ func (q *Queries) GetAttachmentsByCard(ctx context.Context, arg GetAttachmentsBy
 			&i.Context,
 			&i.AuthorID,
 			&i.CreatedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1077,8 +1092,8 @@ func (q *Queries) GetBoardsByProject(ctx context.Context, kanbanProjectID int64)
 
 const getCard = `-- name: GetCard :one
 
-SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at FROM kanban_card
-WHERE id = $1 LIMIT 1
+SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at FROM kanban_card
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
 // ==============================
@@ -1104,6 +1119,7 @@ func (q *Queries) GetCard(ctx context.Context, id int64) (KanbanCard, error) {
 		&i.BorderColor,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -1202,10 +1218,37 @@ func (q *Queries) GetCardContext(ctx context.Context, id int64) (GetCardContextR
 	return i, err
 }
 
+const getCardIDsByLabel = `-- name: GetCardIDsByLabel :many
+SELECT cl.kanban_card_id FROM kanban_card_label cl
+JOIN kanban_card c ON c.id = cl.kanban_card_id
+WHERE cl.kanban_label_id = $1 AND c.deleted_at IS NULL
+`
+
+func (q *Queries) GetCardIDsByLabel(ctx context.Context, kanbanLabelID int64) ([]int64, error) {
+	rows, err := q.db.Query(ctx, getCardIDsByLabel, kanbanLabelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var kanban_card_id int64
+		if err := rows.Scan(&kanban_card_id); err != nil {
+			return nil, err
+		}
+		items = append(items, kanban_card_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getCardLabels = `-- name: GetCardLabels :many
 
-SELECT kanban_label_id FROM kanban_card_label
-WHERE kanban_card_id = $1
+SELECT cl.kanban_label_id FROM kanban_card_label cl
+JOIN kanban_label l ON l.id = cl.kanban_label_id
+WHERE cl.kanban_card_id = $1 AND l.deleted_at IS NULL
 `
 
 // ==============================
@@ -1232,8 +1275,9 @@ func (q *Queries) GetCardLabels(ctx context.Context, kanbanCardID int64) ([]int6
 }
 
 const getCardLabelsByCardIDs = `-- name: GetCardLabelsByCardIDs :many
-SELECT kanban_card_id, kanban_label_id FROM kanban_card_label
-WHERE kanban_card_id = ANY($1::bigint[])
+SELECT cl.kanban_card_id, cl.kanban_label_id FROM kanban_card_label cl
+JOIN kanban_label l ON l.id = cl.kanban_label_id
+WHERE cl.kanban_card_id = ANY($1::bigint[]) AND l.deleted_at IS NULL
 `
 
 func (q *Queries) GetCardLabelsByCardIDs(ctx context.Context, dollar_1 []int64) ([]KanbanCardLabel, error) {
@@ -1257,9 +1301,9 @@ func (q *Queries) GetCardLabelsByCardIDs(ctx context.Context, dollar_1 []int64) 
 }
 
 const getCardsByBoard = `-- name: GetCardsByBoard :many
-SELECT c.id, c.title, c.description, c.position, c.due_date, c.priority, c.is_archived, c.archived_at, c.archived_by_id, c.completed_at, c.completed_by_id, c.column_id, c.created_by_id, c.border_color, c.created_at, c.updated_at FROM kanban_card c
+SELECT c.id, c.title, c.description, c.position, c.due_date, c.priority, c.is_archived, c.archived_at, c.archived_by_id, c.completed_at, c.completed_by_id, c.column_id, c.created_by_id, c.border_color, c.created_at, c.updated_at, c.deleted_at FROM kanban_card c
 JOIN kanban_column col ON col.id = c.column_id
-WHERE col.board_id = $1 AND c.is_archived = FALSE
+WHERE col.board_id = $1 AND c.is_archived = FALSE AND c.deleted_at IS NULL AND col.deleted_at IS NULL
 ORDER BY col.position ASC, c.position ASC
 `
 
@@ -1289,6 +1333,7 @@ func (q *Queries) GetCardsByBoard(ctx context.Context, boardID int64) ([]KanbanC
 			&i.BorderColor,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1301,8 +1346,8 @@ func (q *Queries) GetCardsByBoard(ctx context.Context, boardID int64) ([]KanbanC
 }
 
 const getCardsByColumn = `-- name: GetCardsByColumn :many
-SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at FROM kanban_card
-WHERE column_id = $1 AND is_archived = FALSE
+SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at FROM kanban_card
+WHERE column_id = $1 AND is_archived = FALSE AND deleted_at IS NULL
 ORDER BY position ASC
 `
 
@@ -1332,6 +1377,7 @@ func (q *Queries) GetCardsByColumn(ctx context.Context, columnID int64) ([]Kanba
 			&i.BorderColor,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1346,7 +1392,7 @@ func (q *Queries) GetCardsByColumn(ctx context.Context, columnID int64) ([]Kanba
 const getChatAttachmentCountsByCardIDs = `-- name: GetChatAttachmentCountsByCardIDs :many
 SELECT card_id, COUNT(*) AS count
 FROM kanban_attachment
-WHERE card_id = ANY($1::bigint[]) AND context = 'chat'
+WHERE card_id = ANY($1::bigint[]) AND context = 'chat' AND deleted_at IS NULL
 GROUP BY card_id
 `
 
@@ -1377,8 +1423,8 @@ func (q *Queries) GetChatAttachmentCountsByCardIDs(ctx context.Context, dollar_1
 
 const getColumn = `-- name: GetColumn :one
 
-SELECT id, title, header_color, position, board_id FROM kanban_column
-WHERE id = $1 LIMIT 1
+SELECT id, title, header_color, position, board_id, deleted_at FROM kanban_column
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
 // ==============================
@@ -1393,13 +1439,14 @@ func (q *Queries) GetColumn(ctx context.Context, id int64) (KanbanColumn, error)
 		&i.HeaderColor,
 		&i.Position,
 		&i.BoardID,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getColumnsByBoard = `-- name: GetColumnsByBoard :many
-SELECT id, title, header_color, position, board_id FROM kanban_column
-WHERE board_id = $1
+SELECT id, title, header_color, position, board_id, deleted_at FROM kanban_column
+WHERE board_id = $1 AND deleted_at IS NULL
 ORDER BY position ASC
 `
 
@@ -1418,6 +1465,7 @@ func (q *Queries) GetColumnsByBoard(ctx context.Context, boardID int64) ([]Kanba
 			&i.HeaderColor,
 			&i.Position,
 			&i.BoardID,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1431,8 +1479,8 @@ func (q *Queries) GetColumnsByBoard(ctx context.Context, boardID int64) ([]Kanba
 
 const getComment = `-- name: GetComment :one
 
-SELECT id, body, card_id, author_id, created_at, updated_at FROM kanban_card_comment
-WHERE id = $1 LIMIT 1
+SELECT id, body, card_id, author_id, created_at, updated_at, deleted_at FROM kanban_card_comment
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
 // ==============================
@@ -1448,6 +1496,7 @@ func (q *Queries) GetComment(ctx context.Context, id int64) (KanbanCardComment, 
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -1455,7 +1504,7 @@ func (q *Queries) GetComment(ctx context.Context, id int64) (KanbanCardComment, 
 const getCommentCountsByCardIDs = `-- name: GetCommentCountsByCardIDs :many
 SELECT card_id, COUNT(*) AS count
 FROM kanban_card_comment
-WHERE card_id = ANY($1::bigint[])
+WHERE card_id = ANY($1::bigint[]) AND deleted_at IS NULL
 GROUP BY card_id
 `
 
@@ -1485,8 +1534,8 @@ func (q *Queries) GetCommentCountsByCardIDs(ctx context.Context, dollar_1 []int6
 }
 
 const getCommentsByCard = `-- name: GetCommentsByCard :many
-SELECT id, body, card_id, author_id, created_at, updated_at FROM kanban_card_comment
-WHERE card_id = $1
+SELECT id, body, card_id, author_id, created_at, updated_at, deleted_at FROM kanban_card_comment
+WHERE card_id = $1 AND deleted_at IS NULL
 ORDER BY created_at ASC
 `
 
@@ -1506,6 +1555,7 @@ func (q *Queries) GetCommentsByCard(ctx context.Context, cardID int64) ([]Kanban
 			&i.AuthorID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1519,8 +1569,8 @@ func (q *Queries) GetCommentsByCard(ctx context.Context, cardID int64) ([]Kanban
 
 const getLabel = `-- name: GetLabel :one
 
-SELECT id, name, color, board_id FROM kanban_label
-WHERE id = $1 LIMIT 1
+SELECT id, name, color, board_id, deleted_at FROM kanban_label
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
 // ==============================
@@ -1534,13 +1584,14 @@ func (q *Queries) GetLabel(ctx context.Context, id int64) (KanbanLabel, error) {
 		&i.Name,
 		&i.Color,
 		&i.BoardID,
+		&i.DeletedAt,
 	)
 	return i, err
 }
 
 const getLabelsByBoard = `-- name: GetLabelsByBoard :many
-SELECT id, name, color, board_id FROM kanban_label
-WHERE board_id = $1
+SELECT id, name, color, board_id, deleted_at FROM kanban_label
+WHERE board_id = $1 AND deleted_at IS NULL
 `
 
 func (q *Queries) GetLabelsByBoard(ctx context.Context, boardID int64) ([]KanbanLabel, error) {
@@ -1557,6 +1608,7 @@ func (q *Queries) GetLabelsByBoard(ctx context.Context, boardID int64) ([]Kanban
 			&i.Name,
 			&i.Color,
 			&i.BoardID,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1566,6 +1618,37 @@ func (q *Queries) GetLabelsByBoard(ctx context.Context, boardID int64) ([]Kanban
 		return nil, err
 	}
 	return items, nil
+}
+
+const getLastProjectHistoryByUser = `-- name: GetLastProjectHistoryByUser :one
+SELECT id, project_id, user_id, action, entity_type, entity_id, card_id, entity_title, entity_link, payload, created_at FROM kanban_project_history
+WHERE project_id = $1 AND user_id = $2
+ORDER BY id DESC
+LIMIT 1
+`
+
+type GetLastProjectHistoryByUserParams struct {
+	ProjectID int64       `json:"project_id"`
+	UserID    pgtype.Int8 `json:"user_id"`
+}
+
+func (q *Queries) GetLastProjectHistoryByUser(ctx context.Context, arg GetLastProjectHistoryByUserParams) (KanbanProjectHistory, error) {
+	row := q.db.QueryRow(ctx, getLastProjectHistoryByUser, arg.ProjectID, arg.UserID)
+	var i KanbanProjectHistory
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.UserID,
+		&i.Action,
+		&i.EntityType,
+		&i.EntityID,
+		&i.CardID,
+		&i.EntityTitle,
+		&i.EntityLink,
+		&i.Payload,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getProject = `-- name: GetProject :one
@@ -1623,6 +1706,30 @@ func (q *Queries) GetProjectFolders(ctx context.Context, userID int64) ([]Kanban
 		return nil, err
 	}
 	return items, nil
+}
+
+const getProjectHistoryEntry = `-- name: GetProjectHistoryEntry :one
+SELECT id, project_id, user_id, action, entity_type, entity_id, card_id, entity_title, entity_link, payload, created_at FROM kanban_project_history
+WHERE id = $1 LIMIT 1
+`
+
+func (q *Queries) GetProjectHistoryEntry(ctx context.Context, id int64) (KanbanProjectHistory, error) {
+	row := q.db.QueryRow(ctx, getProjectHistoryEntry, id)
+	var i KanbanProjectHistory
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.UserID,
+		&i.Action,
+		&i.EntityType,
+		&i.EntityID,
+		&i.CardID,
+		&i.EntityTitle,
+		&i.EntityLink,
+		&i.Payload,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getProjectIDByCard = `-- name: GetProjectIDByCard :one
@@ -1744,8 +1851,8 @@ func (q *Queries) GetProjectMembers(ctx context.Context, kanbanProjectID int64) 
 
 const getSubtask = `-- name: GetSubtask :one
 
-SELECT id, title, status, position, card_id, user_id FROM kanban_card_subtask
-WHERE id = $1 LIMIT 1
+SELECT id, title, status, position, card_id, user_id, deleted_at FROM kanban_card_subtask
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
 // ==============================
@@ -1761,6 +1868,7 @@ func (q *Queries) GetSubtask(ctx context.Context, id int64) (KanbanCardSubtask, 
 		&i.Position,
 		&i.CardID,
 		&i.UserID,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -1770,7 +1878,7 @@ SELECT card_id,
        COUNT(*) AS total,
        COUNT(*) FILTER (WHERE LOWER(status) = 'done') AS done
 FROM kanban_card_subtask
-WHERE card_id = ANY($1::bigint[])
+WHERE card_id = ANY($1::bigint[]) AND deleted_at IS NULL
 GROUP BY card_id
 `
 
@@ -1801,8 +1909,8 @@ func (q *Queries) GetSubtaskCountsByCardIDs(ctx context.Context, dollar_1 []int6
 }
 
 const getSubtasksByCard = `-- name: GetSubtasksByCard :many
-SELECT id, title, status, position, card_id, user_id FROM kanban_card_subtask
-WHERE card_id = $1
+SELECT id, title, status, position, card_id, user_id, deleted_at FROM kanban_card_subtask
+WHERE card_id = $1 AND deleted_at IS NULL
 ORDER BY position ASC
 `
 
@@ -1822,6 +1930,7 @@ func (q *Queries) GetSubtasksByCard(ctx context.Context, cardID int64) ([]Kanban
 			&i.Position,
 			&i.CardID,
 			&i.UserID,
+			&i.DeletedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1835,7 +1944,7 @@ func (q *Queries) GetSubtasksByCard(ctx context.Context, cardID int64) ([]Kanban
 
 const hasCardsByColumn = `-- name: HasCardsByColumn :one
 SELECT EXISTS(
-    SELECT 1 FROM kanban_card WHERE column_id = $1 AND is_archived = FALSE
+    SELECT 1 FROM kanban_card WHERE column_id = $1 AND deleted_at IS NULL
 )
 `
 
@@ -1848,7 +1957,7 @@ func (q *Queries) HasCardsByColumn(ctx context.Context, columnID int64) (bool, e
 
 const hasColumnsByBoard = `-- name: HasColumnsByBoard :one
 SELECT EXISTS(
-    SELECT 1 FROM kanban_column WHERE board_id = $1
+    SELECT 1 FROM kanban_column WHERE board_id = $1 AND deleted_at IS NULL
 )
 `
 
@@ -1859,11 +1968,129 @@ func (q *Queries) HasColumnsByBoard(ctx context.Context, boardID int64) (bool, e
 	return exists, err
 }
 
+const hasForeignNewerHistoryOverlap = `-- name: HasForeignNewerHistoryOverlap :one
+SELECT EXISTS(
+    SELECT 1 FROM kanban_project_history
+    WHERE project_id = $1
+      AND id > $2
+      AND user_id IS DISTINCT FROM $3
+      AND entity_type = $4
+      AND entity_id = $5
+)
+`
+
+type HasForeignNewerHistoryOverlapParams struct {
+	ProjectID  int64       `json:"project_id"`
+	AfterID    int64       `json:"after_id"`
+	UserID     pgtype.Int8 `json:"user_id"`
+	EntityType string      `json:"entity_type"`
+	EntityID   int64       `json:"entity_id"`
+}
+
+func (q *Queries) HasForeignNewerHistoryOverlap(ctx context.Context, arg HasForeignNewerHistoryOverlapParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasForeignNewerHistoryOverlap,
+		arg.ProjectID,
+		arg.AfterID,
+		arg.UserID,
+		arg.EntityType,
+		arg.EntityID,
+	)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const listProjectHistory = `-- name: ListProjectHistory :many
+SELECT
+    j.id,
+    j.project_id,
+    j.user_id,
+    j.action,
+    j.entity_title,
+    j.entity_link,
+    j.payload,
+    j.created_at,
+    u.lastname,
+    u.firstname,
+    u.patronymic
+FROM kanban_project_history j
+LEFT JOIN users u ON u.id = j.user_id
+WHERE j.project_id = $1
+  AND ($2::bigint = 0 OR j.card_id = $2)
+  AND ($3::bigint = 0 OR j.user_id = $3)
+  AND ($4::text = '' OR j.entity_title ILIKE '%' || $4 || '%' ESCAPE '\')
+  AND ($5::bigint = 0 OR j.id < $5)
+ORDER BY j.id DESC
+LIMIT $6
+`
+
+type ListProjectHistoryParams struct {
+	ProjectID  int64  `json:"project_id"`
+	CardID     int64  `json:"card_id"`
+	UserID     int64  `json:"user_id"`
+	TitleQuery string `json:"title_query"`
+	Cursor     int64  `json:"cursor"`
+	PageLimit  int32  `json:"page_limit"`
+}
+
+type ListProjectHistoryRow struct {
+	ID          int64              `json:"id"`
+	ProjectID   int64              `json:"project_id"`
+	UserID      pgtype.Int8        `json:"user_id"`
+	Action      string             `json:"action"`
+	EntityTitle string             `json:"entity_title"`
+	EntityLink  string             `json:"entity_link"`
+	Payload     []byte             `json:"payload"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Lastname    pgtype.Text        `json:"lastname"`
+	Firstname   pgtype.Text        `json:"firstname"`
+	Patronymic  pgtype.Text        `json:"patronymic"`
+}
+
+func (q *Queries) ListProjectHistory(ctx context.Context, arg ListProjectHistoryParams) ([]ListProjectHistoryRow, error) {
+	rows, err := q.db.Query(ctx, listProjectHistory,
+		arg.ProjectID,
+		arg.CardID,
+		arg.UserID,
+		arg.TitleQuery,
+		arg.Cursor,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectHistoryRow{}
+	for rows.Next() {
+		var i ListProjectHistoryRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.UserID,
+			&i.Action,
+			&i.EntityTitle,
+			&i.EntityLink,
+			&i.Payload,
+			&i.CreatedAt,
+			&i.Lastname,
+			&i.Firstname,
+			&i.Patronymic,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const rebalanceColumnCards = `-- name: RebalanceColumnCards :exec
 WITH ranked AS (
   SELECT id, ROW_NUMBER() OVER(ORDER BY position ASC, id ASC) as rn
   FROM kanban_card
-  WHERE kanban_card.column_id = $1 AND kanban_card.is_archived = FALSE
+  WHERE kanban_card.column_id = $1 AND kanban_card.is_archived = FALSE AND kanban_card.deleted_at IS NULL
 )
 UPDATE kanban_card
 SET position = ranked.rn * 65536.0
@@ -1921,6 +2148,110 @@ func (q *Queries) RemoveProjectMember(ctx context.Context, arg RemoveProjectMemb
 	return err
 }
 
+const restoreAttachment = `-- name: RestoreAttachment :exec
+UPDATE kanban_attachment
+SET deleted_at = NULL
+WHERE id = $1
+`
+
+func (q *Queries) RestoreAttachment(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreAttachment, id)
+	return err
+}
+
+const restoreBoard = `-- name: RestoreBoard :exec
+UPDATE kanban_board
+SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+`
+
+func (q *Queries) RestoreBoard(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreBoard, id)
+	return err
+}
+
+const restoreCard = `-- name: RestoreCard :exec
+UPDATE kanban_card
+SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+`
+
+func (q *Queries) RestoreCard(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreCard, id)
+	return err
+}
+
+const restoreColumn = `-- name: RestoreColumn :exec
+UPDATE kanban_column
+SET deleted_at = NULL
+WHERE id = $1
+`
+
+func (q *Queries) RestoreColumn(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreColumn, id)
+	return err
+}
+
+const restoreComment = `-- name: RestoreComment :exec
+UPDATE kanban_card_comment
+SET deleted_at = NULL
+WHERE id = $1
+`
+
+func (q *Queries) RestoreComment(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreComment, id)
+	return err
+}
+
+const restoreLabel = `-- name: RestoreLabel :exec
+UPDATE kanban_label
+SET deleted_at = NULL
+WHERE id = $1
+`
+
+func (q *Queries) RestoreLabel(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreLabel, id)
+	return err
+}
+
+const restoreProject = `-- name: RestoreProject :exec
+UPDATE kanban_project
+SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1
+`
+
+func (q *Queries) RestoreProject(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreProject, id)
+	return err
+}
+
+const restoreSubtask = `-- name: RestoreSubtask :exec
+UPDATE kanban_card_subtask
+SET deleted_at = NULL
+WHERE id = $1
+`
+
+func (q *Queries) RestoreSubtask(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreSubtask, id)
+	return err
+}
+
+const setDoneColumnID = `-- name: SetDoneColumnID :exec
+UPDATE kanban_board
+SET done_column_id = $1, updated_at = CURRENT_TIMESTAMP
+WHERE id = $2 AND deleted_at IS NULL
+`
+
+type SetDoneColumnIDParams struct {
+	DoneColumnID pgtype.Int8 `json:"done_column_id"`
+	ID           int64       `json:"id"`
+}
+
+func (q *Queries) SetDoneColumnID(ctx context.Context, arg SetDoneColumnIDParams) error {
+	_, err := q.db.Exec(ctx, setDoneColumnID, arg.DoneColumnID, arg.ID)
+	return err
+}
+
 const updateBoard = `-- name: UpdateBoard :one
 UPDATE kanban_board
 SET title = $1, position = $2, updated_at = CURRENT_TIMESTAMP
@@ -1955,7 +2286,7 @@ const updateCard = `-- name: UpdateCard :one
 UPDATE kanban_card
 SET title = $1, description = $2, position = $3, due_date = $4, priority = $5, is_archived = $6, archived_at = $7, archived_by_id = $8, completed_at = $9, completed_by_id = $10, column_id = $11, border_color = $12, updated_at = CURRENT_TIMESTAMP
 WHERE id = $13
-RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at
+RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at
 `
 
 type UpdateCardParams struct {
@@ -2008,6 +2339,7 @@ func (q *Queries) UpdateCard(ctx context.Context, arg UpdateCardParams) (KanbanC
 		&i.BorderColor,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -2015,8 +2347,8 @@ func (q *Queries) UpdateCard(ctx context.Context, arg UpdateCardParams) (KanbanC
 const updateColumn = `-- name: UpdateColumn :one
 UPDATE kanban_column
 SET title = $1, header_color = $2, position = $3
-WHERE id = $4
-RETURNING id, title, header_color, position, board_id
+WHERE id = $4 AND deleted_at IS NULL
+RETURNING id, title, header_color, position, board_id, deleted_at
 `
 
 type UpdateColumnParams struct {
@@ -2040,6 +2372,7 @@ func (q *Queries) UpdateColumn(ctx context.Context, arg UpdateColumnParams) (Kan
 		&i.HeaderColor,
 		&i.Position,
 		&i.BoardID,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -2047,8 +2380,8 @@ func (q *Queries) UpdateColumn(ctx context.Context, arg UpdateColumnParams) (Kan
 const updateComment = `-- name: UpdateComment :one
 UPDATE kanban_card_comment
 SET body = $1, updated_at = CURRENT_TIMESTAMP
-WHERE id = $2
-RETURNING id, body, card_id, author_id, created_at, updated_at
+WHERE id = $2 AND deleted_at IS NULL
+RETURNING id, body, card_id, author_id, created_at, updated_at, deleted_at
 `
 
 type UpdateCommentParams struct {
@@ -2066,6 +2399,7 @@ func (q *Queries) UpdateComment(ctx context.Context, arg UpdateCommentParams) (K
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -2146,8 +2480,8 @@ func (q *Queries) UpdateProjectMemberRole(ctx context.Context, arg UpdateProject
 const updateSubtask = `-- name: UpdateSubtask :one
 UPDATE kanban_card_subtask
 SET title = $1, status = $2, position = $3, user_id = $4
-WHERE id = $5
-RETURNING id, title, status, position, card_id, user_id
+WHERE id = $5 AND deleted_at IS NULL
+RETURNING id, title, status, position, card_id, user_id, deleted_at
 `
 
 type UpdateSubtaskParams struct {
@@ -2174,6 +2508,7 @@ func (q *Queries) UpdateSubtask(ctx context.Context, arg UpdateSubtaskParams) (K
 		&i.Position,
 		&i.CardID,
 		&i.UserID,
+		&i.DeletedAt,
 	)
 	return i, err
 }

@@ -14,6 +14,7 @@ type LabelRepositoryInterface interface {
 	GetLabel(ctx context.Context, labelID int64) (*model.Label, error)
 	CreateLabel(ctx context.Context, boardID int64, l *model.Label) (*model.Label, error)
 	DeleteLabel(ctx context.Context, labelID int64) error
+	GetCardIDsByLabel(ctx context.Context, labelID int64) ([]int64, error)
 	ToggleLabel(ctx context.Context, cardID int64, labelID int64) (bool, error)
 }
 
@@ -80,6 +81,10 @@ func (r *LabelRepository) CreateLabel(ctx context.Context, boardID int64, l *mod
 func (r *LabelRepository) DeleteLabel(ctx context.Context, labelID int64) error {
 	queries := dbgen.New(r.Db)
 	return queries.DeleteLabel(ctx, labelID)
+}
+
+func (r *LabelRepository) GetCardIDsByLabel(ctx context.Context, labelID int64) ([]int64, error) {
+	return dbgen.New(r.Db).GetCardIDsByLabel(ctx, labelID)
 }
 
 func (r *LabelRepository) ToggleLabel(ctx context.Context, cardID int64, labelID int64) (bool, error) {

@@ -216,7 +216,7 @@ func (r *CardRepository) CountActiveCardsByBoard(ctx context.Context, boardID in
 		SELECT COUNT(c.id)
 		FROM kanban_card c
 		JOIN kanban_column col ON col.id = c.column_id
-		WHERE col.board_id = $1 AND c.is_archived = FALSE`
+		WHERE col.board_id = $1 AND c.is_archived = FALSE AND c.deleted_at IS NULL AND col.deleted_at IS NULL`
 
 	var count int
 	if err := r.Db.QueryRow(ctx, query, boardID).Scan(&count); err != nil {
@@ -678,7 +678,7 @@ func (r *CardRepository) GetInvolvedUserIDsForNotifications(ctx context.Context,
 	// Get subtask users + card author in one round-trip (raw to avoid missing sqlc query).
 	// Dedup is handled by the ids map below, so UNION ALL is enough.
 	rows, err := r.Db.Query(ctx, `
-		SELECT user_id FROM kanban_card_subtask WHERE card_id = $1 AND user_id IS NOT NULL
+		SELECT user_id FROM kanban_card_subtask WHERE card_id = $1 AND user_id IS NOT NULL AND deleted_at IS NULL
 		UNION ALL
 		SELECT created_by_id FROM kanban_card WHERE id = $1 AND created_by_id IS NOT NULL`, cardID)
 	if err != nil {

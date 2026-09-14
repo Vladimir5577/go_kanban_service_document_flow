@@ -35,6 +35,7 @@ type ProjectService struct {
 	userRepo   repository.UserRepositoryInterface
 	permSvc    *PermissionService
 	cfg        *config.Config
+	History    HistoryLogger
 }
 
 func NewProjectService(
@@ -113,6 +114,13 @@ func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjec
 		return nil, apperr.New(apperr.CodeProjectCreateFailed, "project create failed")
 	}
 	created.EntryBoardID = &board.ID
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   created.ID,
+		Action:      "project.created",
+		EntityType:  "project",
+		EntityID:    created.ID,
+		EntityTitle: created.Name,
+	})
 	return created, nil
 }
 
@@ -231,6 +239,7 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.Up
 	if err != nil {
 		return nil, withNotFoundCode(err, apperr.CodeProjectNotFound)
 	}
+	oldName, oldDesc := p.Name, p.Description
 	if req.Name == nil && req.Description == nil {
 		return nil, apperr.New(apperr.CodeUpdateFieldsRequired, "update fields required")
 	}
@@ -243,7 +252,31 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.Up
 	if req.Description != nil {
 		p.Description = req.Description
 	}
-	return s.repo.UpdateProject(ctx, p)
+	updated, err := s.repo.UpdateProject(ctx, p)
+	if err == nil && updated != nil {
+		nameChanged := updated.Name != oldName
+		descChanged := historyText(oldDesc) != historyText(updated.Description)
+		action := "project.updated"
+		before, after := "", ""
+		switch {
+		case nameChanged && !descChanged:
+			action = "project.updated.renamed"
+			before, after = oldName, updated.Name
+		case descChanged && !nameChanged:
+			action = "project.updated.description"
+			before, after = historyText(oldDesc), historyText(updated.Description)
+		}
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   id,
+			Action:      action,
+			EntityType:  "project",
+			EntityID:    id,
+			EntityTitle: updated.Name,
+			Before:      before,
+			After:       after,
+		})
+	}
+	return updated, err
 }
 
 func (s *ProjectService) MoveProject(ctx context.Context, id int64, req dto.MoveProjectRequest) (*dto.MoveProjectResponse, error) {
@@ -335,6 +368,12 @@ func (s *ProjectService) DeleteProject(ctx context.Context, id int64) error {
 		}
 		return err
 	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  id,
+		Action:     "project.deleted",
+		EntityType: "project",
+		EntityID:   id,
+	})
 	return nil
 }
 

@@ -20,18 +20,17 @@ type SubtaskServiceInterface interface {
 type SubtaskService struct {
 	repo              repository.SubtaskRepositoryInterface
 	permSvc           *PermissionService
-	activityRepo      repository.ActivityRepositoryInterface
 	userRepo          repository.UserRepositoryInterface
 	projectRepo       repository.ProjectRepositoryInterface
 	projectMemberRepo repository.ProjectMemberRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
 	notificationSvc   *KanbanNotificationService
+	History           HistoryLogger
 }
 
 func NewSubtaskService(
 	repo repository.SubtaskRepositoryInterface,
 	permSvc *PermissionService,
-	activityRepo repository.ActivityRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
 	projectRepo repository.ProjectRepositoryInterface,
 	projectMemberRepo repository.ProjectMemberRepositoryInterface,
@@ -41,7 +40,6 @@ func NewSubtaskService(
 	return &SubtaskService{
 		repo:              repo,
 		permSvc:           permSvc,
-		activityRepo:      activityRepo,
 		userRepo:          userRepo,
 		projectRepo:       projectRepo,
 		projectMemberRepo: projectMemberRepo,
@@ -94,7 +92,14 @@ func (s *SubtaskService) CreateSubtask(ctx context.Context, cardID int64, req dt
 	}
 	st, err = s.repo.CreateSubtask(ctx, cardID, st)
 	if err == nil {
-		s.logActivity(ctx, cardID, "subtask_added", nil, &req.Title)
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   projectID,
+			Action:      "subtask.created",
+			EntityType:  "subtask",
+			EntityID:    st.ID,
+			CardID:      cardID,
+			EntityTitle: st.Title,
+		})
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 				patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, cardID)
@@ -125,12 +130,10 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 		return nil, apperr.New(apperr.CodeSubtaskNotFound, "subtask not found")
 	}
 
-	var oldIsCompleted bool
-	if st.Status == "done" {
-		oldIsCompleted = true
-	}
+	prevTitle := st.Title
+	oldPos := st.Position
+	oldIsCompleted := st.Status == "done"
 	oldUserID := st.UserID
-
 	if req.Title != nil {
 		st.Title = *req.Title
 	}
@@ -164,17 +167,31 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 		}
 	}
 	if err == nil && updatedSt != nil {
-		var newIsCompleted bool
-		if updatedSt.Status == "done" {
-			newIsCompleted = true
-		}
+		newIsCompleted := updatedSt.Status == "done"
+		titleChanged := prevTitle != updatedSt.Title
+		statusChanged := oldIsCompleted != newIsCompleted
+		posChanged := oldPos != updatedSt.Position
+		assigneeChanged := req.HasUserID && !sameOptionalID(oldUserID, updatedSt.UserID)
 
-		if oldIsCompleted != newIsCompleted {
-			if newIsCompleted {
-				s.logActivity(ctx, updatedSt.CardID, "subtask_completed", nil, &updatedSt.Title)
-			} else {
-				s.logActivity(ctx, updatedSt.CardID, "subtask_reopened", nil, &updatedSt.Title)
-			}
+		action, before, after := subtaskUpdateAction(subtaskUpdateSummary{
+			titleChanged: titleChanged, prevTitle: prevTitle, newTitle: updatedSt.Title,
+			statusChanged:   statusChanged, nowCompleted: newIsCompleted,
+			posChanged:      posChanged, oldPos: oldPos, newPos: updatedSt.Position,
+			assigneeChanged: assigneeChanged, oldUserID: oldUserID, newUserID: updatedSt.UserID,
+		})
+
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   projectID,
+			Action:      action,
+			EntityType:  "subtask",
+			EntityID:    subtaskID,
+			CardID:      cardID,
+			EntityTitle: updatedSt.Title,
+			Before:      before,
+			After:       after,
+		})
+
+		if statusChanged {
 			if s.realtimePublisher != nil {
 				s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 					patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, updatedSt.CardID)
@@ -187,15 +204,6 @@ func (s *SubtaskService) UpdateSubtask(ctx context.Context, cardID int64, subtas
 		}
 
 		if req.HasUserID && !sameOptionalID(oldUserID, updatedSt.UserID) {
-			if oldUserID != nil {
-				oldValue := s.subtaskAssigneeActivityValue(ctx, *oldUserID, updatedSt.Title)
-				s.logActivity(ctx, updatedSt.CardID, "subtask_unassigned", &oldValue, nil)
-			}
-			if updatedSt.UserID != nil {
-				newValue := s.subtaskAssigneeActivityValue(ctx, *updatedSt.UserID, updatedSt.Title)
-				s.logActivity(ctx, updatedSt.CardID, "subtask_assigned", nil, &newValue)
-			}
-
 			// Notification for subtask assignment
 			if s.notificationSvc != nil && updatedSt.UserID != nil {
 				actorID := derefInt64(currentUserID(ctx))
@@ -239,7 +247,14 @@ func (s *SubtaskService) DeleteSubtask(ctx context.Context, cardID int64, subtas
 
 	err = s.repo.DeleteSubtask(ctx, subtaskID)
 	if err == nil {
-		s.logActivity(ctx, st.CardID, "subtask_removed", &st.Title, nil)
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   projectID,
+			Action:      "subtask.deleted",
+			EntityType:  "subtask",
+			EntityID:    subtaskID,
+			CardID:      cardID,
+			EntityTitle: st.Title,
+		})
 		if s.realtimePublisher != nil {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 				patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, st.CardID)
@@ -336,21 +351,6 @@ func (s *SubtaskService) ensureSubtaskAssignee(ctx context.Context, projectID in
 	}
 
 	return nil
-}
-
-func (s *SubtaskService) logActivity(ctx context.Context, cardID int64, action string, oldValue, newValue *string) {
-	_ = s.activityRepo.LogActivity(ctx, cardID, currentUserID(ctx), action, oldValue, newValue)
-}
-
-func (s *SubtaskService) subtaskAssigneeActivityValue(ctx context.Context, userID int64, subtaskTitle string) string {
-	name := ""
-	if users, err := s.userRepo.GetUsersByIDs(ctx, []int64{userID}); err == nil && len(users) > 0 {
-		name = dto.UserDisplayName(users[0])
-	}
-	if name == "" {
-		name = "Пользователь"
-	}
-	return name + " (подзадача: " + subtaskTitle + ")"
 }
 
 func sameOptionalID(a, b *int64) bool {

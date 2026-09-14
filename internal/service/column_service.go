@@ -37,9 +37,7 @@ var allowedColumnColors = map[string]struct{}{
 
 type ColumnServiceInterface interface {
 	CreateColumn(ctx context.Context, projectID int64, boardID int64, req dto.CreateColumnRequest) (*model.Column, error)
-	// UpdateColumn возвращает обновлённую колонку и, если смена позиции вызвала
-	// ребалансировку доски, все её колонки с новыми позициями (иначе nil).
-	UpdateColumn(ctx context.Context, projectID int64, boardID int64, columnID int64, req dto.UpdateColumnRequest) (*model.Column, []model.Column, error)
+	UpdateColumn(ctx context.Context, projectID int64, boardID int64, columnID int64, req dto.UpdateColumnRequest) (*model.Column, error)
 	DeleteColumn(ctx context.Context, projectID int64, boardID int64, columnID int64) error
 }
 
@@ -47,6 +45,7 @@ type ColumnService struct {
 	repo      repository.ColumnRepositoryInterface
 	permSvc   *PermissionService
 	boardRepo repository.BoardRepositoryInterface
+	History   HistoryLogger
 }
 
 func NewColumnService(repo repository.ColumnRepositoryInterface, permSvc *PermissionService, boardRepo repository.BoardRepositoryInterface) *ColumnService {
@@ -84,21 +83,32 @@ func (s *ColumnService) CreateColumn(ctx context.Context, projectID int64, board
 		Position:    position,
 		BoardID:     boardID,
 	}
-	return s.repo.CreateColumn(ctx, boardID, c)
+	created, err := s.repo.CreateColumn(ctx, boardID, c)
+	if err == nil && created != nil {
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   projectID,
+			Action:      "column.created",
+			EntityType:  "column",
+			EntityID:    created.ID,
+			EntityTitle: created.Title,
+		})
+	}
+	return created, err
 }
 
-func (s *ColumnService) UpdateColumn(ctx context.Context, projectID int64, boardID int64, columnID int64, req dto.UpdateColumnRequest) (*model.Column, []model.Column, error) {
+func (s *ColumnService) UpdateColumn(ctx context.Context, projectID int64, boardID int64, columnID int64, req dto.UpdateColumnRequest) (*model.Column, error) {
 	if _, err := s.resolveBoard(ctx, projectID, boardID); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	c, err := s.getColumnInBoard(ctx, boardID, columnID)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	oldTitle, oldColor, oldPos := c.Title, c.HeaderColor, c.Position
 
 	title := ""
 	hasTitle := false
@@ -109,46 +119,53 @@ func (s *ColumnService) UpdateColumn(ctx context.Context, projectID int64, board
 	hasHeaderColor := req.HeaderColor != nil
 	hasPosition := req.Position != nil
 	if !hasTitle && !hasHeaderColor && !hasPosition {
-		return nil, nil, apperr.New(apperr.CodeUpdateFieldsRequired, "update fields required")
+		return nil, apperr.New(apperr.CodeUpdateFieldsRequired, "update fields required")
 	}
 
-	if hasTitle {
-		c.Title = title
-	}
+	titleChanged := hasTitle && title != oldTitle
+	colorChanged := false
 	if hasHeaderColor {
 		if color, ok := normalizeColumnColorForUpdate(*req.HeaderColor); ok {
+			colorChanged = color != oldColor
 			c.HeaderColor = color
 		}
+	}
+	if hasTitle {
+		c.Title = title
 	}
 	if hasPosition {
 		c.Position = *req.Position
 	}
-
 	updated, err := s.repo.UpdateColumn(ctx, c)
-	if err != nil || !hasPosition {
-		return updated, nil, err
+	if err == nil && updated != nil {
+		posChanged := hasPosition && updated.Position != oldPos
+		if !titleChanged && !colorChanged && !posChanged {
+			return updated, err
+		}
+		action := "column.updated"
+		before, after := "", ""
+		switch {
+		case titleChanged && !colorChanged && !posChanged:
+			action = "column.updated.renamed"
+			before, after = oldTitle, title
+		case colorChanged && !titleChanged && !posChanged:
+			action = "column.updated.color"
+			before, after = oldColor, c.HeaderColor
+		case posChanged && !titleChanged && !colorChanged:
+			action = "column.updated.moved"
+			before, after = historyPos(oldPos), historyPos(updated.Position)
+		}
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   projectID,
+			Action:      action,
+			EntityType:  "column",
+			EntityID:    columnID,
+			EntityTitle: updated.Title,
+			Before:      before,
+			After:       after,
+		})
 	}
-
-	// Позиция менялась — проверяем, не слиплись ли соседи после вставки.
-	rebalanced, err := s.repo.RebalanceBoardColumns(ctx, boardID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !rebalanced {
-		return updated, nil, nil
-	}
-
-	// Перенумерация переписала позиции всей доски: перечитываем и колонку, и список,
-	// иначе у клиента останется позиция, которой в базе уже нет.
-	updated, err = s.repo.GetColumn(ctx, columnID)
-	if err != nil {
-		return nil, nil, err
-	}
-	columns, err := s.repo.GetColumnsByBoard(ctx, boardID)
-	if err != nil {
-		return nil, nil, err
-	}
-	return updated, columns, nil
+	return updated, err
 }
 
 func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, boardID int64, columnID int64) error {
@@ -158,7 +175,8 @@ func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, board
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return err
 	}
-	if _, err := s.getColumnInBoard(ctx, boardID, columnID); err != nil {
+	col, err := s.getColumnInBoard(ctx, boardID, columnID)
+	if err != nil {
 		return err
 	}
 
@@ -178,6 +196,14 @@ func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, board
 		}
 		return err
 	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   projectID,
+		Action:      "column.deleted",
+		EntityType:  "column",
+		EntityID:    columnID,
+		EntityTitle: col.Title,
+		EntityLink:  historyBoardPath(projectID, boardID),
+	})
 	return nil
 }
 

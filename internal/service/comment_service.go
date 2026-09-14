@@ -31,6 +31,7 @@ type CommentService struct {
 	userRepo          repository.UserRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
 	notificationSvc   *KanbanNotificationService
+	History           HistoryLogger
 }
 
 func NewCommentService(
@@ -118,6 +119,13 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 		return nil, err
 	}
 	s.populateAuthorName(ctx, created)
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  projectID,
+		Action:     "comment.created",
+		EntityType: "comment",
+		EntityID:   created.ID,
+		CardID:     cardID,
+	})
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, cardID)
@@ -169,6 +177,7 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 	if req.Body == nil {
 		return nil, apperr.New(apperr.CodeCommentBodyRequired, "comment body required")
 	}
+	oldBody := c.Body
 	body, err := normalizeCommentBody(*req.Body)
 	if err != nil {
 		return nil, err
@@ -180,6 +189,15 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 		return nil, err
 	}
 	s.populateAuthorName(ctx, updated)
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  projectID,
+		Action:     "comment.updated",
+		EntityType: "comment",
+		EntityID:   commentID,
+		CardID:     cardID,
+		Before:     oldBody,
+		After:      body,
+	})
 	return updated, nil
 }
 
@@ -211,6 +229,13 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 	if err := s.repo.DeleteComment(ctx, commentID); err != nil {
 		return err
 	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:  projectID,
+		Action:     "comment.deleted",
+		EntityType: "comment",
+		EntityID:   commentID,
+		CardID:     cardID,
+	})
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, cardID)

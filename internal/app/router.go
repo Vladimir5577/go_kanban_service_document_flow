@@ -39,6 +39,8 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 			r.Patch("/{id}", h.Project.UpdateProject())
 			r.Patch("/{id}/move", h.Project.MoveProject())
 			r.Delete("/{id}", h.Project.DeleteProject())
+			r.Get("/{id}/history", h.History.List())
+			r.Post("/{id}/undo", h.History.Undo())
 
 			// PROJECT MEMBERS
 			r.Route("/{id}/members", func(r chi.Router) {
@@ -80,6 +82,7 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 		// CARDS
 		r.Route("/spa/api/kanban/cards", func(r chi.Router) {
 			r.Post("/", h.Card.CreateCard())
+			r.Post("/{id}/duplicate", h.Card.DuplicateCard())
 			r.Get("/{id}/standalone", h.Card.GetCardStandalone())
 			r.Get("/{id}", h.Card.GetCard())
 			r.Patch("/{id}", h.Card.UpdateCard())
@@ -114,10 +117,7 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 				r.Delete("/{id}", h.Attachment.DeleteAttachment())
 			})
 
-			// ACTIVITIES
-			r.Route("/{cardId}/activities", func(r chi.Router) {
-				r.Get("/", h.Activity.GetActivities())
-			})
+			r.Get("/{cardId}/history", h.History.ListByCard())
 		})
 	})
 
