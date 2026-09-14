@@ -45,6 +45,7 @@ type CardMove struct {
 	ID           int64
 	Title        string
 	FromColumnID int64
+	FromPosition float64
 	ToColumnID   int64
 	Position     float64
 	UpdatedAt    time.Time

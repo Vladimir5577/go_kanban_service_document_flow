@@ -603,11 +603,12 @@ func (r *CardRepository) columnCardPositions(ctx context.Context, columnID int64
 func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.CardMove, error) {
 	move := &model.CardMove{ID: id, ToColumnID: columnID}
 
-	// 1. Исходная колонка и заголовок — всё, что от карточки нужно перемещению.
-	// Заголовок уедет в уведомление о смене колонки.
+	// 1. Исходная колонка, позиция и заголовок — всё, что от карточки нужно
+	// перемещению. Заголовок уедет в уведомление о смене колонки, позиция — в
+	// историю как Before.
 	if err := r.Db.QueryRow(ctx, `
-		SELECT column_id, title FROM kanban_card WHERE id = $1
-	`, id).Scan(&move.FromColumnID, &move.Title); err != nil {
+		SELECT column_id, position, title FROM kanban_card WHERE id = $1
+	`, id).Scan(&move.FromColumnID, &move.FromPosition, &move.Title); err != nil {
 		return nil, NormalizeError(err)
 	}
 

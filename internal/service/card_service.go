@@ -28,7 +28,7 @@ type CardServiceInterface interface {
 	UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error
-	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error)
+	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.CardMove, error)
 	ArchiveCard(ctx context.Context, id int64) error
 	CompleteCard(ctx context.Context, id int64) (*model.Card, error)
 }
@@ -163,14 +163,17 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 		}
 
 		// Notifications via unified service
-		projectID, _ := s.permSvc.GetProjectIDByColumn(ctx, req.ColumnID)
-		actorID := currentUserID(ctx)
 		if s.notificationSvc != nil {
-			s.notificationSvc.NotifyCardCreated(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), created.Title)
+			actorID := derefInt64(currentUserID(ctx))
+			runDetached(ctx, notifyTimeout, "failed to notify kanban card created", func(ctx context.Context) error {
+				projectID, _ := s.permSvc.GetProjectIDByColumn(ctx, req.ColumnID)
+				s.notificationSvc.NotifyCardCreated(ctx, projectID, column.BoardID, created.ID, actorID, created.Title)
 
-			for _, aid := range created.AssigneeIDs {
-				s.notificationSvc.NotifyTaskAssigned(ctx, projectID, column.BoardID, created.ID, derefInt64(actorID), aid, created.Title, false)
-			}
+				for _, aid := range created.AssigneeIDs {
+					s.notificationSvc.NotifyTaskAssigned(ctx, projectID, column.BoardID, created.ID, actorID, aid, created.Title, false)
+				}
+				return nil
+			})
 		}
 	}
 	return created, err
@@ -701,12 +704,18 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 
 		// Notify assignee
 		if s.notificationSvc != nil && len(userIDs) > 0 {
-			projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
-			card, _ := s.repo.GetCard(ctx, id)
-			actorID := currentUserID(ctx)
+			actorID := derefInt64(currentUserID(ctx))
 			newAssignee := userIDs[0]
-			// board may be resolved inside if not passed; here we don't have column loaded cheaply
-			s.notificationSvc.NotifyTaskAssigned(ctx, projectID, 0, id, derefInt64(actorID), newAssignee, card.Title, false)
+			runDetached(ctx, notifyTimeout, "failed to notify kanban task assigned", func(ctx context.Context) error {
+				projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
+				card, err := s.repo.GetCard(ctx, id)
+				if err != nil {
+					return err
+				}
+				// board may be resolved inside if not passed; here we don't have column loaded cheaply
+				s.notificationSvc.NotifyTaskAssigned(ctx, projectID, 0, id, actorID, newAssignee, card.Title, false)
+				return nil
+			})
 		}
 	}
 	return err
@@ -743,57 +752,48 @@ func (s *CardService) validateProjectAssignees(ctx context.Context, projectID in
 	return nil
 }
 
-func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.Card, error) {
+func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.CardMove, error) {
 	if columnID == 0 {
 		return nil, apperr.New(apperr.CodeColumnIDAndPositionRequired, "column_id and position required")
 	}
 
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
+	// Один запрос вместо GetProjectIDByCard + RequireRole: заодно отдаёт проект,
+	// доску и заголовок исходной колонки — читать её отдельно больше не нужно.
+	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return nil, err
 	}
 
-	cardBefore, err := s.repo.GetCard(ctx, id)
-	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
-	}
-	sourceColumn, err := s.columnRepo.GetColumn(ctx, cardBefore.ColumnID)
-	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
-	}
 	targetColumn, err := s.columnRepo.GetColumn(ctx, columnID)
 	if err != nil {
 		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
-	if targetColumn.BoardID != sourceColumn.BoardID {
+	if targetColumn.BoardID != acc.BoardID {
 		return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
 	}
 
-	columnChanged := cardBefore.ColumnID != columnID
-
-	oldPos := cardBefore.Position
-	oldCol := cardBefore.ColumnID
-	card, err := s.repo.MoveCard(ctx, id, columnID, position)
-	if err == nil {
-		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:   projectID,
-			Action:      "card.moved",
-			EntityType:  "card",
-			EntityID:    id,
-			CardID:      id,
-			EntityTitle: cardBefore.Title,
-			Before:      historyPlacement(oldCol, oldPos),
-			After:       historyPlacement(columnID, card.Position),
-		})
+	move, err := s.repo.MoveCard(ctx, id, columnID, position)
+	if err != nil {
+		return nil, err
 	}
-	if err == nil && s.realtimePublisher != nil {
+	columnChanged := move.FromColumnID != columnID
+
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   acc.ProjectID,
+		Action:      "card.moved",
+		EntityType:  "card",
+		EntityID:    id,
+		CardID:      id,
+		EntityTitle: move.Title,
+		Before:      historyPlacement(move.FromColumnID, move.FromPosition),
+		After:       historyPlacement(columnID, move.Position),
+	})
+
+	if s.realtimePublisher != nil {
 		patch := map[string]any{
-			"id":        card.ID,
-			"position":  card.Position,
-			"updatedAt": formatRealtimeTimeValue(card.UpdatedAt),
+			"id":        move.ID,
+			"position":  move.Position,
+			"updatedAt": formatRealtimeTimeValue(move.UpdatedAt),
 		}
 		if columnChanged {
 			patch["columnId"] = targetColumn.ID
@@ -801,19 +801,45 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 			patch["status"] = strconv.FormatInt(targetColumn.ID, 10)
 		}
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			return s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, patch, realtimeSenderID(ctx))
+			senderID := realtimeSenderID(ctx)
+			if err := s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, patch, senderID); err != nil {
+				return err
+			}
+			// Ребалансировка переписала позиции всей колонки — досылаем их соседям,
+			// иначе у чужих вкладок останутся старые позиции и следующее перетаскивание
+			// оттуда посчитает позицию по числам, которых в базе уже нет.
+			// На обычном перемещении Rebalanced == nil и цикл не выполняется.
+			//
+			// ponytail: по сообщению на карточку, весь цикл под общим mercurePublishTimeout.
+			// При большой колонке хвост может не уйти — отдельное событие с массивом позиций,
+			// если упрёшься (нужен новый обработчик на фронте).
+			for _, c := range move.Rebalanced {
+				if c.ID == move.ID {
+					continue // уже ушла патчем выше, вместе с колонкой и статусом
+				}
+				if err := s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, map[string]any{
+					"id":        c.ID,
+					"position":  c.Position,
+					"updatedAt": formatRealtimeTimeValue(c.UpdatedAt),
+				}, senderID); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 	}
 
 	// Notify on column change (moved)
 	if columnChanged && s.notificationSvc != nil {
-		projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
-		actorID := currentUserID(ctx)
-		// source and target are guaranteed to be on the same board
-		s.notificationSvc.NotifyTaskMoved(ctx, projectID, sourceColumn.BoardID, id, derefInt64(actorID), card.Title, sourceColumn.Title, targetColumn.Title)
+		actorID := derefInt64(currentUserID(ctx))
+		runDetached(ctx, notifyTimeout, "failed to notify kanban task moved", func(ctx context.Context) error {
+			// source and target are guaranteed to be on the same board
+			s.notificationSvc.NotifyTaskMoved(ctx, acc.ProjectID, acc.BoardID, id, actorID, move.Title, acc.ColumnTitle, targetColumn.Title)
+			return nil
+		})
 	}
 
-	return card, err
+	return move, nil
 }
 
 func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
@@ -842,18 +868,54 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 		card.ArchivedByID = currentUserID(ctx)
 	}
 
-	_, err = s.repo.UpdateCard(ctx, card)
-	if err == nil {
-		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:   projectID,
-			Action:      action,
-			EntityType:  "card",
-			EntityID:    id,
-			CardID:      id,
-			EntityTitle: card.Title,
+	updated, err := s.repo.UpdateCard(ctx, card)
+	if err != nil {
+		return err
+	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   projectID,
+		Action:      action,
+		EntityType:  "card",
+		EntityID:    id,
+		CardID:      id,
+		EntityTitle: card.Title,
+	})
+
+	// Архивация убирает карточку с доски, восстановление возвращает её обратно.
+	// Без события у чужих вкладок она висит (или не появляется) до перезагрузки.
+	if s.realtimePublisher != nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			column, err := s.columnRepo.GetColumn(ctx, updated.ColumnID)
+			if err != nil {
+				return err
+			}
+			senderID := realtimeSenderID(ctx)
+			if updated.IsArchived {
+				return s.realtimePublisher.PublishCardDeleted(ctx, column.BoardID, updated.ID, senderID)
+			}
+
+			// Восстановленная карточка, в отличие от новой, не пустая: BuildCreatedCard
+			// обнуляет метки, исполнителей и счётчики — дозаполняем готовыми билдерами.
+			created := s.realtimePublisher.BuildCreatedCard(updated, column)
+			created["updatedAt"] = formatRealtimeTimeValue(updated.UpdatedAt)
+			for _, build := range []func(context.Context, int64) (map[string]any, error){
+				s.realtimePublisher.BuildLabels,
+				s.realtimePublisher.BuildAssignees,
+				s.realtimePublisher.BuildChecklistCounters,
+				s.realtimePublisher.BuildCommentsCount,
+			} {
+				patch, err := build(ctx, updated.ID)
+				if err != nil {
+					return err
+				}
+				for key, value := range patch {
+					created[key] = value
+				}
+			}
+			return s.realtimePublisher.PublishCardCreated(ctx, column.BoardID, created, senderID)
 		})
 	}
-	return err
+	return nil
 }
 
 func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, error) {
@@ -907,7 +969,11 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 					pos = dest[0].Position / 2
 				}
 				if moved, moveErr := s.repo.MoveCard(ctx, id, *board.DoneColumnID, pos); moveErr == nil && moved != nil {
-					updated = moved
+					// MoveCard отдаёт только изменённое — переносим в карточку,
+					// которую отдаём наружу и шлём в realtime.
+					updated.ColumnID = moved.ToColumnID
+					updated.Position = moved.Position
+					updated.UpdatedAt = moved.UpdatedAt
 					appendHistory(s.History, ctx, model.HistoryWrite{
 						ProjectID:   projectID,
 						Action:      "card.moved",
