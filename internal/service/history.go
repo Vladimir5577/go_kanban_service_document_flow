@@ -91,54 +91,6 @@ func historyIDsJSON(ids []int64) string {
 	return string(b)
 }
 
-type subtaskUpdateSummary struct {
-	titleChanged    bool
-	prevTitle       string
-	newTitle        string
-	statusChanged   bool
-	nowCompleted    bool
-	posChanged      bool
-	oldPos          float64
-	newPos          float64
-	assigneeChanged bool
-	oldUserID       *int64
-	newUserID       *int64
-}
-
-func subtaskUpdateAction(s subtaskUpdateSummary) (action, before, after string) {
-	n := 0
-	if s.titleChanged {
-		n++
-		action, before, after = "subtask.renamed", s.prevTitle, s.newTitle
-	}
-	if s.statusChanged {
-		n++
-		if s.nowCompleted {
-			action = "subtask.completed"
-		} else {
-			action = "subtask.reopened"
-		}
-		before, after = "", ""
-	}
-	if s.posChanged {
-		n++
-		action, before, after = "subtask.moved", historyPos(s.oldPos), historyPos(s.newPos)
-	}
-	if s.assigneeChanged {
-		n++
-		before, after = historyOptID(s.oldUserID), historyOptID(s.newUserID)
-		if s.newUserID != nil {
-			action = "subtask.assigned"
-		} else {
-			action = "subtask.unassigned"
-		}
-	}
-	if n != 1 {
-		return "subtask.updated", "", ""
-	}
-	return action, before, after
-}
-
 func cardFieldAction(title, desc, due, priority, color bool) string {
 	action := ""
 	n := 0

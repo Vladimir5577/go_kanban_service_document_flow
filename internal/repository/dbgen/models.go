@@ -45,12 +45,13 @@ type KanbanCard struct {
 	ArchivedByID  pgtype.Int8        `json:"archived_by_id"`
 	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
 	CompletedByID pgtype.Int8        `json:"completed_by_id"`
-	ColumnID      int64              `json:"column_id"`
+	ColumnID      pgtype.Int8        `json:"column_id"`
 	CreatedByID   pgtype.Int8        `json:"created_by_id"`
 	BorderColor   pgtype.Text        `json:"border_color"`
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	DeletedAt     pgtype.Timestamptz `json:"deleted_at"`
+	ParentID      pgtype.Int8        `json:"parent_id"`
 }
 
 type KanbanCardAssignee struct {
@@ -71,16 +72,6 @@ type KanbanCardComment struct {
 type KanbanCardLabel struct {
 	KanbanCardID  int64 `json:"kanban_card_id"`
 	KanbanLabelID int64 `json:"kanban_label_id"`
-}
-
-type KanbanCardSubtask struct {
-	ID        int64              `json:"id"`
-	Title     string             `json:"title"`
-	Status    string             `json:"status"`
-	Position  float64            `json:"position"`
-	CardID    int64              `json:"card_id"`
-	UserID    pgtype.Int8        `json:"user_id"`
-	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type KanbanColumn struct {

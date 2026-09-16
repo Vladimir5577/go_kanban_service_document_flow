@@ -58,6 +58,9 @@ func (s *CommentService) GetComments(ctx context.Context, cardID int64) ([]model
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
+	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
+		return nil, err
+	}
 	comments, err := s.repo.GetComments(ctx, cardID)
 	if err != nil {
 		return nil, err
@@ -88,6 +91,9 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 		return nil, err
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
+		return nil, err
+	}
+	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
 		return nil, err
 	}
 
@@ -157,6 +163,9 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
+	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
+		return nil, err
+	}
 
 	c, err := s.repo.GetComment(ctx, commentID)
 	if err != nil {
@@ -207,6 +216,9 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 		return err
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
+		return err
+	}
+	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
 		return err
 	}
 

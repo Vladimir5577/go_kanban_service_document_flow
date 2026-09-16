@@ -95,7 +95,8 @@ WHERE id = $1;
 
 -- name: HasCardsByColumn :one
 SELECT EXISTS(
-    SELECT 1 FROM kanban_card WHERE column_id = $1 AND deleted_at IS NULL
+    SELECT 1 FROM kanban_card
+    WHERE column_id = $1 AND parent_id IS NULL AND deleted_at IS NULL
 );
 
 
@@ -109,35 +110,48 @@ WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
 
 -- name: GetCardsByColumn :many
 SELECT * FROM kanban_card
-WHERE column_id = $1 AND is_archived = FALSE AND deleted_at IS NULL
+WHERE column_id = $1 AND parent_id IS NULL AND is_archived = FALSE AND deleted_at IS NULL
 ORDER BY position ASC;
 
 -- name: GetCardsByBoard :many
 SELECT c.* FROM kanban_card c
 JOIN kanban_column col ON col.id = c.column_id
-WHERE col.board_id = $1 AND c.is_archived = FALSE AND c.deleted_at IS NULL AND col.deleted_at IS NULL
+WHERE col.board_id = $1 AND c.parent_id IS NULL AND c.is_archived = FALSE AND c.deleted_at IS NULL AND col.deleted_at IS NULL
 ORDER BY col.position ASC, c.position ASC;
 
+-- name: GetChildCards :many
+SELECT * FROM kanban_card
+WHERE parent_id = $1 AND deleted_at IS NULL
+ORDER BY position ASC;
+
+-- name: GetChildCountsByParentIDs :many
+SELECT parent_id,
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE completed_at IS NOT NULL) AS done
+FROM kanban_card
+WHERE parent_id = ANY($1::bigint[]) AND deleted_at IS NULL
+GROUP BY parent_id;
+
 -- name: CreateCard :one
-INSERT INTO kanban_card (title, description, position, due_date, priority, column_id, created_by_id, border_color)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO kanban_card (title, description, position, due_date, priority, column_id, parent_id, created_by_id, border_color)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
 
 -- name: UpdateCard :one
 UPDATE kanban_card
-SET title = $1, description = $2, position = $3, due_date = $4, priority = $5, is_archived = $6, archived_at = $7, archived_by_id = $8, completed_at = $9, completed_by_id = $10, column_id = $11, border_color = $12, updated_at = CURRENT_TIMESTAMP
-WHERE id = $13
+SET title = $1, description = $2, position = $3, due_date = $4, priority = $5, is_archived = $6, archived_at = $7, archived_by_id = $8, completed_at = $9, completed_by_id = $10, column_id = $11, parent_id = $12, border_color = $13, updated_at = CURRENT_TIMESTAMP
+WHERE id = $14
 RETURNING *;
 
 -- name: DeleteCard :exec
 UPDATE kanban_card
 SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-WHERE id = $1 AND deleted_at IS NULL;
+WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1);
 
 -- name: RestoreCard :exec
 UPDATE kanban_card
 SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
-WHERE id = $1;
+WHERE id = $1 OR parent_id = $1;
 
 -- name: HasColumnsByBoard :one
 SELECT EXISTS(
@@ -152,7 +166,7 @@ SELECT EXISTS(
 -- Фильтр тот же, что был у прежней проверки, — только is_archived.
 SELECT EXISTS(
     SELECT 1 FROM kanban_card
-    WHERE column_id = $1 AND id <> $2 AND is_archived = FALSE
+    WHERE column_id = $1 AND parent_id IS NULL AND id <> $2 AND is_archived = FALSE
       AND abs(position - sqlc.arg(position)::double precision) < 0.0001
 );
 
@@ -160,7 +174,7 @@ SELECT EXISTS(
 WITH ranked AS (
   SELECT id, ROW_NUMBER() OVER(ORDER BY position ASC, id ASC) as rn
   FROM kanban_card
-  WHERE kanban_card.column_id = $1 AND kanban_card.is_archived = FALSE AND kanban_card.deleted_at IS NULL
+  WHERE kanban_card.column_id = $1 AND kanban_card.parent_id IS NULL AND kanban_card.is_archived = FALSE AND kanban_card.deleted_at IS NULL
 )
 UPDATE kanban_card
 SET position = ranked.rn * 65536.0
@@ -293,49 +307,6 @@ WHERE id = $1;
 
 
 -- ==============================
--- SUBTASKS
--- ==============================
-
--- name: GetSubtask :one
-SELECT * FROM kanban_card_subtask
-WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
-
--- name: GetSubtasksByCard :many
-SELECT * FROM kanban_card_subtask
-WHERE card_id = $1 AND deleted_at IS NULL
-ORDER BY position ASC;
-
--- name: GetSubtaskCountsByCardIDs :many
-SELECT card_id,
-       COUNT(*) AS total,
-       COUNT(*) FILTER (WHERE LOWER(status) = 'done') AS done
-FROM kanban_card_subtask
-WHERE card_id = ANY($1::bigint[]) AND deleted_at IS NULL
-GROUP BY card_id;
-
--- name: CreateSubtask :one
-INSERT INTO kanban_card_subtask (title, status, position, card_id, user_id)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING *;
-
--- name: UpdateSubtask :one
-UPDATE kanban_card_subtask
-SET title = $1, status = $2, position = $3, user_id = $4
-WHERE id = $5 AND deleted_at IS NULL
-RETURNING *;
-
--- name: DeleteSubtask :exec
-UPDATE kanban_card_subtask
-SET deleted_at = CURRENT_TIMESTAMP
-WHERE id = $1 AND deleted_at IS NULL;
-
--- name: RestoreSubtask :exec
-UPDATE kanban_card_subtask
-SET deleted_at = NULL
-WHERE id = $1;
-
-
--- ==============================
 -- ATTACHMENTS
 -- ==============================
 
@@ -433,14 +404,6 @@ SELECT b.kanban_project_id FROM kanban_column c
 JOIN kanban_board b ON c.board_id = b.id
 WHERE c.id = $1;
 
--- name: GetProjectIDBySubtask :one
-SELECT b.kanban_project_id as project_id
-FROM kanban_card_subtask s
-JOIN kanban_card c ON s.card_id = c.id
-JOIN kanban_column col ON c.column_id = col.id
-JOIN kanban_board b ON col.board_id = b.id
-WHERE s.id = $1;
-
 -- name: GetProjectIDByLabel :one
 SELECT b.kanban_project_id as project_id
 FROM kanban_label l
@@ -449,7 +412,8 @@ WHERE l.id = $1;
 
 -- name: GetProjectIDByCard :one
 SELECT b.kanban_project_id FROM kanban_card card
-JOIN kanban_column c ON card.column_id = c.id
+LEFT JOIN kanban_card parent ON parent.id = card.parent_id
+JOIN kanban_column c ON c.id = COALESCE(card.column_id, parent.column_id)
 JOIN kanban_board b ON c.board_id = b.id
 WHERE card.id = $1;
 
@@ -471,9 +435,11 @@ SELECT
     col.title AS column_title,
     p.owner_id,
     p.deleted_at AS project_deleted_at,
-    pu.role AS member_role
+    pu.role AS member_role,
+    card.parent_id AS parent_id
 FROM kanban_card card
-JOIN kanban_column col ON card.column_id = col.id
+LEFT JOIN kanban_card parent ON parent.id = card.parent_id
+JOIN kanban_column col ON col.id = COALESCE(card.column_id, parent.column_id)
 JOIN kanban_board b ON col.board_id = b.id
 JOIN kanban_project p ON b.kanban_project_id = p.id
 LEFT JOIN kanban_project_user pu
@@ -486,156 +452,268 @@ WHERE kanban_project_id = $1 AND user_id = $2;
 
 
 -- ==============================
--- ASSIGNED TO ME (мои задачи / подзадачи)
+-- TASK LIST
 -- ==============================
 
--- name: GetAssignedCardsOpen :many
+-- name: CountTasks :one
+SELECT COUNT(*)::bigint AS count
+FROM kanban_card c
+LEFT JOIN kanban_card parent ON parent.id = c.parent_id
+JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
+JOIN kanban_board b ON b.id = col.board_id
+JOIN kanban_project p ON p.id = b.kanban_project_id
+WHERE c.deleted_at IS NULL
+  AND (parent.id IS NULL OR parent.deleted_at IS NULL)
+  AND col.deleted_at IS NULL
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = sqlc.arg(viewer_id)
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = sqlc.arg(viewer_id)
+      )
+  )
+  AND (sqlc.arg(title_query)::text = '' OR c.title ILIKE '%' || sqlc.arg(title_query) || '%' ESCAPE '\')
+  AND (sqlc.arg(project_id)::bigint = 0 OR p.id = sqlc.arg(project_id))
+  AND (
+      sqlc.arg(priority)::text = ''
+      OR (sqlc.arg(priority) = 'none' AND c.priority IS NULL)
+      OR (sqlc.arg(priority) <> 'none' AND c.priority = sqlc.arg(priority))
+  )
+  AND (
+      sqlc.arg(author_id)::bigint = 0
+      OR (sqlc.arg(author_id) < 0 AND c.created_by_id IS NULL)
+      OR (sqlc.arg(author_id) > 0 AND c.created_by_id = sqlc.arg(author_id))
+  )
+  AND (
+      sqlc.arg(assignee_id)::bigint = 0
+      OR (
+          sqlc.arg(assignee_id) < 0
+          AND NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)
+      )
+      OR (
+          sqlc.arg(assignee_id) > 0
+          AND EXISTS (
+              SELECT 1 FROM kanban_card_assignee ca
+              WHERE ca.card_id = c.id AND ca.user_id = sqlc.arg(assignee_id)
+          )
+      )
+  )
+  AND (
+      sqlc.arg(completed)::text = ''
+      OR (c.completed_at IS NOT NULL) = (sqlc.arg(completed) = 'true')
+  )
+  AND (
+      sqlc.arg(archived)::text = ''
+      OR (
+          CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END
+      ) = (sqlc.arg(archived) = 'true')
+  )
+  AND (
+      sqlc.arg(kind)::text = ''
+      OR (sqlc.arg(kind) = 'task' AND c.parent_id IS NULL)
+      OR (sqlc.arg(kind) = 'subtask' AND c.parent_id IS NOT NULL)
+  )
+  AND (sqlc.narg('due_from')::timestamptz IS NULL OR c.due_date >= sqlc.narg('due_from'))
+  AND (sqlc.narg('due_to')::timestamptz IS NULL OR c.due_date < sqlc.narg('due_to'))
+  AND (sqlc.narg('created_from')::timestamptz IS NULL OR c.created_at >= sqlc.narg('created_from'))
+  AND (sqlc.narg('created_to')::timestamptz IS NULL OR c.created_at < sqlc.narg('created_to'))
+  AND (sqlc.narg('completed_from')::timestamptz IS NULL OR c.completed_at >= sqlc.narg('completed_from'))
+  AND (sqlc.narg('completed_to')::timestamptz IS NULL OR c.completed_at < sqlc.narg('completed_to'))
+  AND (
+      sqlc.narg('archived_from')::timestamptz IS NULL
+      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) >= sqlc.narg('archived_from')
+  )
+  AND (
+      sqlc.narg('archived_to')::timestamptz IS NULL
+      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) < sqlc.narg('archived_to')
+  );
+
+-- name: ListTasks :many
 SELECT
     p.id            AS project_id,
     p.name          AS project_name,
     b.id            AS board_id,
     b.title         AS board_title,
-    b.position      AS board_position,
     col.id          AS column_id,
     col.title       AS column_title,
-    col.position    AS column_position,
     c.id            AS card_id,
     c.title         AS card_title,
     c.priority      AS card_priority,
     c.due_date      AS card_due_date,
     c.border_color  AS card_border_color,
-    c.position      AS card_position
-FROM kanban_card_assignee ca
-JOIN kanban_card    c   ON c.id  = ca.card_id
-JOIN kanban_column  col ON col.id = c.column_id
-JOIN kanban_board   b   ON b.id  = col.board_id
-JOIN kanban_project p   ON p.id  = b.kanban_project_id
-WHERE ca.user_id = $1
-  AND c.completed_at IS NULL
-  AND c.is_archived = FALSE
-  AND c.deleted_at IS NULL
+    c.parent_id     AS parent_id,
+    parent.title    AS parent_title,
+    c.created_at    AS created_at,
+    c.completed_at  AS completed_at,
+    (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END)::timestamptz AS archived_at,
+    (CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END)::bool AS is_archived
+FROM kanban_card c
+LEFT JOIN kanban_card parent ON parent.id = c.parent_id
+JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
+JOIN kanban_board b ON b.id = col.board_id
+JOIN kanban_project p ON p.id = b.kanban_project_id
+WHERE c.deleted_at IS NULL
+  AND (parent.id IS NULL OR parent.deleted_at IS NULL)
   AND col.deleted_at IS NULL
   AND b.deleted_at IS NULL
   AND p.deleted_at IS NULL
   AND (
-      p.owner_id = $1
+      p.owner_id = sqlc.arg(viewer_id)
       OR EXISTS (
           SELECT 1 FROM kanban_project_user pu
           WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1
+            AND pu.user_id = sqlc.arg(viewer_id)
       )
   )
-ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id;
+  AND (sqlc.arg(title_query)::text = '' OR c.title ILIKE '%' || sqlc.arg(title_query) || '%' ESCAPE '\')
+  AND (sqlc.arg(project_id)::bigint = 0 OR p.id = sqlc.arg(project_id))
+  AND (
+      sqlc.arg(priority)::text = ''
+      OR (sqlc.arg(priority) = 'none' AND c.priority IS NULL)
+      OR (sqlc.arg(priority) <> 'none' AND c.priority = sqlc.arg(priority))
+  )
+  AND (
+      sqlc.arg(author_id)::bigint = 0
+      OR (sqlc.arg(author_id) < 0 AND c.created_by_id IS NULL)
+      OR (sqlc.arg(author_id) > 0 AND c.created_by_id = sqlc.arg(author_id))
+  )
+  AND (
+      sqlc.arg(assignee_id)::bigint = 0
+      OR (
+          sqlc.arg(assignee_id) < 0
+          AND NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)
+      )
+      OR (
+          sqlc.arg(assignee_id) > 0
+          AND EXISTS (
+              SELECT 1 FROM kanban_card_assignee ca
+              WHERE ca.card_id = c.id AND ca.user_id = sqlc.arg(assignee_id)
+          )
+      )
+  )
+  AND (
+      sqlc.arg(completed)::text = ''
+      OR (c.completed_at IS NOT NULL) = (sqlc.arg(completed) = 'true')
+  )
+  AND (
+      sqlc.arg(archived)::text = ''
+      OR (
+          CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END
+      ) = (sqlc.arg(archived) = 'true')
+  )
+  AND (
+      sqlc.arg(kind)::text = ''
+      OR (sqlc.arg(kind) = 'task' AND c.parent_id IS NULL)
+      OR (sqlc.arg(kind) = 'subtask' AND c.parent_id IS NOT NULL)
+  )
+  AND (sqlc.narg('due_from')::timestamptz IS NULL OR c.due_date >= sqlc.narg('due_from'))
+  AND (sqlc.narg('due_to')::timestamptz IS NULL OR c.due_date < sqlc.narg('due_to'))
+  AND (sqlc.narg('created_from')::timestamptz IS NULL OR c.created_at >= sqlc.narg('created_from'))
+  AND (sqlc.narg('created_to')::timestamptz IS NULL OR c.created_at < sqlc.narg('created_to'))
+  AND (sqlc.narg('completed_from')::timestamptz IS NULL OR c.completed_at >= sqlc.narg('completed_from'))
+  AND (sqlc.narg('completed_to')::timestamptz IS NULL OR c.completed_at < sqlc.narg('completed_to'))
+  AND (
+      sqlc.narg('archived_from')::timestamptz IS NULL
+      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) >= sqlc.narg('archived_from')
+  )
+  AND (
+      sqlc.narg('archived_to')::timestamptz IS NULL
+      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) < sqlc.narg('archived_to')
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(sort)::text = 'title' AND sqlc.arg(sort_desc)::bool THEN c.title END DESC,
+  CASE WHEN sqlc.arg(sort)::text = 'title' AND NOT sqlc.arg(sort_desc)::bool THEN c.title END ASC,
+  CASE WHEN sqlc.arg(sort)::text = 'createdAt' AND sqlc.arg(sort_desc)::bool THEN c.created_at END DESC,
+  CASE WHEN sqlc.arg(sort)::text = 'createdAt' AND NOT sqlc.arg(sort_desc)::bool THEN c.created_at END ASC,
+  CASE WHEN sqlc.arg(sort)::text = 'completedAt' AND sqlc.arg(sort_desc)::bool THEN c.completed_at END DESC NULLS LAST,
+  CASE WHEN sqlc.arg(sort)::text = 'completedAt' AND NOT sqlc.arg(sort_desc)::bool THEN c.completed_at END ASC NULLS LAST,
+  CASE WHEN sqlc.arg(sort)::text = 'priority' AND sqlc.arg(sort_desc)::bool THEN
+    CASE c.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END
+  END DESC,
+  CASE WHEN sqlc.arg(sort)::text = 'priority' AND NOT sqlc.arg(sort_desc)::bool THEN
+    CASE c.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END
+  END ASC,
+  c.id ASC
+LIMIT sqlc.arg(page_limit)
+OFFSET sqlc.arg(page_offset);
 
--- name: GetAssignedCardsClosed :many
-SELECT
-    p.id            AS project_id,
-    p.name          AS project_name,
-    b.id            AS board_id,
-    b.title         AS board_title,
-    b.position      AS board_position,
-    col.id          AS column_id,
-    col.title       AS column_title,
-    col.position    AS column_position,
-    c.id            AS card_id,
-    c.title         AS card_title,
-    c.priority      AS card_priority,
-    c.due_date      AS card_due_date,
-    c.border_color  AS card_border_color,
-    c.position      AS card_position
-FROM kanban_card_assignee ca
-JOIN kanban_card    c   ON c.id  = ca.card_id
-JOIN kanban_column  col ON col.id = c.column_id
-JOIN kanban_board   b   ON b.id  = col.board_id
-JOIN kanban_project p   ON p.id  = b.kanban_project_id
-WHERE ca.user_id = $1
-  AND c.completed_at IS NOT NULL
-  AND c.is_archived = FALSE
-  AND c.deleted_at IS NULL
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = $1
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1
-      )
-  )
-ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id;
+-- ==============================
+-- TASK COLLABORANTS
+-- ==============================
 
--- name: GetAssignedSubtasksOpen :many
-SELECT
-    s.id       AS subtask_id,
-    s.title    AS subtask_title,
-    s.status   AS subtask_status,
-    s.position AS subtask_position,
-    c.id       AS card_id,
-    c.title    AS card_title,
-    col.id     AS column_id,
-    col.title  AS column_title,
-    b.id       AS board_id,
-    b.title    AS board_title,
-    p.id       AS project_id,
-    p.name     AS project_name
-FROM kanban_card_subtask s
-JOIN kanban_card    c   ON c.id  = s.card_id
-JOIN kanban_column  col ON col.id = c.column_id
-JOIN kanban_board   b   ON b.id  = col.board_id
-JOIN kanban_project p   ON p.id  = b.kanban_project_id
-WHERE s.user_id = $1::bigint
-  AND s.status <> 'done'
-  AND s.deleted_at IS NULL
-  AND c.deleted_at IS NULL
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = $1::bigint
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1::bigint
+-- name: CountTaskCollaborants :one
+WITH visible AS (
+    SELECT p.id, p.owner_id
+    FROM kanban_project p
+    WHERE p.deleted_at IS NULL
+      AND (
+          p.owner_id = sqlc.arg(viewer_id)
+          OR EXISTS (
+              SELECT 1 FROM kanban_project_user pu
+              WHERE pu.kanban_project_id = p.id
+                AND pu.user_id = sqlc.arg(viewer_id)
+          )
       )
-  )
-ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id, s.position, s.id;
+),
+ids AS (
+    SELECT visible.owner_id AS user_id FROM visible
+    UNION
+    SELECT pu.user_id
+    FROM kanban_project_user pu
+    INNER JOIN visible ON visible.id = pu.kanban_project_id
+)
+SELECT COUNT(*)::bigint AS count
+FROM ids
+INNER JOIN users u ON u.id = ids.user_id
+WHERE u.deleted_at IS NULL
+  AND u.id <> sqlc.arg(viewer_id)
+  AND (
+      sqlc.arg(name_query)::text = ''
+      OR u.lastname ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
+      OR u.firstname ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
+      OR u.login ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
+      OR COALESCE(u.patronymic, '') ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
+  );
 
--- name: GetAssignedSubtasksClosed :many
-SELECT
-    s.id       AS subtask_id,
-    s.title    AS subtask_title,
-    s.status   AS subtask_status,
-    s.position AS subtask_position,
-    c.id       AS card_id,
-    c.title    AS card_title,
-    col.id     AS column_id,
-    col.title  AS column_title,
-    b.id       AS board_id,
-    b.title    AS board_title,
-    p.id       AS project_id,
-    p.name     AS project_name
-FROM kanban_card_subtask s
-JOIN kanban_card    c   ON c.id  = s.card_id
-JOIN kanban_column  col ON col.id = c.column_id
-JOIN kanban_board   b   ON b.id  = col.board_id
-JOIN kanban_project p   ON p.id  = b.kanban_project_id
-WHERE s.user_id = $1::bigint
-  AND s.status = 'done'
-  AND s.deleted_at IS NULL
-  AND c.deleted_at IS NULL
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = $1::bigint
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1::bigint
+-- name: ListTaskCollaborants :many
+WITH visible AS (
+    SELECT p.id, p.owner_id
+    FROM kanban_project p
+    WHERE p.deleted_at IS NULL
+      AND (
+          p.owner_id = sqlc.arg(viewer_id)
+          OR EXISTS (
+              SELECT 1 FROM kanban_project_user pu
+              WHERE pu.kanban_project_id = p.id
+                AND pu.user_id = sqlc.arg(viewer_id)
+          )
       )
+),
+ids AS (
+    SELECT visible.owner_id AS user_id FROM visible
+    UNION
+    SELECT pu.user_id
+    FROM kanban_project_user pu
+    INNER JOIN visible ON visible.id = pu.kanban_project_id
+)
+SELECT u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name
+FROM ids
+INNER JOIN users u ON u.id = ids.user_id
+WHERE u.deleted_at IS NULL
+  AND u.id <> sqlc.arg(viewer_id)
+  AND (
+      sqlc.arg(name_query)::text = ''
+      OR u.lastname ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
+      OR u.firstname ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
+      OR u.login ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
+      OR COALESCE(u.patronymic, '') ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
   )
-ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id, s.position, s.id;
+ORDER BY u.lastname ASC, u.firstname ASC, u.id ASC
+LIMIT sqlc.arg(page_limit)
+OFFSET sqlc.arg(page_offset);
 
 -- ==============================
 -- PROJECT HISTORY
@@ -659,6 +737,7 @@ SELECT
     j.entity_link,
     j.payload,
     j.created_at,
+    (j.entity_type = 'card' AND j.card_id IS NOT NULL AND j.entity_id <> j.card_id) AS is_child,
     u.lastname,
     u.firstname,
     u.patronymic

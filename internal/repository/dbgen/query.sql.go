@@ -87,15 +87,15 @@ func (q *Queries) ClearCardAssignees(ctx context.Context, cardID int64) error {
 const columnPositionTaken = `-- name: ColumnPositionTaken :one
 SELECT EXISTS(
     SELECT 1 FROM kanban_card
-    WHERE column_id = $1 AND id <> $2 AND is_archived = FALSE
+    WHERE column_id = $1 AND parent_id IS NULL AND id <> $2 AND is_archived = FALSE
       AND abs(position - $3::double precision) < 0.0001
 )
 `
 
 type ColumnPositionTakenParams struct {
-	ColumnID int64   `json:"column_id"`
-	ID       int64   `json:"id"`
-	Position float64 `json:"position"`
+	ColumnID pgtype.Int8 `json:"column_id"`
+	ID       int64       `json:"id"`
+	Position float64     `json:"position"`
 }
 
 // Занята ли позиция в целевой колонке. Допуск нужен потому, что позиции дробные
@@ -108,6 +108,183 @@ func (q *Queries) ColumnPositionTaken(ctx context.Context, arg ColumnPositionTak
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const countTaskCollaborants = `-- name: CountTaskCollaborants :one
+
+WITH visible AS (
+    SELECT p.id, p.owner_id
+    FROM kanban_project p
+    WHERE p.deleted_at IS NULL
+      AND (
+          p.owner_id = $1
+          OR EXISTS (
+              SELECT 1 FROM kanban_project_user pu
+              WHERE pu.kanban_project_id = p.id
+                AND pu.user_id = $1
+          )
+      )
+),
+ids AS (
+    SELECT visible.owner_id AS user_id FROM visible
+    UNION
+    SELECT pu.user_id
+    FROM kanban_project_user pu
+    INNER JOIN visible ON visible.id = pu.kanban_project_id
+)
+SELECT COUNT(*)::bigint AS count
+FROM ids
+INNER JOIN users u ON u.id = ids.user_id
+WHERE u.deleted_at IS NULL
+  AND u.id <> $1
+  AND (
+      $2::text = ''
+      OR u.lastname ILIKE '%' || $2 || '%' ESCAPE '\'
+      OR u.firstname ILIKE '%' || $2 || '%' ESCAPE '\'
+      OR u.login ILIKE '%' || $2 || '%' ESCAPE '\'
+      OR COALESCE(u.patronymic, '') ILIKE '%' || $2 || '%' ESCAPE '\'
+  )
+`
+
+type CountTaskCollaborantsParams struct {
+	ViewerID  int64  `json:"viewer_id"`
+	NameQuery string `json:"name_query"`
+}
+
+// ==============================
+// TASK COLLABORANTS
+// ==============================
+func (q *Queries) CountTaskCollaborants(ctx context.Context, arg CountTaskCollaborantsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countTaskCollaborants, arg.ViewerID, arg.NameQuery)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTasks = `-- name: CountTasks :one
+
+SELECT COUNT(*)::bigint AS count
+FROM kanban_card c
+LEFT JOIN kanban_card parent ON parent.id = c.parent_id
+JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
+JOIN kanban_board b ON b.id = col.board_id
+JOIN kanban_project p ON p.id = b.kanban_project_id
+WHERE c.deleted_at IS NULL
+  AND (parent.id IS NULL OR parent.deleted_at IS NULL)
+  AND col.deleted_at IS NULL
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1
+      )
+  )
+  AND ($2::text = '' OR c.title ILIKE '%' || $2 || '%' ESCAPE '\')
+  AND ($3::bigint = 0 OR p.id = $3)
+  AND (
+      $4::text = ''
+      OR ($4 = 'none' AND c.priority IS NULL)
+      OR ($4 <> 'none' AND c.priority = $4)
+  )
+  AND (
+      $5::bigint = 0
+      OR ($5 < 0 AND c.created_by_id IS NULL)
+      OR ($5 > 0 AND c.created_by_id = $5)
+  )
+  AND (
+      $6::bigint = 0
+      OR (
+          $6 < 0
+          AND NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)
+      )
+      OR (
+          $6 > 0
+          AND EXISTS (
+              SELECT 1 FROM kanban_card_assignee ca
+              WHERE ca.card_id = c.id AND ca.user_id = $6
+          )
+      )
+  )
+  AND (
+      $7::text = ''
+      OR (c.completed_at IS NOT NULL) = ($7 = 'true')
+  )
+  AND (
+      $8::text = ''
+      OR (
+          CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END
+      ) = ($8 = 'true')
+  )
+  AND (
+      $9::text = ''
+      OR ($9 = 'task' AND c.parent_id IS NULL)
+      OR ($9 = 'subtask' AND c.parent_id IS NOT NULL)
+  )
+  AND ($10::timestamptz IS NULL OR c.due_date >= $10)
+  AND ($11::timestamptz IS NULL OR c.due_date < $11)
+  AND ($12::timestamptz IS NULL OR c.created_at >= $12)
+  AND ($13::timestamptz IS NULL OR c.created_at < $13)
+  AND ($14::timestamptz IS NULL OR c.completed_at >= $14)
+  AND ($15::timestamptz IS NULL OR c.completed_at < $15)
+  AND (
+      $16::timestamptz IS NULL
+      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) >= $16
+  )
+  AND (
+      $17::timestamptz IS NULL
+      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) < $17
+  )
+`
+
+type CountTasksParams struct {
+	ViewerID      int64              `json:"viewer_id"`
+	TitleQuery    string             `json:"title_query"`
+	ProjectID     int64              `json:"project_id"`
+	Priority      string             `json:"priority"`
+	AuthorID      int64              `json:"author_id"`
+	AssigneeID    int64              `json:"assignee_id"`
+	Completed     string             `json:"completed"`
+	Archived      string             `json:"archived"`
+	Kind          string             `json:"kind"`
+	DueFrom       pgtype.Timestamptz `json:"due_from"`
+	DueTo         pgtype.Timestamptz `json:"due_to"`
+	CreatedFrom   pgtype.Timestamptz `json:"created_from"`
+	CreatedTo     pgtype.Timestamptz `json:"created_to"`
+	CompletedFrom pgtype.Timestamptz `json:"completed_from"`
+	CompletedTo   pgtype.Timestamptz `json:"completed_to"`
+	ArchivedFrom  pgtype.Timestamptz `json:"archived_from"`
+	ArchivedTo    pgtype.Timestamptz `json:"archived_to"`
+}
+
+// ==============================
+// TASK LIST
+// ==============================
+func (q *Queries) CountTasks(ctx context.Context, arg CountTasksParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countTasks,
+		arg.ViewerID,
+		arg.TitleQuery,
+		arg.ProjectID,
+		arg.Priority,
+		arg.AuthorID,
+		arg.AssigneeID,
+		arg.Completed,
+		arg.Archived,
+		arg.Kind,
+		arg.DueFrom,
+		arg.DueTo,
+		arg.CreatedFrom,
+		arg.CreatedTo,
+		arg.CompletedFrom,
+		arg.CompletedTo,
+		arg.ArchivedFrom,
+		arg.ArchivedTo,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const createAttachment = `-- name: CreateAttachment :one
@@ -188,9 +365,9 @@ func (q *Queries) CreateBoard(ctx context.Context, arg CreateBoardParams) (Kanba
 }
 
 const createCard = `-- name: CreateCard :one
-INSERT INTO kanban_card (title, description, position, due_date, priority, column_id, created_by_id, border_color)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at
+INSERT INTO kanban_card (title, description, position, due_date, priority, column_id, parent_id, created_by_id, border_color)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id
 `
 
 type CreateCardParams struct {
@@ -199,7 +376,8 @@ type CreateCardParams struct {
 	Position    float64            `json:"position"`
 	DueDate     pgtype.Timestamptz `json:"due_date"`
 	Priority    pgtype.Text        `json:"priority"`
-	ColumnID    int64              `json:"column_id"`
+	ColumnID    pgtype.Int8        `json:"column_id"`
+	ParentID    pgtype.Int8        `json:"parent_id"`
 	CreatedByID pgtype.Int8        `json:"created_by_id"`
 	BorderColor pgtype.Text        `json:"border_color"`
 }
@@ -212,6 +390,7 @@ func (q *Queries) CreateCard(ctx context.Context, arg CreateCardParams) (KanbanC
 		arg.DueDate,
 		arg.Priority,
 		arg.ColumnID,
+		arg.ParentID,
 		arg.CreatedByID,
 		arg.BorderColor,
 	)
@@ -234,6 +413,7 @@ func (q *Queries) CreateCard(ctx context.Context, arg CreateCardParams) (KanbanC
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.ParentID,
 	)
 	return i, err
 }
@@ -436,41 +616,6 @@ func (q *Queries) CreateProjectHistoryEntry(ctx context.Context, arg CreateProje
 	return i, err
 }
 
-const createSubtask = `-- name: CreateSubtask :one
-INSERT INTO kanban_card_subtask (title, status, position, card_id, user_id)
-VALUES ($1, $2, $3, $4, $5)
-RETURNING id, title, status, position, card_id, user_id, deleted_at
-`
-
-type CreateSubtaskParams struct {
-	Title    string      `json:"title"`
-	Status   string      `json:"status"`
-	Position float64     `json:"position"`
-	CardID   int64       `json:"card_id"`
-	UserID   pgtype.Int8 `json:"user_id"`
-}
-
-func (q *Queries) CreateSubtask(ctx context.Context, arg CreateSubtaskParams) (KanbanCardSubtask, error) {
-	row := q.db.QueryRow(ctx, createSubtask,
-		arg.Title,
-		arg.Status,
-		arg.Position,
-		arg.CardID,
-		arg.UserID,
-	)
-	var i KanbanCardSubtask
-	err := row.Scan(
-		&i.ID,
-		&i.Title,
-		&i.Status,
-		&i.Position,
-		&i.CardID,
-		&i.UserID,
-		&i.DeletedAt,
-	)
-	return i, err
-}
-
 const deleteAttachment = `-- name: DeleteAttachment :exec
 UPDATE kanban_attachment
 SET deleted_at = CURRENT_TIMESTAMP
@@ -496,7 +641,7 @@ func (q *Queries) DeleteBoard(ctx context.Context, id int64) error {
 const deleteCard = `-- name: DeleteCard :exec
 UPDATE kanban_card
 SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-WHERE id = $1 AND deleted_at IS NULL
+WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1)
 `
 
 func (q *Queries) DeleteCard(ctx context.Context, id int64) error {
@@ -583,17 +728,6 @@ func (q *Queries) DeleteProjectMembersExcept(ctx context.Context, arg DeleteProj
 	return err
 }
 
-const deleteSubtask = `-- name: DeleteSubtask :exec
-UPDATE kanban_card_subtask
-SET deleted_at = CURRENT_TIMESTAMP
-WHERE id = $1 AND deleted_at IS NULL
-`
-
-func (q *Queries) DeleteSubtask(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, deleteSubtask, id)
-	return err
-}
-
 const getAllProjects = `-- name: GetAllProjects :many
 SELECT id, name, description, owner_id, created_by_id, created_at, updated_at, deleted_at FROM kanban_project
 WHERE deleted_at IS NULL
@@ -618,362 +752,6 @@ func (q *Queries) GetAllProjects(ctx context.Context) ([]KanbanProject, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getAssignedCardsClosed = `-- name: GetAssignedCardsClosed :many
-SELECT
-    p.id            AS project_id,
-    p.name          AS project_name,
-    b.id            AS board_id,
-    b.title         AS board_title,
-    b.position      AS board_position,
-    col.id          AS column_id,
-    col.title       AS column_title,
-    col.position    AS column_position,
-    c.id            AS card_id,
-    c.title         AS card_title,
-    c.priority      AS card_priority,
-    c.due_date      AS card_due_date,
-    c.border_color  AS card_border_color,
-    c.position      AS card_position
-FROM kanban_card_assignee ca
-JOIN kanban_card    c   ON c.id  = ca.card_id
-JOIN kanban_column  col ON col.id = c.column_id
-JOIN kanban_board   b   ON b.id  = col.board_id
-JOIN kanban_project p   ON p.id  = b.kanban_project_id
-WHERE ca.user_id = $1
-  AND c.completed_at IS NOT NULL
-  AND c.is_archived = FALSE
-  AND c.deleted_at IS NULL
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = $1
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1
-      )
-  )
-ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id
-`
-
-type GetAssignedCardsClosedRow struct {
-	ProjectID       int64              `json:"project_id"`
-	ProjectName     string             `json:"project_name"`
-	BoardID         int64              `json:"board_id"`
-	BoardTitle      string             `json:"board_title"`
-	BoardPosition   float64            `json:"board_position"`
-	ColumnID        int64              `json:"column_id"`
-	ColumnTitle     string             `json:"column_title"`
-	ColumnPosition  float64            `json:"column_position"`
-	CardID          int64              `json:"card_id"`
-	CardTitle       string             `json:"card_title"`
-	CardPriority    pgtype.Text        `json:"card_priority"`
-	CardDueDate     pgtype.Timestamptz `json:"card_due_date"`
-	CardBorderColor pgtype.Text        `json:"card_border_color"`
-	CardPosition    float64            `json:"card_position"`
-}
-
-func (q *Queries) GetAssignedCardsClosed(ctx context.Context, userID int64) ([]GetAssignedCardsClosedRow, error) {
-	rows, err := q.db.Query(ctx, getAssignedCardsClosed, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetAssignedCardsClosedRow{}
-	for rows.Next() {
-		var i GetAssignedCardsClosedRow
-		if err := rows.Scan(
-			&i.ProjectID,
-			&i.ProjectName,
-			&i.BoardID,
-			&i.BoardTitle,
-			&i.BoardPosition,
-			&i.ColumnID,
-			&i.ColumnTitle,
-			&i.ColumnPosition,
-			&i.CardID,
-			&i.CardTitle,
-			&i.CardPriority,
-			&i.CardDueDate,
-			&i.CardBorderColor,
-			&i.CardPosition,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getAssignedCardsOpen = `-- name: GetAssignedCardsOpen :many
-
-SELECT
-    p.id            AS project_id,
-    p.name          AS project_name,
-    b.id            AS board_id,
-    b.title         AS board_title,
-    b.position      AS board_position,
-    col.id          AS column_id,
-    col.title       AS column_title,
-    col.position    AS column_position,
-    c.id            AS card_id,
-    c.title         AS card_title,
-    c.priority      AS card_priority,
-    c.due_date      AS card_due_date,
-    c.border_color  AS card_border_color,
-    c.position      AS card_position
-FROM kanban_card_assignee ca
-JOIN kanban_card    c   ON c.id  = ca.card_id
-JOIN kanban_column  col ON col.id = c.column_id
-JOIN kanban_board   b   ON b.id  = col.board_id
-JOIN kanban_project p   ON p.id  = b.kanban_project_id
-WHERE ca.user_id = $1
-  AND c.completed_at IS NULL
-  AND c.is_archived = FALSE
-  AND c.deleted_at IS NULL
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = $1
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1
-      )
-  )
-ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id
-`
-
-type GetAssignedCardsOpenRow struct {
-	ProjectID       int64              `json:"project_id"`
-	ProjectName     string             `json:"project_name"`
-	BoardID         int64              `json:"board_id"`
-	BoardTitle      string             `json:"board_title"`
-	BoardPosition   float64            `json:"board_position"`
-	ColumnID        int64              `json:"column_id"`
-	ColumnTitle     string             `json:"column_title"`
-	ColumnPosition  float64            `json:"column_position"`
-	CardID          int64              `json:"card_id"`
-	CardTitle       string             `json:"card_title"`
-	CardPriority    pgtype.Text        `json:"card_priority"`
-	CardDueDate     pgtype.Timestamptz `json:"card_due_date"`
-	CardBorderColor pgtype.Text        `json:"card_border_color"`
-	CardPosition    float64            `json:"card_position"`
-}
-
-// ==============================
-// ASSIGNED TO ME (мои задачи / подзадачи)
-// ==============================
-func (q *Queries) GetAssignedCardsOpen(ctx context.Context, userID int64) ([]GetAssignedCardsOpenRow, error) {
-	rows, err := q.db.Query(ctx, getAssignedCardsOpen, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetAssignedCardsOpenRow{}
-	for rows.Next() {
-		var i GetAssignedCardsOpenRow
-		if err := rows.Scan(
-			&i.ProjectID,
-			&i.ProjectName,
-			&i.BoardID,
-			&i.BoardTitle,
-			&i.BoardPosition,
-			&i.ColumnID,
-			&i.ColumnTitle,
-			&i.ColumnPosition,
-			&i.CardID,
-			&i.CardTitle,
-			&i.CardPriority,
-			&i.CardDueDate,
-			&i.CardBorderColor,
-			&i.CardPosition,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getAssignedSubtasksClosed = `-- name: GetAssignedSubtasksClosed :many
-SELECT
-    s.id       AS subtask_id,
-    s.title    AS subtask_title,
-    s.status   AS subtask_status,
-    s.position AS subtask_position,
-    c.id       AS card_id,
-    c.title    AS card_title,
-    col.id     AS column_id,
-    col.title  AS column_title,
-    b.id       AS board_id,
-    b.title    AS board_title,
-    p.id       AS project_id,
-    p.name     AS project_name
-FROM kanban_card_subtask s
-JOIN kanban_card    c   ON c.id  = s.card_id
-JOIN kanban_column  col ON col.id = c.column_id
-JOIN kanban_board   b   ON b.id  = col.board_id
-JOIN kanban_project p   ON p.id  = b.kanban_project_id
-WHERE s.user_id = $1::bigint
-  AND s.status = 'done'
-  AND s.deleted_at IS NULL
-  AND c.deleted_at IS NULL
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = $1::bigint
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1::bigint
-      )
-  )
-ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id, s.position, s.id
-`
-
-type GetAssignedSubtasksClosedRow struct {
-	SubtaskID       int64   `json:"subtask_id"`
-	SubtaskTitle    string  `json:"subtask_title"`
-	SubtaskStatus   string  `json:"subtask_status"`
-	SubtaskPosition float64 `json:"subtask_position"`
-	CardID          int64   `json:"card_id"`
-	CardTitle       string  `json:"card_title"`
-	ColumnID        int64   `json:"column_id"`
-	ColumnTitle     string  `json:"column_title"`
-	BoardID         int64   `json:"board_id"`
-	BoardTitle      string  `json:"board_title"`
-	ProjectID       int64   `json:"project_id"`
-	ProjectName     string  `json:"project_name"`
-}
-
-func (q *Queries) GetAssignedSubtasksClosed(ctx context.Context, dollar_1 int64) ([]GetAssignedSubtasksClosedRow, error) {
-	rows, err := q.db.Query(ctx, getAssignedSubtasksClosed, dollar_1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetAssignedSubtasksClosedRow{}
-	for rows.Next() {
-		var i GetAssignedSubtasksClosedRow
-		if err := rows.Scan(
-			&i.SubtaskID,
-			&i.SubtaskTitle,
-			&i.SubtaskStatus,
-			&i.SubtaskPosition,
-			&i.CardID,
-			&i.CardTitle,
-			&i.ColumnID,
-			&i.ColumnTitle,
-			&i.BoardID,
-			&i.BoardTitle,
-			&i.ProjectID,
-			&i.ProjectName,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getAssignedSubtasksOpen = `-- name: GetAssignedSubtasksOpen :many
-SELECT
-    s.id       AS subtask_id,
-    s.title    AS subtask_title,
-    s.status   AS subtask_status,
-    s.position AS subtask_position,
-    c.id       AS card_id,
-    c.title    AS card_title,
-    col.id     AS column_id,
-    col.title  AS column_title,
-    b.id       AS board_id,
-    b.title    AS board_title,
-    p.id       AS project_id,
-    p.name     AS project_name
-FROM kanban_card_subtask s
-JOIN kanban_card    c   ON c.id  = s.card_id
-JOIN kanban_column  col ON col.id = c.column_id
-JOIN kanban_board   b   ON b.id  = col.board_id
-JOIN kanban_project p   ON p.id  = b.kanban_project_id
-WHERE s.user_id = $1::bigint
-  AND s.status <> 'done'
-  AND s.deleted_at IS NULL
-  AND c.deleted_at IS NULL
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = $1::bigint
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1::bigint
-      )
-  )
-ORDER BY p.name, p.id, b.position, b.id, col.position, col.id, c.position, c.id, s.position, s.id
-`
-
-type GetAssignedSubtasksOpenRow struct {
-	SubtaskID       int64   `json:"subtask_id"`
-	SubtaskTitle    string  `json:"subtask_title"`
-	SubtaskStatus   string  `json:"subtask_status"`
-	SubtaskPosition float64 `json:"subtask_position"`
-	CardID          int64   `json:"card_id"`
-	CardTitle       string  `json:"card_title"`
-	ColumnID        int64   `json:"column_id"`
-	ColumnTitle     string  `json:"column_title"`
-	BoardID         int64   `json:"board_id"`
-	BoardTitle      string  `json:"board_title"`
-	ProjectID       int64   `json:"project_id"`
-	ProjectName     string  `json:"project_name"`
-}
-
-func (q *Queries) GetAssignedSubtasksOpen(ctx context.Context, dollar_1 int64) ([]GetAssignedSubtasksOpenRow, error) {
-	rows, err := q.db.Query(ctx, getAssignedSubtasksOpen, dollar_1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetAssignedSubtasksOpenRow{}
-	for rows.Next() {
-		var i GetAssignedSubtasksOpenRow
-		if err := rows.Scan(
-			&i.SubtaskID,
-			&i.SubtaskTitle,
-			&i.SubtaskStatus,
-			&i.SubtaskPosition,
-			&i.CardID,
-			&i.CardTitle,
-			&i.ColumnID,
-			&i.ColumnTitle,
-			&i.BoardID,
-			&i.BoardTitle,
-			&i.ProjectID,
-			&i.ProjectName,
 		); err != nil {
 			return nil, err
 		}
@@ -1118,7 +896,7 @@ func (q *Queries) GetBoardsByProject(ctx context.Context, kanbanProjectID int64)
 
 const getCard = `-- name: GetCard :one
 
-SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at FROM kanban_card
+SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id FROM kanban_card
 WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
@@ -1146,6 +924,7 @@ func (q *Queries) GetCard(ctx context.Context, id int64) (KanbanCard, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.ParentID,
 	)
 	return i, err
 }
@@ -1212,9 +991,11 @@ SELECT
     col.title AS column_title,
     p.owner_id,
     p.deleted_at AS project_deleted_at,
-    pu.role AS member_role
+    pu.role AS member_role,
+    card.parent_id AS parent_id
 FROM kanban_card card
-JOIN kanban_column col ON card.column_id = col.id
+LEFT JOIN kanban_card parent ON parent.id = card.parent_id
+JOIN kanban_column col ON col.id = COALESCE(card.column_id, parent.column_id)
 JOIN kanban_board b ON col.board_id = b.id
 JOIN kanban_project p ON b.kanban_project_id = p.id
 LEFT JOIN kanban_project_user pu
@@ -1235,6 +1016,7 @@ type GetCardContextRow struct {
 	OwnerID          int64              `json:"owner_id"`
 	ProjectDeletedAt pgtype.Timestamptz `json:"project_deleted_at"`
 	MemberRole       pgtype.Text        `json:"member_role"`
+	ParentID         pgtype.Int8        `json:"parent_id"`
 }
 
 // Всё, что нужно для проверки прав и для шапки карточки, одним запросом:
@@ -1258,6 +1040,7 @@ func (q *Queries) GetCardContext(ctx context.Context, arg GetCardContextParams) 
 		&i.OwnerID,
 		&i.ProjectDeletedAt,
 		&i.MemberRole,
+		&i.ParentID,
 	)
 	return i, err
 }
@@ -1345,9 +1128,9 @@ func (q *Queries) GetCardLabelsByCardIDs(ctx context.Context, dollar_1 []int64) 
 }
 
 const getCardsByBoard = `-- name: GetCardsByBoard :many
-SELECT c.id, c.title, c.description, c.position, c.due_date, c.priority, c.is_archived, c.archived_at, c.archived_by_id, c.completed_at, c.completed_by_id, c.column_id, c.created_by_id, c.border_color, c.created_at, c.updated_at, c.deleted_at FROM kanban_card c
+SELECT c.id, c.title, c.description, c.position, c.due_date, c.priority, c.is_archived, c.archived_at, c.archived_by_id, c.completed_at, c.completed_by_id, c.column_id, c.created_by_id, c.border_color, c.created_at, c.updated_at, c.deleted_at, c.parent_id FROM kanban_card c
 JOIN kanban_column col ON col.id = c.column_id
-WHERE col.board_id = $1 AND c.is_archived = FALSE AND c.deleted_at IS NULL AND col.deleted_at IS NULL
+WHERE col.board_id = $1 AND c.parent_id IS NULL AND c.is_archived = FALSE AND c.deleted_at IS NULL AND col.deleted_at IS NULL
 ORDER BY col.position ASC, c.position ASC
 `
 
@@ -1378,6 +1161,7 @@ func (q *Queries) GetCardsByBoard(ctx context.Context, boardID int64) ([]KanbanC
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.ParentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1390,12 +1174,12 @@ func (q *Queries) GetCardsByBoard(ctx context.Context, boardID int64) ([]KanbanC
 }
 
 const getCardsByColumn = `-- name: GetCardsByColumn :many
-SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at FROM kanban_card
-WHERE column_id = $1 AND is_archived = FALSE AND deleted_at IS NULL
+SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id FROM kanban_card
+WHERE column_id = $1 AND parent_id IS NULL AND is_archived = FALSE AND deleted_at IS NULL
 ORDER BY position ASC
 `
 
-func (q *Queries) GetCardsByColumn(ctx context.Context, columnID int64) ([]KanbanCard, error) {
+func (q *Queries) GetCardsByColumn(ctx context.Context, columnID pgtype.Int8) ([]KanbanCard, error) {
 	rows, err := q.db.Query(ctx, getCardsByColumn, columnID)
 	if err != nil {
 		return nil, err
@@ -1422,6 +1206,7 @@ func (q *Queries) GetCardsByColumn(ctx context.Context, columnID int64) ([]Kanba
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.DeletedAt,
+			&i.ParentID,
 		); err != nil {
 			return nil, err
 		}
@@ -1455,6 +1240,86 @@ func (q *Queries) GetChatAttachmentCountsByCardIDs(ctx context.Context, dollar_1
 	for rows.Next() {
 		var i GetChatAttachmentCountsByCardIDsRow
 		if err := rows.Scan(&i.CardID, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getChildCards = `-- name: GetChildCards :many
+SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id FROM kanban_card
+WHERE parent_id = $1 AND deleted_at IS NULL
+ORDER BY position ASC
+`
+
+func (q *Queries) GetChildCards(ctx context.Context, parentID pgtype.Int8) ([]KanbanCard, error) {
+	rows, err := q.db.Query(ctx, getChildCards, parentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []KanbanCard{}
+	for rows.Next() {
+		var i KanbanCard
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.Description,
+			&i.Position,
+			&i.DueDate,
+			&i.Priority,
+			&i.IsArchived,
+			&i.ArchivedAt,
+			&i.ArchivedByID,
+			&i.CompletedAt,
+			&i.CompletedByID,
+			&i.ColumnID,
+			&i.CreatedByID,
+			&i.BorderColor,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.ParentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getChildCountsByParentIDs = `-- name: GetChildCountsByParentIDs :many
+SELECT parent_id,
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE completed_at IS NOT NULL) AS done
+FROM kanban_card
+WHERE parent_id = ANY($1::bigint[]) AND deleted_at IS NULL
+GROUP BY parent_id
+`
+
+type GetChildCountsByParentIDsRow struct {
+	ParentID pgtype.Int8 `json:"parent_id"`
+	Total    int64       `json:"total"`
+	Done     int64       `json:"done"`
+}
+
+func (q *Queries) GetChildCountsByParentIDs(ctx context.Context, dollar_1 []int64) ([]GetChildCountsByParentIDsRow, error) {
+	rows, err := q.db.Query(ctx, getChildCountsByParentIDs, dollar_1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetChildCountsByParentIDsRow{}
+	for rows.Next() {
+		var i GetChildCountsByParentIDsRow
+		if err := rows.Scan(&i.ParentID, &i.Total, &i.Done); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1778,7 +1643,8 @@ func (q *Queries) GetProjectHistoryEntry(ctx context.Context, id int64) (KanbanP
 
 const getProjectIDByCard = `-- name: GetProjectIDByCard :one
 SELECT b.kanban_project_id FROM kanban_card card
-JOIN kanban_column c ON card.column_id = c.id
+LEFT JOIN kanban_card parent ON parent.id = card.parent_id
+JOIN kanban_column c ON c.id = COALESCE(card.column_id, parent.column_id)
 JOIN kanban_board b ON c.board_id = b.id
 WHERE card.id = $1
 `
@@ -1812,22 +1678,6 @@ WHERE l.id = $1
 
 func (q *Queries) GetProjectIDByLabel(ctx context.Context, id int64) (int64, error) {
 	row := q.db.QueryRow(ctx, getProjectIDByLabel, id)
-	var project_id int64
-	err := row.Scan(&project_id)
-	return project_id, err
-}
-
-const getProjectIDBySubtask = `-- name: GetProjectIDBySubtask :one
-SELECT b.kanban_project_id as project_id
-FROM kanban_card_subtask s
-JOIN kanban_card c ON s.card_id = c.id
-JOIN kanban_column col ON c.column_id = col.id
-JOIN kanban_board b ON col.board_id = b.id
-WHERE s.id = $1
-`
-
-func (q *Queries) GetProjectIDBySubtask(ctx context.Context, id int64) (int64, error) {
-	row := q.db.QueryRow(ctx, getProjectIDBySubtask, id)
 	var project_id int64
 	err := row.Scan(&project_id)
 	return project_id, err
@@ -1893,106 +1743,14 @@ func (q *Queries) GetProjectMembers(ctx context.Context, kanbanProjectID int64) 
 	return items, nil
 }
 
-const getSubtask = `-- name: GetSubtask :one
-
-SELECT id, title, status, position, card_id, user_id, deleted_at FROM kanban_card_subtask
-WHERE id = $1 AND deleted_at IS NULL LIMIT 1
-`
-
-// ==============================
-// SUBTASKS
-// ==============================
-func (q *Queries) GetSubtask(ctx context.Context, id int64) (KanbanCardSubtask, error) {
-	row := q.db.QueryRow(ctx, getSubtask, id)
-	var i KanbanCardSubtask
-	err := row.Scan(
-		&i.ID,
-		&i.Title,
-		&i.Status,
-		&i.Position,
-		&i.CardID,
-		&i.UserID,
-		&i.DeletedAt,
-	)
-	return i, err
-}
-
-const getSubtaskCountsByCardIDs = `-- name: GetSubtaskCountsByCardIDs :many
-SELECT card_id,
-       COUNT(*) AS total,
-       COUNT(*) FILTER (WHERE LOWER(status) = 'done') AS done
-FROM kanban_card_subtask
-WHERE card_id = ANY($1::bigint[]) AND deleted_at IS NULL
-GROUP BY card_id
-`
-
-type GetSubtaskCountsByCardIDsRow struct {
-	CardID int64 `json:"card_id"`
-	Total  int64 `json:"total"`
-	Done   int64 `json:"done"`
-}
-
-func (q *Queries) GetSubtaskCountsByCardIDs(ctx context.Context, dollar_1 []int64) ([]GetSubtaskCountsByCardIDsRow, error) {
-	rows, err := q.db.Query(ctx, getSubtaskCountsByCardIDs, dollar_1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetSubtaskCountsByCardIDsRow{}
-	for rows.Next() {
-		var i GetSubtaskCountsByCardIDsRow
-		if err := rows.Scan(&i.CardID, &i.Total, &i.Done); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getSubtasksByCard = `-- name: GetSubtasksByCard :many
-SELECT id, title, status, position, card_id, user_id, deleted_at FROM kanban_card_subtask
-WHERE card_id = $1 AND deleted_at IS NULL
-ORDER BY position ASC
-`
-
-func (q *Queries) GetSubtasksByCard(ctx context.Context, cardID int64) ([]KanbanCardSubtask, error) {
-	rows, err := q.db.Query(ctx, getSubtasksByCard, cardID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []KanbanCardSubtask{}
-	for rows.Next() {
-		var i KanbanCardSubtask
-		if err := rows.Scan(
-			&i.ID,
-			&i.Title,
-			&i.Status,
-			&i.Position,
-			&i.CardID,
-			&i.UserID,
-			&i.DeletedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const hasCardsByColumn = `-- name: HasCardsByColumn :one
 SELECT EXISTS(
-    SELECT 1 FROM kanban_card WHERE column_id = $1 AND deleted_at IS NULL
+    SELECT 1 FROM kanban_card
+    WHERE column_id = $1 AND parent_id IS NULL AND deleted_at IS NULL
 )
 `
 
-func (q *Queries) HasCardsByColumn(ctx context.Context, columnID int64) (bool, error) {
+func (q *Queries) HasCardsByColumn(ctx context.Context, columnID pgtype.Int8) (bool, error) {
 	row := q.db.QueryRow(ctx, hasCardsByColumn, columnID)
 	var exists bool
 	err := row.Scan(&exists)
@@ -2054,6 +1812,7 @@ SELECT
     j.entity_link,
     j.payload,
     j.created_at,
+    (j.entity_type = 'card' AND j.card_id IS NOT NULL AND j.entity_id <> j.card_id) AS is_child,
     u.lastname,
     u.firstname,
     u.patronymic
@@ -2086,6 +1845,7 @@ type ListProjectHistoryRow struct {
 	EntityLink  string             `json:"entity_link"`
 	Payload     []byte             `json:"payload"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	IsChild     pgtype.Bool        `json:"is_child"`
 	Lastname    pgtype.Text        `json:"lastname"`
 	Firstname   pgtype.Text        `json:"firstname"`
 	Patronymic  pgtype.Text        `json:"patronymic"`
@@ -2116,9 +1876,310 @@ func (q *Queries) ListProjectHistory(ctx context.Context, arg ListProjectHistory
 			&i.EntityLink,
 			&i.Payload,
 			&i.CreatedAt,
+			&i.IsChild,
 			&i.Lastname,
 			&i.Firstname,
 			&i.Patronymic,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTaskCollaborants = `-- name: ListTaskCollaborants :many
+WITH visible AS (
+    SELECT p.id, p.owner_id
+    FROM kanban_project p
+    WHERE p.deleted_at IS NULL
+      AND (
+          p.owner_id = $1
+          OR EXISTS (
+              SELECT 1 FROM kanban_project_user pu
+              WHERE pu.kanban_project_id = p.id
+                AND pu.user_id = $1
+          )
+      )
+),
+ids AS (
+    SELECT visible.owner_id AS user_id FROM visible
+    UNION
+    SELECT pu.user_id
+    FROM kanban_project_user pu
+    INNER JOIN visible ON visible.id = pu.kanban_project_id
+)
+SELECT u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name
+FROM ids
+INNER JOIN users u ON u.id = ids.user_id
+WHERE u.deleted_at IS NULL
+  AND u.id <> $1
+  AND (
+      $2::text = ''
+      OR u.lastname ILIKE '%' || $2 || '%' ESCAPE '\'
+      OR u.firstname ILIKE '%' || $2 || '%' ESCAPE '\'
+      OR u.login ILIKE '%' || $2 || '%' ESCAPE '\'
+      OR COALESCE(u.patronymic, '') ILIKE '%' || $2 || '%' ESCAPE '\'
+  )
+ORDER BY u.lastname ASC, u.firstname ASC, u.id ASC
+LIMIT $4
+OFFSET $3
+`
+
+type ListTaskCollaborantsParams struct {
+	ViewerID   int64  `json:"viewer_id"`
+	NameQuery  string `json:"name_query"`
+	PageOffset int32  `json:"page_offset"`
+	PageLimit  int32  `json:"page_limit"`
+}
+
+type ListTaskCollaborantsRow struct {
+	ID         int64       `json:"id"`
+	Login      string      `json:"login"`
+	Lastname   string      `json:"lastname"`
+	Firstname  string      `json:"firstname"`
+	Patronymic pgtype.Text `json:"patronymic"`
+	AvatarName pgtype.Text `json:"avatar_name"`
+}
+
+func (q *Queries) ListTaskCollaborants(ctx context.Context, arg ListTaskCollaborantsParams) ([]ListTaskCollaborantsRow, error) {
+	rows, err := q.db.Query(ctx, listTaskCollaborants,
+		arg.ViewerID,
+		arg.NameQuery,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTaskCollaborantsRow{}
+	for rows.Next() {
+		var i ListTaskCollaborantsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Login,
+			&i.Lastname,
+			&i.Firstname,
+			&i.Patronymic,
+			&i.AvatarName,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTasks = `-- name: ListTasks :many
+SELECT
+    p.id            AS project_id,
+    p.name          AS project_name,
+    b.id            AS board_id,
+    b.title         AS board_title,
+    col.id          AS column_id,
+    col.title       AS column_title,
+    c.id            AS card_id,
+    c.title         AS card_title,
+    c.priority      AS card_priority,
+    c.due_date      AS card_due_date,
+    c.border_color  AS card_border_color,
+    c.parent_id     AS parent_id,
+    parent.title    AS parent_title,
+    c.created_at    AS created_at,
+    c.completed_at  AS completed_at,
+    (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END)::timestamptz AS archived_at,
+    (CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END)::bool AS is_archived
+FROM kanban_card c
+LEFT JOIN kanban_card parent ON parent.id = c.parent_id
+JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
+JOIN kanban_board b ON b.id = col.board_id
+JOIN kanban_project p ON p.id = b.kanban_project_id
+WHERE c.deleted_at IS NULL
+  AND (parent.id IS NULL OR parent.deleted_at IS NULL)
+  AND col.deleted_at IS NULL
+  AND b.deleted_at IS NULL
+  AND p.deleted_at IS NULL
+  AND (
+      p.owner_id = $1
+      OR EXISTS (
+          SELECT 1 FROM kanban_project_user pu
+          WHERE pu.kanban_project_id = p.id
+            AND pu.user_id = $1
+      )
+  )
+  AND ($2::text = '' OR c.title ILIKE '%' || $2 || '%' ESCAPE '\')
+  AND ($3::bigint = 0 OR p.id = $3)
+  AND (
+      $4::text = ''
+      OR ($4 = 'none' AND c.priority IS NULL)
+      OR ($4 <> 'none' AND c.priority = $4)
+  )
+  AND (
+      $5::bigint = 0
+      OR ($5 < 0 AND c.created_by_id IS NULL)
+      OR ($5 > 0 AND c.created_by_id = $5)
+  )
+  AND (
+      $6::bigint = 0
+      OR (
+          $6 < 0
+          AND NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)
+      )
+      OR (
+          $6 > 0
+          AND EXISTS (
+              SELECT 1 FROM kanban_card_assignee ca
+              WHERE ca.card_id = c.id AND ca.user_id = $6
+          )
+      )
+  )
+  AND (
+      $7::text = ''
+      OR (c.completed_at IS NOT NULL) = ($7 = 'true')
+  )
+  AND (
+      $8::text = ''
+      OR (
+          CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END
+      ) = ($8 = 'true')
+  )
+  AND (
+      $9::text = ''
+      OR ($9 = 'task' AND c.parent_id IS NULL)
+      OR ($9 = 'subtask' AND c.parent_id IS NOT NULL)
+  )
+  AND ($10::timestamptz IS NULL OR c.due_date >= $10)
+  AND ($11::timestamptz IS NULL OR c.due_date < $11)
+  AND ($12::timestamptz IS NULL OR c.created_at >= $12)
+  AND ($13::timestamptz IS NULL OR c.created_at < $13)
+  AND ($14::timestamptz IS NULL OR c.completed_at >= $14)
+  AND ($15::timestamptz IS NULL OR c.completed_at < $15)
+  AND (
+      $16::timestamptz IS NULL
+      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) >= $16
+  )
+  AND (
+      $17::timestamptz IS NULL
+      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) < $17
+  )
+ORDER BY
+  CASE WHEN $18::text = 'title' AND $19::bool THEN c.title END DESC,
+  CASE WHEN $18::text = 'title' AND NOT $19::bool THEN c.title END ASC,
+  CASE WHEN $18::text = 'createdAt' AND $19::bool THEN c.created_at END DESC,
+  CASE WHEN $18::text = 'createdAt' AND NOT $19::bool THEN c.created_at END ASC,
+  CASE WHEN $18::text = 'completedAt' AND $19::bool THEN c.completed_at END DESC NULLS LAST,
+  CASE WHEN $18::text = 'completedAt' AND NOT $19::bool THEN c.completed_at END ASC NULLS LAST,
+  CASE WHEN $18::text = 'priority' AND $19::bool THEN
+    CASE c.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END
+  END DESC,
+  CASE WHEN $18::text = 'priority' AND NOT $19::bool THEN
+    CASE c.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END
+  END ASC,
+  c.id ASC
+LIMIT $21
+OFFSET $20
+`
+
+type ListTasksParams struct {
+	ViewerID      int64              `json:"viewer_id"`
+	TitleQuery    string             `json:"title_query"`
+	ProjectID     int64              `json:"project_id"`
+	Priority      string             `json:"priority"`
+	AuthorID      int64              `json:"author_id"`
+	AssigneeID    int64              `json:"assignee_id"`
+	Completed     string             `json:"completed"`
+	Archived      string             `json:"archived"`
+	Kind          string             `json:"kind"`
+	DueFrom       pgtype.Timestamptz `json:"due_from"`
+	DueTo         pgtype.Timestamptz `json:"due_to"`
+	CreatedFrom   pgtype.Timestamptz `json:"created_from"`
+	CreatedTo     pgtype.Timestamptz `json:"created_to"`
+	CompletedFrom pgtype.Timestamptz `json:"completed_from"`
+	CompletedTo   pgtype.Timestamptz `json:"completed_to"`
+	ArchivedFrom  pgtype.Timestamptz `json:"archived_from"`
+	ArchivedTo    pgtype.Timestamptz `json:"archived_to"`
+	Sort          string             `json:"sort"`
+	SortDesc      bool               `json:"sort_desc"`
+	PageOffset    int32              `json:"page_offset"`
+	PageLimit     int32              `json:"page_limit"`
+}
+
+type ListTasksRow struct {
+	ProjectID       int64              `json:"project_id"`
+	ProjectName     string             `json:"project_name"`
+	BoardID         int64              `json:"board_id"`
+	BoardTitle      string             `json:"board_title"`
+	ColumnID        int64              `json:"column_id"`
+	ColumnTitle     string             `json:"column_title"`
+	CardID          int64              `json:"card_id"`
+	CardTitle       string             `json:"card_title"`
+	CardPriority    pgtype.Text        `json:"card_priority"`
+	CardDueDate     pgtype.Timestamptz `json:"card_due_date"`
+	CardBorderColor pgtype.Text        `json:"card_border_color"`
+	ParentID        pgtype.Int8        `json:"parent_id"`
+	ParentTitle     pgtype.Text        `json:"parent_title"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	CompletedAt     pgtype.Timestamptz `json:"completed_at"`
+	ArchivedAt      pgtype.Timestamptz `json:"archived_at"`
+	IsArchived      bool               `json:"is_archived"`
+}
+
+func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]ListTasksRow, error) {
+	rows, err := q.db.Query(ctx, listTasks,
+		arg.ViewerID,
+		arg.TitleQuery,
+		arg.ProjectID,
+		arg.Priority,
+		arg.AuthorID,
+		arg.AssigneeID,
+		arg.Completed,
+		arg.Archived,
+		arg.Kind,
+		arg.DueFrom,
+		arg.DueTo,
+		arg.CreatedFrom,
+		arg.CreatedTo,
+		arg.CompletedFrom,
+		arg.CompletedTo,
+		arg.ArchivedFrom,
+		arg.ArchivedTo,
+		arg.Sort,
+		arg.SortDesc,
+		arg.PageOffset,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTasksRow{}
+	for rows.Next() {
+		var i ListTasksRow
+		if err := rows.Scan(
+			&i.ProjectID,
+			&i.ProjectName,
+			&i.BoardID,
+			&i.BoardTitle,
+			&i.ColumnID,
+			&i.ColumnTitle,
+			&i.CardID,
+			&i.CardTitle,
+			&i.CardPriority,
+			&i.CardDueDate,
+			&i.CardBorderColor,
+			&i.ParentID,
+			&i.ParentTitle,
+			&i.CreatedAt,
+			&i.CompletedAt,
+			&i.ArchivedAt,
+			&i.IsArchived,
 		); err != nil {
 			return nil, err
 		}
@@ -2134,7 +2195,7 @@ const rebalanceColumnCards = `-- name: RebalanceColumnCards :exec
 WITH ranked AS (
   SELECT id, ROW_NUMBER() OVER(ORDER BY position ASC, id ASC) as rn
   FROM kanban_card
-  WHERE kanban_card.column_id = $1 AND kanban_card.is_archived = FALSE AND kanban_card.deleted_at IS NULL
+  WHERE kanban_card.column_id = $1 AND kanban_card.parent_id IS NULL AND kanban_card.is_archived = FALSE AND kanban_card.deleted_at IS NULL
 )
 UPDATE kanban_card
 SET position = ranked.rn * 65536.0
@@ -2142,7 +2203,7 @@ FROM ranked
 WHERE kanban_card.id = ranked.id
 `
 
-func (q *Queries) RebalanceColumnCards(ctx context.Context, columnID int64) error {
+func (q *Queries) RebalanceColumnCards(ctx context.Context, columnID pgtype.Int8) error {
 	_, err := q.db.Exec(ctx, rebalanceColumnCards, columnID)
 	return err
 }
@@ -2217,7 +2278,7 @@ func (q *Queries) RestoreBoard(ctx context.Context, id int64) error {
 const restoreCard = `-- name: RestoreCard :exec
 UPDATE kanban_card
 SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
-WHERE id = $1
+WHERE id = $1 OR parent_id = $1
 `
 
 func (q *Queries) RestoreCard(ctx context.Context, id int64) error {
@@ -2269,17 +2330,6 @@ func (q *Queries) RestoreProject(ctx context.Context, id int64) error {
 	return err
 }
 
-const restoreSubtask = `-- name: RestoreSubtask :exec
-UPDATE kanban_card_subtask
-SET deleted_at = NULL
-WHERE id = $1
-`
-
-func (q *Queries) RestoreSubtask(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, restoreSubtask, id)
-	return err
-}
-
 const setDoneColumnID = `-- name: SetDoneColumnID :exec
 UPDATE kanban_board
 SET done_column_id = $1, updated_at = CURRENT_TIMESTAMP
@@ -2328,9 +2378,9 @@ func (q *Queries) UpdateBoard(ctx context.Context, arg UpdateBoardParams) (Kanba
 
 const updateCard = `-- name: UpdateCard :one
 UPDATE kanban_card
-SET title = $1, description = $2, position = $3, due_date = $4, priority = $5, is_archived = $6, archived_at = $7, archived_by_id = $8, completed_at = $9, completed_by_id = $10, column_id = $11, border_color = $12, updated_at = CURRENT_TIMESTAMP
-WHERE id = $13
-RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at
+SET title = $1, description = $2, position = $3, due_date = $4, priority = $5, is_archived = $6, archived_at = $7, archived_by_id = $8, completed_at = $9, completed_by_id = $10, column_id = $11, parent_id = $12, border_color = $13, updated_at = CURRENT_TIMESTAMP
+WHERE id = $14
+RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id
 `
 
 type UpdateCardParams struct {
@@ -2344,7 +2394,8 @@ type UpdateCardParams struct {
 	ArchivedByID  pgtype.Int8        `json:"archived_by_id"`
 	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
 	CompletedByID pgtype.Int8        `json:"completed_by_id"`
-	ColumnID      int64              `json:"column_id"`
+	ColumnID      pgtype.Int8        `json:"column_id"`
+	ParentID      pgtype.Int8        `json:"parent_id"`
 	BorderColor   pgtype.Text        `json:"border_color"`
 	ID            int64              `json:"id"`
 }
@@ -2362,6 +2413,7 @@ func (q *Queries) UpdateCard(ctx context.Context, arg UpdateCardParams) (KanbanC
 		arg.CompletedAt,
 		arg.CompletedByID,
 		arg.ColumnID,
+		arg.ParentID,
 		arg.BorderColor,
 		arg.ID,
 	)
@@ -2384,6 +2436,7 @@ func (q *Queries) UpdateCard(ctx context.Context, arg UpdateCardParams) (KanbanC
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletedAt,
+		&i.ParentID,
 	)
 	return i, err
 }
@@ -2519,40 +2572,4 @@ type UpdateProjectMemberRoleParams struct {
 func (q *Queries) UpdateProjectMemberRole(ctx context.Context, arg UpdateProjectMemberRoleParams) error {
 	_, err := q.db.Exec(ctx, updateProjectMemberRole, arg.KanbanProjectID, arg.UserID, arg.Role)
 	return err
-}
-
-const updateSubtask = `-- name: UpdateSubtask :one
-UPDATE kanban_card_subtask
-SET title = $1, status = $2, position = $3, user_id = $4
-WHERE id = $5 AND deleted_at IS NULL
-RETURNING id, title, status, position, card_id, user_id, deleted_at
-`
-
-type UpdateSubtaskParams struct {
-	Title    string      `json:"title"`
-	Status   string      `json:"status"`
-	Position float64     `json:"position"`
-	UserID   pgtype.Int8 `json:"user_id"`
-	ID       int64       `json:"id"`
-}
-
-func (q *Queries) UpdateSubtask(ctx context.Context, arg UpdateSubtaskParams) (KanbanCardSubtask, error) {
-	row := q.db.QueryRow(ctx, updateSubtask,
-		arg.Title,
-		arg.Status,
-		arg.Position,
-		arg.UserID,
-		arg.ID,
-	)
-	var i KanbanCardSubtask
-	err := row.Scan(
-		&i.ID,
-		&i.Title,
-		&i.Status,
-		&i.Position,
-		&i.CardID,
-		&i.UserID,
-		&i.DeletedAt,
-	)
-	return i, err
 }

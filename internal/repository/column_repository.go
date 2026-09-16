@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"go_kanban_service/internal/model"
@@ -172,7 +173,7 @@ func (r *ColumnRepository) RebalanceBoardColumns(ctx context.Context, boardID in
 
 func (r *ColumnRepository) HasCardsByColumn(ctx context.Context, columnID int64) (bool, error) {
 	queries := dbgen.New(r.Db)
-	res, err := queries.HasCardsByColumn(ctx, columnID)
+	res, err := queries.HasCardsByColumn(ctx, pgtype.Int8{Int64: columnID, Valid: true})
 	if err != nil {
 		return false, err
 	}

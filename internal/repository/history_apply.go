@@ -30,7 +30,7 @@ func applyHistoryUndo(ctx context.Context, q *dbgen.Queries, e model.HistoryUndo
 			return err
 		}
 		return updateCardRow(ctx, q, card, func(p *dbgen.UpdateCardParams) {
-			p.ColumnID = colID
+			p.ColumnID = pgtype.Int8{Int64: colID, Valid: true}
 			p.Position = pos
 		})
 	case "card.updated.renamed":
@@ -161,36 +161,6 @@ func applyHistoryUndo(ctx context.Context, q *dbgen.Queries, e model.HistoryUndo
 	case "comment.updated":
 		_, err := q.UpdateComment(ctx, dbgen.UpdateCommentParams{Body: e.Before, ID: e.EntityID})
 		return err
-	case "subtask.created":
-		return q.DeleteSubtask(ctx, e.EntityID)
-	case "subtask.deleted":
-		return q.RestoreSubtask(ctx, e.EntityID)
-	case "subtask.renamed":
-		if e.Before == "" {
-			return undoImpossible()
-		}
-		return patchSubtask(ctx, q, e.EntityID, &e.Before, nil, nil, false, nil)
-	case "subtask.completed":
-		status := "todo"
-		return patchSubtask(ctx, q, e.EntityID, nil, &status, nil, false, nil)
-	case "subtask.reopened":
-		status := "done"
-		return patchSubtask(ctx, q, e.EntityID, nil, &status, nil, false, nil)
-	case "subtask.moved":
-		pos, ok := parseUndoPos(e.Before)
-		if !ok {
-			return undoImpossible()
-		}
-		return patchSubtask(ctx, q, e.EntityID, nil, nil, &pos, false, nil)
-	case "subtask.assigned", "subtask.unassigned":
-		if e.Before == "" {
-			return patchSubtask(ctx, q, e.EntityID, nil, nil, nil, true, nil)
-		}
-		uid, ok := parseUndoID(e.Before)
-		if !ok {
-			return undoImpossible()
-		}
-		return patchSubtask(ctx, q, e.EntityID, nil, nil, nil, false, &uid)
 	case "attachment.created":
 		return q.DeleteAttachment(ctx, e.EntityID)
 	case "attachment.deleted":
@@ -272,32 +242,6 @@ func patchProject(ctx context.Context, q *dbgen.Queries, id int64, name *string,
 	return err
 }
 
-func patchSubtask(ctx context.Context, q *dbgen.Queries, id int64, title, status *string, pos *float64, clearUser bool, userID *int64) error {
-	st, err := q.GetSubtask(ctx, id)
-	if err != nil {
-		return err
-	}
-	nextTitle, nextStatus, nextPos, nextUser := st.Title, st.Status, st.Position, st.UserID
-	if title != nil {
-		nextTitle = *title
-	}
-	if status != nil {
-		nextStatus = *status
-	}
-	if pos != nil {
-		nextPos = *pos
-	}
-	if clearUser {
-		nextUser = pgtype.Int8{}
-	} else if userID != nil {
-		nextUser = pgtype.Int8{Int64: *userID, Valid: true}
-	}
-	_, err = q.UpdateSubtask(ctx, dbgen.UpdateSubtaskParams{
-		Title: nextTitle, Status: nextStatus, Position: nextPos, UserID: nextUser, ID: st.ID,
-	})
-	return err
-}
-
 func updateCardRow(ctx context.Context, q *dbgen.Queries, card dbgen.KanbanCard, mutate func(*dbgen.UpdateCardParams)) error {
 	params := dbgen.UpdateCardParams{
 		Title:         card.Title,
@@ -311,6 +255,7 @@ func updateCardRow(ctx context.Context, q *dbgen.Queries, card dbgen.KanbanCard,
 		CompletedAt:   card.CompletedAt,
 		CompletedByID: card.CompletedByID,
 		ColumnID:      card.ColumnID,
+		ParentID:      card.ParentID,
 		BorderColor:   card.BorderColor,
 		ID:            card.ID,
 	}

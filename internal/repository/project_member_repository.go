@@ -257,24 +257,11 @@ func (r *ProjectMemberRepository) RemoveMember(ctx context.Context, projectID in
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM kanban_card_assignee ca
 		USING kanban_card c
-		JOIN kanban_column col ON c.column_id = col.id
+		LEFT JOIN kanban_card parent ON parent.id = c.parent_id
+		JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
 		JOIN kanban_board b ON col.board_id = b.id
 		WHERE ca.card_id = c.id
 			AND ca.user_id = $2
-			AND b.kanban_project_id = $1
-	`, projectID, userID); err != nil {
-		return err
-	}
-
-	if _, err := tx.Exec(ctx, `
-		UPDATE kanban_card_subtask st
-		SET user_id = NULL
-		FROM kanban_card c
-		JOIN kanban_column col ON c.column_id = col.id
-		JOIN kanban_board b ON col.board_id = b.id
-		WHERE st.card_id = c.id
-			AND st.user_id = $2
-			AND st.deleted_at IS NULL
 			AND b.kanban_project_id = $1
 	`, projectID, userID); err != nil {
 		return err

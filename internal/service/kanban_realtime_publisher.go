@@ -29,7 +29,6 @@ type KanbanRealtimePublisher struct {
 
 	cardRepo       repository.CardRepositoryInterface
 	columnRepo     repository.ColumnRepositoryInterface
-	subtaskRepo    repository.SubtaskRepositoryInterface
 	commentRepo    repository.CommentRepositoryInterface
 	attachmentRepo repository.AttachmentRepositoryInterface
 	labelRepo      repository.LabelRepositoryInterface
@@ -42,7 +41,6 @@ func NewKanbanRealtimePublisher(
 	jwtSecret string,
 	cardRepo repository.CardRepositoryInterface,
 	columnRepo repository.ColumnRepositoryInterface,
-	subtaskRepo repository.SubtaskRepositoryInterface,
 	commentRepo repository.CommentRepositoryInterface,
 	attachmentRepo repository.AttachmentRepositoryInterface,
 	labelRepo repository.LabelRepositoryInterface,
@@ -57,7 +55,6 @@ func NewKanbanRealtimePublisher(
 		},
 		cardRepo:       cardRepo,
 		columnRepo:     columnRepo,
-		subtaskRepo:    subtaskRepo,
 		commentRepo:    commentRepo,
 		attachmentRepo: attachmentRepo,
 		labelRepo:      labelRepo,
@@ -159,21 +156,14 @@ func (p *KanbanRealtimePublisher) BuildCreatedCard(card *model.Card, column *mod
 }
 
 func (p *KanbanRealtimePublisher) BuildChecklistCounters(ctx context.Context, cardID int64) (map[string]any, error) {
-	subtasks, err := p.subtaskRepo.GetSubtasks(ctx, cardID)
+	counts, err := p.cardRepo.GetChildCountsByParentIDs(ctx, []int64{cardID})
 	if err != nil {
 		return nil, err
 	}
-
-	done := 0
-	for _, subtask := range subtasks {
-		if subtask.Status == "done" || subtask.Status == "DONE" {
-			done++
-		}
-	}
-
+	c := counts[cardID]
 	return map[string]any{
-		"checklistTotal": len(subtasks),
-		"checklistDone":  done,
+		"checklistTotal": c.Total,
+		"checklistDone":  c.Done,
 	}, nil
 }
 

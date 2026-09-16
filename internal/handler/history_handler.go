@@ -59,12 +59,12 @@ func (h *HistoryHandler) Undo() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		action, entityTitle, err := h.service.Undo(r.Context(), projectID)
+		action, entityTitle, isChild, err := h.service.Undo(r.Context(), projectID)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.HistoryUndoResponse{Action: action, EntityTitle: entityTitle})
+		helper.WriteJSON(w, http.StatusOK, dto.HistoryUndoResponse{Action: action, EntityTitle: entityTitle, IsChild: isChild})
 	}
 }
 

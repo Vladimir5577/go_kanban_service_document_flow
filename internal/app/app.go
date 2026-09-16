@@ -42,7 +42,6 @@ type Handlers struct {
 	Label         *handler.LabelHandler
 	ProjectFolder *handler.ProjectFolderHandler
 	ProjectMember *handler.ProjectMemberHandler
-	Subtask       *handler.SubtaskHandler
 	History       *handler.HistoryHandler
 }
 
@@ -75,7 +74,6 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	userHandler := handler.NewUserHandler(userSvc)
 
 	attachmentRepo := repository.NewAttachmentRepository(db)
-	subtaskRepo := repository.NewSubtaskRepository(db)
 	commentRepo := repository.NewCommentRepository(db)
 	labelRepo := repository.NewLabelRepository(db)
 
@@ -88,7 +86,6 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		cfg.MercureJWTSecret,
 		cardRepo,
 		columnRepo,
-		subtaskRepo,
 		commentRepo,
 		attachmentRepo,
 		labelRepo,
@@ -110,7 +107,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, realtimePublisher, userRepo)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
-	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, subtaskRepo, commentRepo, attachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
+	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, commentRepo, attachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
@@ -141,14 +138,10 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc, kanbanNotificationSvc)
 	projectMemberHandler := handler.NewProjectMemberHandler(projectMemberSvc, projectSvc)
 
-	subtaskSvc := service.NewSubtaskService(subtaskRepo, permSvc, userRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc)
-	subtaskHandler := handler.NewSubtaskHandler(subtaskSvc)
-
-	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, subtaskRepo, commentRepo, attachmentRepo, permSvc, cfg)
+	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, commentRepo, attachmentRepo, permSvc, cfg)
 	boardHandler := handler.NewBoardHandler(boardSvc)
 	projectSvc.History = historySvc
 	projectMemberSvc.History = historySvc
-	subtaskSvc.History = historySvc
 	boardSvc.History = historySvc
 
 	h := Handlers{
@@ -162,7 +155,6 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		Label:         labelHandler,
 		ProjectFolder: projectFolderHandler,
 		ProjectMember: projectMemberHandler,
-		Subtask:       subtaskHandler,
 		History:       historyHandler,
 	}
 

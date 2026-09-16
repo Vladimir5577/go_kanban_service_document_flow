@@ -51,6 +51,9 @@ func (s *AttachmentService) GetAttachments(ctx context.Context, cardID int64, co
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
+	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetAttachmentsByCard(ctx, cardID, contextStr)
 }
 
@@ -79,6 +82,9 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 		return nil, err
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
+		return nil, err
+	}
+	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
 		return nil, err
 	}
 
