@@ -34,6 +34,26 @@ func (r *UserRepository) LoginCheck(ctx context.Context) (*model.User, error) {
 	return &model.User{}, nil
 }
 
+// missingUserIDs — кого из запрошенных не оказалось в выдаче. Считает по
+// множествам, а не по длинам: ids приходит с повторами (по автору на каждый
+// комментарий), и прежнее len(users) < len(ids) было истинным почти всегда,
+// хотя все пользователи на месте. Отметка в seen заодно не даёт уехать
+// дублям в запрос к монолиту.
+func missingUserIDs(ids []int64, found []model.User) []int64 {
+	seen := make(map[int64]bool, len(ids))
+	for i := range found {
+		seen[found[i].ID] = true
+	}
+	var missing []int64
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			missing = append(missing, id)
+		}
+	}
+	return missing
+}
+
 func (r *UserRepository) GetUsersByIDs(ctx context.Context, ids []int64) ([]model.User, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -60,28 +80,20 @@ func (r *UserRepository) GetUsersByIDs(ctx context.Context, ids []int64) ([]mode
 		return nil, err
 	}
 
-	// Проверяем, всех ли пользователей нашли
-	if len(users) < len(ids) {
-		foundIDs := make(map[int64]bool, len(users))
-		for _, u := range users {
-			foundIDs[u.ID] = true
-		}
+	if r.SymfonyClient == nil {
+		return users, nil
+	}
 
-		var missingIDs []int64
-		for _, id := range ids {
-			if !foundIDs[id] {
-				missingIDs = append(missingIDs, id)
-			}
-		}
+	missingIDs := missingUserIDs(ids, users)
+	if len(missingIDs) == 0 {
+		return users, nil
+	}
 
-		if len(missingIDs) > 0 && r.SymfonyClient != nil {
-			fetchedUsers, err := r.SymfonyClient.FetchUsersByIDs(ctx, missingIDs)
-			if err == nil && len(fetchedUsers) > 0 {
-				// Сохраняем в локальную БД
-				if err := r.UpsertUsers(ctx, fetchedUsers); err == nil {
-					users = append(users, fetchedUsers...)
-				}
-			}
+	fetchedUsers, err := r.SymfonyClient.FetchUsersByIDs(ctx, missingIDs)
+	if err == nil && len(fetchedUsers) > 0 {
+		// Сохраняем в локальную БД
+		if err := r.UpsertUsers(ctx, fetchedUsers); err == nil {
+			users = append(users, fetchedUsers...)
 		}
 	}
 

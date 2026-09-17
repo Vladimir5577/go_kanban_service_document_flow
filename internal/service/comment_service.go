@@ -94,12 +94,14 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 		return nil, err
 	}
 
-	comments, err := s.repo.GetComments(ctx, cardID)
-	if err == nil && len(comments) >= maxCommentsPerCard {
-		return nil, apperr.New(apperr.CodeCommentLimitReached, "maximum number of comments (300) per card reached")
-	}
+	// Лимит проверяется счётчиком: раньше ради len() поднимались все комментарии
+	// карточки с телами. Фильтр у обоих запросов одинаковый — deleted_at IS NULL.
+	counts, err := s.repo.GetCountsByCardIDs(ctx, []int64{cardID})
 	if err != nil {
 		return nil, err
+	}
+	if counts[cardID] >= maxCommentsPerCard {
+		return nil, apperr.New(apperr.CodeCommentLimitReached, "maximum number of comments (300) per card reached")
 	}
 
 	c := &model.Comment{
@@ -112,12 +114,15 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 		return nil, err
 	}
 	s.populateAuthorName(ctx, created)
+	// Ссылка собирается из acc — иначе historyEntityLink пойдёт добывать проект
+	// и доску заново, а это GetCard (карточка + assignees + labels) и GetColumn.
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:  acc.ProjectID,
 		Action:     "comment.created",
 		EntityType: "comment",
 		EntityID:   created.ID,
 		CardID:     cardID,
+		EntityLink: historyTaskPath(acc.ProjectID, acc.BoardID, cardID),
 	})
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
@@ -133,9 +138,9 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 	if s.notificationSvc != nil {
 		actorID := derefInt64(currentUserID(ctx))
 		runDetached(ctx, notifyTimeout, "failed to notify kanban comment added", func(ctx context.Context) error {
-			projectID, _ := s.permSvc.GetProjectIDByCard(ctx, cardID)
-			// boardID may be resolved inside the notification service via the card
-			s.notificationSvc.NotifyCommentAdded(ctx, projectID, 0, cardID, actorID, "")
+			// Проект и доска уже в acc: без них resolveBoardID внутри уведомления
+			// снова читал бы карточку с колонкой.
+			s.notificationSvc.NotifyCommentAdded(ctx, acc.ProjectID, acc.BoardID, cardID, actorID, "")
 			return nil
 		})
 	}
@@ -185,6 +190,7 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 		EntityType: "comment",
 		EntityID:   commentID,
 		CardID:     cardID,
+		EntityLink: historyTaskPath(acc.ProjectID, acc.BoardID, cardID),
 		Before:     oldBody,
 		After:      body,
 	})
@@ -222,6 +228,7 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 		EntityType: "comment",
 		EntityID:   commentID,
 		CardID:     cardID,
+		EntityLink: historyTaskPath(acc.ProjectID, acc.BoardID, cardID),
 	})
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
@@ -261,9 +268,14 @@ func (s *CommentService) populateAuthorNames(ctx context.Context, comments []mod
 	if len(comments) == 0 {
 		return
 	}
-	var userIDs []int64
+	// Авторов обычно единицы на сотню комментариев — шлём каждого по разу.
+	seen := make(map[int64]bool, len(comments))
+	userIDs := make([]int64, 0, len(comments))
 	for i := range comments {
-		userIDs = append(userIDs, comments[i].AuthorID)
+		if id := comments[i].AuthorID; !seen[id] {
+			seen[id] = true
+			userIDs = append(userIDs, id)
+		}
 	}
 	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
 	if err != nil {
