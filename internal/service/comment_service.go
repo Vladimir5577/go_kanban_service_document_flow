@@ -51,14 +51,7 @@ func NewCommentService(
 }
 
 func (s *CommentService) GetComments(ctx context.Context, cardID int64) ([]model.Comment, error) {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
+	if _, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer); err != nil {
 		return nil, err
 	}
 	comments, err := s.repo.GetComments(ctx, cardID)
@@ -86,14 +79,8 @@ func (s *CommentService) GetComment(ctx context.Context, commentID int64) (*mode
 }
 
 func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dto.CreateCommentRequest) (*model.Comment, error) {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
+	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
 		return nil, err
 	}
 
@@ -126,7 +113,7 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 	}
 	s.populateAuthorName(ctx, created)
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  projectID,
+		ProjectID:  acc.ProjectID,
 		Action:     "comment.created",
 		EntityType: "comment",
 		EntityID:   created.ID,
@@ -156,14 +143,8 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 }
 
 func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error) {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
+	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
 		return nil, err
 	}
 
@@ -199,7 +180,7 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 	}
 	s.populateAuthorName(ctx, updated)
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  projectID,
+		ProjectID:  acc.ProjectID,
 		Action:     "comment.updated",
 		EntityType: "comment",
 		EntityID:   commentID,
@@ -211,14 +192,8 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 }
 
 func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commentID int64) error {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
+	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
 	if err != nil {
-		return err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
-		return err
-	}
-	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
 		return err
 	}
 
@@ -242,7 +217,7 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 		return err
 	}
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:  projectID,
+		ProjectID:  acc.ProjectID,
 		Action:     "comment.deleted",
 		EntityType: "comment",
 		EntityID:   commentID,

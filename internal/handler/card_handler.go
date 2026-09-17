@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -141,7 +142,7 @@ func (h *CardHandler) ListTaskCollaborants() http.HandlerFunc {
 		res, err := h.service.ListTaskCollaborants(r.Context(), repository.TaskCollaborantsParams{
 			NameQuery: likeQuery(q.Get("search")),
 			Limit:     int32(pageSize),
-			Offset:    int32((page - 1) * pageSize),
+			Offset:    pageOffset(page, pageSize),
 		})
 		if err != nil {
 			helper.WriteError(w, err)
@@ -392,8 +393,22 @@ func parseTaskListQuery(r *http.Request) (repository.TaskListParams, error) {
 		Sort:          sort,
 		SortDesc:      order == "desc",
 		Limit:         int32(pageSize),
-		Offset:        int32((page - 1) * pageSize),
+		Offset:        pageOffset(page, pageSize),
 	}, nil
+}
+
+// pageOffset считает смещение с защитой от переполнения: page сверху не
+// ограничен, и (page-1)*pageSize при большом page уезжал в минус после
+// приведения к int32 — база отвечала ошибкой на отрицательный OFFSET.
+func pageOffset(page, pageSize int) int32 {
+	offset := int64(page-1) * int64(pageSize)
+	if offset < 0 {
+		return 0
+	}
+	if offset > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(offset)
 }
 
 func parseTriBool(raw string) (string, error) {

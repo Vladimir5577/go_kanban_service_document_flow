@@ -110,183 +110,6 @@ func (q *Queries) ColumnPositionTaken(ctx context.Context, arg ColumnPositionTak
 	return exists, err
 }
 
-const countTaskCollaborants = `-- name: CountTaskCollaborants :one
-
-WITH visible AS (
-    SELECT p.id, p.owner_id
-    FROM kanban_project p
-    WHERE p.deleted_at IS NULL
-      AND (
-          p.owner_id = $1
-          OR EXISTS (
-              SELECT 1 FROM kanban_project_user pu
-              WHERE pu.kanban_project_id = p.id
-                AND pu.user_id = $1
-          )
-      )
-),
-ids AS (
-    SELECT visible.owner_id AS user_id FROM visible
-    UNION
-    SELECT pu.user_id
-    FROM kanban_project_user pu
-    INNER JOIN visible ON visible.id = pu.kanban_project_id
-)
-SELECT COUNT(*)::bigint AS count
-FROM ids
-INNER JOIN users u ON u.id = ids.user_id
-WHERE u.deleted_at IS NULL
-  AND u.id <> $1
-  AND (
-      $2::text = ''
-      OR u.lastname ILIKE '%' || $2 || '%' ESCAPE '\'
-      OR u.firstname ILIKE '%' || $2 || '%' ESCAPE '\'
-      OR u.login ILIKE '%' || $2 || '%' ESCAPE '\'
-      OR COALESCE(u.patronymic, '') ILIKE '%' || $2 || '%' ESCAPE '\'
-  )
-`
-
-type CountTaskCollaborantsParams struct {
-	ViewerID  int64  `json:"viewer_id"`
-	NameQuery string `json:"name_query"`
-}
-
-// ==============================
-// TASK COLLABORANTS
-// ==============================
-func (q *Queries) CountTaskCollaborants(ctx context.Context, arg CountTaskCollaborantsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countTaskCollaborants, arg.ViewerID, arg.NameQuery)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const countTasks = `-- name: CountTasks :one
-
-SELECT COUNT(*)::bigint AS count
-FROM kanban_card c
-LEFT JOIN kanban_card parent ON parent.id = c.parent_id
-JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
-JOIN kanban_board b ON b.id = col.board_id
-JOIN kanban_project p ON p.id = b.kanban_project_id
-WHERE c.deleted_at IS NULL
-  AND (parent.id IS NULL OR parent.deleted_at IS NULL)
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = $1
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1
-      )
-  )
-  AND ($2::text = '' OR c.title ILIKE '%' || $2 || '%' ESCAPE '\')
-  AND ($3::bigint = 0 OR p.id = $3)
-  AND (
-      $4::text = ''
-      OR ($4 = 'none' AND c.priority IS NULL)
-      OR ($4 <> 'none' AND c.priority = $4)
-  )
-  AND (
-      $5::bigint = 0
-      OR ($5 < 0 AND c.created_by_id IS NULL)
-      OR ($5 > 0 AND c.created_by_id = $5)
-  )
-  AND (
-      $6::bigint = 0
-      OR (
-          $6 < 0
-          AND NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)
-      )
-      OR (
-          $6 > 0
-          AND EXISTS (
-              SELECT 1 FROM kanban_card_assignee ca
-              WHERE ca.card_id = c.id AND ca.user_id = $6
-          )
-      )
-  )
-  AND (
-      $7::text = ''
-      OR (c.completed_at IS NOT NULL) = ($7 = 'true')
-  )
-  AND (
-      $8::text = ''
-      OR (
-          CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END
-      ) = ($8 = 'true')
-  )
-  AND (
-      $9::text = ''
-      OR ($9 = 'task' AND c.parent_id IS NULL)
-      OR ($9 = 'subtask' AND c.parent_id IS NOT NULL)
-  )
-  AND ($10::timestamptz IS NULL OR c.due_date >= $10)
-  AND ($11::timestamptz IS NULL OR c.due_date < $11)
-  AND ($12::timestamptz IS NULL OR c.created_at >= $12)
-  AND ($13::timestamptz IS NULL OR c.created_at < $13)
-  AND ($14::timestamptz IS NULL OR c.completed_at >= $14)
-  AND ($15::timestamptz IS NULL OR c.completed_at < $15)
-  AND (
-      $16::timestamptz IS NULL
-      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) >= $16
-  )
-  AND (
-      $17::timestamptz IS NULL
-      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) < $17
-  )
-`
-
-type CountTasksParams struct {
-	ViewerID      int64              `json:"viewer_id"`
-	TitleQuery    string             `json:"title_query"`
-	ProjectID     int64              `json:"project_id"`
-	Priority      string             `json:"priority"`
-	AuthorID      int64              `json:"author_id"`
-	AssigneeID    int64              `json:"assignee_id"`
-	Completed     string             `json:"completed"`
-	Archived      string             `json:"archived"`
-	Kind          string             `json:"kind"`
-	DueFrom       pgtype.Timestamptz `json:"due_from"`
-	DueTo         pgtype.Timestamptz `json:"due_to"`
-	CreatedFrom   pgtype.Timestamptz `json:"created_from"`
-	CreatedTo     pgtype.Timestamptz `json:"created_to"`
-	CompletedFrom pgtype.Timestamptz `json:"completed_from"`
-	CompletedTo   pgtype.Timestamptz `json:"completed_to"`
-	ArchivedFrom  pgtype.Timestamptz `json:"archived_from"`
-	ArchivedTo    pgtype.Timestamptz `json:"archived_to"`
-}
-
-// ==============================
-// TASK LIST
-// ==============================
-func (q *Queries) CountTasks(ctx context.Context, arg CountTasksParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countTasks,
-		arg.ViewerID,
-		arg.TitleQuery,
-		arg.ProjectID,
-		arg.Priority,
-		arg.AuthorID,
-		arg.AssigneeID,
-		arg.Completed,
-		arg.Archived,
-		arg.Kind,
-		arg.DueFrom,
-		arg.DueTo,
-		arg.CreatedFrom,
-		arg.CreatedTo,
-		arg.CompletedFrom,
-		arg.CompletedTo,
-		arg.ArchivedFrom,
-		arg.ArchivedTo,
-	)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
 const createAttachment = `-- name: CreateAttachment :one
 INSERT INTO kanban_attachment (filename, storage_key, content_type, size_bytes, context, card_id, author_id)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1330,6 +1153,27 @@ func (q *Queries) GetChildCountsByParentIDs(ctx context.Context, dollar_1 []int6
 	return items, nil
 }
 
+const getChildStats = `-- name: GetChildStats :one
+SELECT COUNT(*)::bigint AS total,
+       COALESCE(MAX(position), 0)::double precision AS max_position
+FROM kanban_card
+WHERE parent_id = $1 AND deleted_at IS NULL
+`
+
+type GetChildStatsRow struct {
+	Total       int64   `json:"total"`
+	MaxPosition float64 `json:"max_position"`
+}
+
+// Счётчик и хвостовая позиция для создания подзадачи: всё, что нужно,
+// без вычитывания самих детей и их исполнителей.
+func (q *Queries) GetChildStats(ctx context.Context, parentID pgtype.Int8) (GetChildStatsRow, error) {
+	row := q.db.QueryRow(ctx, getChildStats, parentID)
+	var i GetChildStatsRow
+	err := row.Scan(&i.Total, &i.MaxPosition)
+	return i, err
+}
+
 const getColumn = `-- name: GetColumn :one
 
 SELECT id, title, header_color, position, board_id, deleted_at FROM kanban_column
@@ -1892,6 +1736,8 @@ func (q *Queries) ListProjectHistory(ctx context.Context, arg ListProjectHistory
 }
 
 const listTaskCollaborants = `-- name: ListTaskCollaborants :many
+
+
 WITH visible AS (
     SELECT p.id, p.owner_id
     FROM kanban_project p
@@ -1912,7 +1758,8 @@ ids AS (
     FROM kanban_project_user pu
     INNER JOIN visible ON visible.id = pu.kanban_project_id
 )
-SELECT u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name
+SELECT COUNT(*) OVER ()::bigint AS total_count,
+       u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name
 FROM ids
 INNER JOIN users u ON u.id = ids.user_id
 WHERE u.deleted_at IS NULL
@@ -1937,6 +1784,7 @@ type ListTaskCollaborantsParams struct {
 }
 
 type ListTaskCollaborantsRow struct {
+	TotalCount int64       `json:"total_count"`
 	ID         int64       `json:"id"`
 	Login      string      `json:"login"`
 	Lastname   string      `json:"lastname"`
@@ -1945,6 +1793,12 @@ type ListTaskCollaborantsRow struct {
 	AvatarName pgtype.Text `json:"avatar_name"`
 }
 
+// Список задач (ListTasks) собирается динамически в card_repository.go:
+// фильтров полтора десятка, и статический запрос с `$n = ” OR ...` не давал
+// планировщику взять индекс ни по одному из них.
+// ==============================
+// TASK COLLABORANTS
+// ==============================
 func (q *Queries) ListTaskCollaborants(ctx context.Context, arg ListTaskCollaborantsParams) ([]ListTaskCollaborantsRow, error) {
 	rows, err := q.db.Query(ctx, listTaskCollaborants,
 		arg.ViewerID,
@@ -1960,226 +1814,13 @@ func (q *Queries) ListTaskCollaborants(ctx context.Context, arg ListTaskCollabor
 	for rows.Next() {
 		var i ListTaskCollaborantsRow
 		if err := rows.Scan(
+			&i.TotalCount,
 			&i.ID,
 			&i.Login,
 			&i.Lastname,
 			&i.Firstname,
 			&i.Patronymic,
 			&i.AvatarName,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listTasks = `-- name: ListTasks :many
-SELECT
-    p.id            AS project_id,
-    p.name          AS project_name,
-    b.id            AS board_id,
-    b.title         AS board_title,
-    col.id          AS column_id,
-    col.title       AS column_title,
-    c.id            AS card_id,
-    c.title         AS card_title,
-    c.priority      AS card_priority,
-    c.due_date      AS card_due_date,
-    c.border_color  AS card_border_color,
-    c.parent_id     AS parent_id,
-    parent.title    AS parent_title,
-    c.created_at    AS created_at,
-    c.completed_at  AS completed_at,
-    (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END)::timestamptz AS archived_at,
-    (CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END)::bool AS is_archived
-FROM kanban_card c
-LEFT JOIN kanban_card parent ON parent.id = c.parent_id
-JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
-JOIN kanban_board b ON b.id = col.board_id
-JOIN kanban_project p ON p.id = b.kanban_project_id
-WHERE c.deleted_at IS NULL
-  AND (parent.id IS NULL OR parent.deleted_at IS NULL)
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = $1
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = $1
-      )
-  )
-  AND ($2::text = '' OR c.title ILIKE '%' || $2 || '%' ESCAPE '\')
-  AND ($3::bigint = 0 OR p.id = $3)
-  AND (
-      $4::text = ''
-      OR ($4 = 'none' AND c.priority IS NULL)
-      OR ($4 <> 'none' AND c.priority = $4)
-  )
-  AND (
-      $5::bigint = 0
-      OR ($5 < 0 AND c.created_by_id IS NULL)
-      OR ($5 > 0 AND c.created_by_id = $5)
-  )
-  AND (
-      $6::bigint = 0
-      OR (
-          $6 < 0
-          AND NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)
-      )
-      OR (
-          $6 > 0
-          AND EXISTS (
-              SELECT 1 FROM kanban_card_assignee ca
-              WHERE ca.card_id = c.id AND ca.user_id = $6
-          )
-      )
-  )
-  AND (
-      $7::text = ''
-      OR (c.completed_at IS NOT NULL) = ($7 = 'true')
-  )
-  AND (
-      $8::text = ''
-      OR (
-          CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END
-      ) = ($8 = 'true')
-  )
-  AND (
-      $9::text = ''
-      OR ($9 = 'task' AND c.parent_id IS NULL)
-      OR ($9 = 'subtask' AND c.parent_id IS NOT NULL)
-  )
-  AND ($10::timestamptz IS NULL OR c.due_date >= $10)
-  AND ($11::timestamptz IS NULL OR c.due_date < $11)
-  AND ($12::timestamptz IS NULL OR c.created_at >= $12)
-  AND ($13::timestamptz IS NULL OR c.created_at < $13)
-  AND ($14::timestamptz IS NULL OR c.completed_at >= $14)
-  AND ($15::timestamptz IS NULL OR c.completed_at < $15)
-  AND (
-      $16::timestamptz IS NULL
-      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) >= $16
-  )
-  AND (
-      $17::timestamptz IS NULL
-      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) < $17
-  )
-ORDER BY
-  CASE WHEN $18::text = 'title' AND $19::bool THEN c.title END DESC,
-  CASE WHEN $18::text = 'title' AND NOT $19::bool THEN c.title END ASC,
-  CASE WHEN $18::text = 'createdAt' AND $19::bool THEN c.created_at END DESC,
-  CASE WHEN $18::text = 'createdAt' AND NOT $19::bool THEN c.created_at END ASC,
-  CASE WHEN $18::text = 'completedAt' AND $19::bool THEN c.completed_at END DESC NULLS LAST,
-  CASE WHEN $18::text = 'completedAt' AND NOT $19::bool THEN c.completed_at END ASC NULLS LAST,
-  CASE WHEN $18::text = 'priority' AND $19::bool THEN
-    CASE c.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END
-  END DESC,
-  CASE WHEN $18::text = 'priority' AND NOT $19::bool THEN
-    CASE c.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END
-  END ASC,
-  c.id ASC
-LIMIT $21
-OFFSET $20
-`
-
-type ListTasksParams struct {
-	ViewerID      int64              `json:"viewer_id"`
-	TitleQuery    string             `json:"title_query"`
-	ProjectID     int64              `json:"project_id"`
-	Priority      string             `json:"priority"`
-	AuthorID      int64              `json:"author_id"`
-	AssigneeID    int64              `json:"assignee_id"`
-	Completed     string             `json:"completed"`
-	Archived      string             `json:"archived"`
-	Kind          string             `json:"kind"`
-	DueFrom       pgtype.Timestamptz `json:"due_from"`
-	DueTo         pgtype.Timestamptz `json:"due_to"`
-	CreatedFrom   pgtype.Timestamptz `json:"created_from"`
-	CreatedTo     pgtype.Timestamptz `json:"created_to"`
-	CompletedFrom pgtype.Timestamptz `json:"completed_from"`
-	CompletedTo   pgtype.Timestamptz `json:"completed_to"`
-	ArchivedFrom  pgtype.Timestamptz `json:"archived_from"`
-	ArchivedTo    pgtype.Timestamptz `json:"archived_to"`
-	Sort          string             `json:"sort"`
-	SortDesc      bool               `json:"sort_desc"`
-	PageOffset    int32              `json:"page_offset"`
-	PageLimit     int32              `json:"page_limit"`
-}
-
-type ListTasksRow struct {
-	ProjectID       int64              `json:"project_id"`
-	ProjectName     string             `json:"project_name"`
-	BoardID         int64              `json:"board_id"`
-	BoardTitle      string             `json:"board_title"`
-	ColumnID        int64              `json:"column_id"`
-	ColumnTitle     string             `json:"column_title"`
-	CardID          int64              `json:"card_id"`
-	CardTitle       string             `json:"card_title"`
-	CardPriority    pgtype.Text        `json:"card_priority"`
-	CardDueDate     pgtype.Timestamptz `json:"card_due_date"`
-	CardBorderColor pgtype.Text        `json:"card_border_color"`
-	ParentID        pgtype.Int8        `json:"parent_id"`
-	ParentTitle     pgtype.Text        `json:"parent_title"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	CompletedAt     pgtype.Timestamptz `json:"completed_at"`
-	ArchivedAt      pgtype.Timestamptz `json:"archived_at"`
-	IsArchived      bool               `json:"is_archived"`
-}
-
-func (q *Queries) ListTasks(ctx context.Context, arg ListTasksParams) ([]ListTasksRow, error) {
-	rows, err := q.db.Query(ctx, listTasks,
-		arg.ViewerID,
-		arg.TitleQuery,
-		arg.ProjectID,
-		arg.Priority,
-		arg.AuthorID,
-		arg.AssigneeID,
-		arg.Completed,
-		arg.Archived,
-		arg.Kind,
-		arg.DueFrom,
-		arg.DueTo,
-		arg.CreatedFrom,
-		arg.CreatedTo,
-		arg.CompletedFrom,
-		arg.CompletedTo,
-		arg.ArchivedFrom,
-		arg.ArchivedTo,
-		arg.Sort,
-		arg.SortDesc,
-		arg.PageOffset,
-		arg.PageLimit,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListTasksRow{}
-	for rows.Next() {
-		var i ListTasksRow
-		if err := rows.Scan(
-			&i.ProjectID,
-			&i.ProjectName,
-			&i.BoardID,
-			&i.BoardTitle,
-			&i.ColumnID,
-			&i.ColumnTitle,
-			&i.CardID,
-			&i.CardTitle,
-			&i.CardPriority,
-			&i.CardDueDate,
-			&i.CardBorderColor,
-			&i.ParentID,
-			&i.ParentTitle,
-			&i.CreatedAt,
-			&i.CompletedAt,
-			&i.ArchivedAt,
-			&i.IsArchived,
 		); err != nil {
 			return nil, err
 		}
@@ -2276,11 +1917,17 @@ func (q *Queries) RestoreBoard(ctx context.Context, id int64) error {
 }
 
 const restoreCard = `-- name: RestoreCard :exec
-UPDATE kanban_card
+UPDATE kanban_card c
 SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
-WHERE id = $1 OR parent_id = $1
+FROM kanban_card p
+WHERE p.id = $1
+  AND (c.id = p.id OR (c.parent_id = p.id AND c.deleted_at = p.deleted_at))
 `
 
+// Возвращаем только тех детей, которых удалили вместе с родителем: DeleteCard
+// ставит им один и тот же CURRENT_TIMESTAMP (время транзакции). Дети, удалённые
+// раньше и отдельно, к этой отмене отношения не имеют и остаются удалёнными.
+// Сторона FROM видит снимок до UPDATE, то есть p.deleted_at читается старым.
 func (q *Queries) RestoreCard(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, restoreCard, id)
 	return err
@@ -2437,6 +2084,44 @@ func (q *Queries) UpdateCard(ctx context.Context, arg UpdateCardParams) (KanbanC
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.ParentID,
+	)
+	return i, err
+}
+
+const updateCardPosition = `-- name: UpdateCardPosition :one
+UPDATE kanban_card c
+SET position = $2, updated_at = CURRENT_TIMESTAMP
+FROM kanban_card old
+WHERE c.id = $1 AND old.id = c.id AND c.deleted_at IS NULL
+RETURNING c.id, c.title, c.position, c.updated_at, old.position AS old_position
+`
+
+type UpdateCardPositionParams struct {
+	ID       int64   `json:"id"`
+	Position float64 `json:"position"`
+}
+
+type UpdateCardPositionRow struct {
+	ID          int64              `json:"id"`
+	Title       string             `json:"title"`
+	Position    float64            `json:"position"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	OldPosition float64            `json:"old_position"`
+}
+
+// Перестановка не должна затирать заголовок, который в этот же момент правит
+// кто-то другой, — поэтому узкий UPDATE, а не перезапись всей строки.
+// Старая позиция нужна истории как Before, и она же приезжает из FROM —
+// отдельное чтение карточки ради одного числа не требуется.
+func (q *Queries) UpdateCardPosition(ctx context.Context, arg UpdateCardPositionParams) (UpdateCardPositionRow, error) {
+	row := q.db.QueryRow(ctx, updateCardPosition, arg.ID, arg.Position)
+	var i UpdateCardPositionRow
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Position,
+		&i.UpdatedAt,
+		&i.OldPosition,
 	)
 	return i, err
 }

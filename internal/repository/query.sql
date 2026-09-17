@@ -124,6 +124,14 @@ SELECT * FROM kanban_card
 WHERE parent_id = $1 AND deleted_at IS NULL
 ORDER BY position ASC;
 
+-- name: GetChildStats :one
+-- Счётчик и хвостовая позиция для создания подзадачи: всё, что нужно,
+-- без вычитывания самих детей и их исполнителей.
+SELECT COUNT(*)::bigint AS total,
+       COALESCE(MAX(position), 0)::double precision AS max_position
+FROM kanban_card
+WHERE parent_id = $1 AND deleted_at IS NULL;
+
 -- name: GetChildCountsByParentIDs :many
 SELECT parent_id,
        COUNT(*) AS total,
@@ -143,15 +151,32 @@ SET title = $1, description = $2, position = $3, due_date = $4, priority = $5, i
 WHERE id = $14
 RETURNING *;
 
+-- name: UpdateCardPosition :one
+-- Перестановка не должна затирать заголовок, который в этот же момент правит
+-- кто-то другой, — поэтому узкий UPDATE, а не перезапись всей строки.
+-- Старая позиция нужна истории как Before, и она же приезжает из FROM —
+-- отдельное чтение карточки ради одного числа не требуется.
+UPDATE kanban_card c
+SET position = $2, updated_at = CURRENT_TIMESTAMP
+FROM kanban_card old
+WHERE c.id = $1 AND old.id = c.id AND c.deleted_at IS NULL
+RETURNING c.id, c.title, c.position, c.updated_at, old.position AS old_position;
+
 -- name: DeleteCard :exec
 UPDATE kanban_card
 SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1);
 
 -- name: RestoreCard :exec
-UPDATE kanban_card
+-- Возвращаем только тех детей, которых удалили вместе с родителем: DeleteCard
+-- ставит им один и тот же CURRENT_TIMESTAMP (время транзакции). Дети, удалённые
+-- раньше и отдельно, к этой отмене отношения не имеют и остаются удалёнными.
+-- Сторона FROM видит снимок до UPDATE, то есть p.deleted_at читается старым.
+UPDATE kanban_card c
 SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
-WHERE id = $1 OR parent_id = $1;
+FROM kanban_card p
+WHERE p.id = $1
+  AND (c.id = p.id OR (c.parent_id = p.id AND c.deleted_at = p.deleted_at));
 
 -- name: HasColumnsByBoard :one
 SELECT EXISTS(
@@ -451,232 +476,13 @@ DELETE FROM kanban_project_user
 WHERE kanban_project_id = $1 AND user_id = $2;
 
 
--- ==============================
--- TASK LIST
--- ==============================
-
--- name: CountTasks :one
-SELECT COUNT(*)::bigint AS count
-FROM kanban_card c
-LEFT JOIN kanban_card parent ON parent.id = c.parent_id
-JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
-JOIN kanban_board b ON b.id = col.board_id
-JOIN kanban_project p ON p.id = b.kanban_project_id
-WHERE c.deleted_at IS NULL
-  AND (parent.id IS NULL OR parent.deleted_at IS NULL)
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = sqlc.arg(viewer_id)
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = sqlc.arg(viewer_id)
-      )
-  )
-  AND (sqlc.arg(title_query)::text = '' OR c.title ILIKE '%' || sqlc.arg(title_query) || '%' ESCAPE '\')
-  AND (sqlc.arg(project_id)::bigint = 0 OR p.id = sqlc.arg(project_id))
-  AND (
-      sqlc.arg(priority)::text = ''
-      OR (sqlc.arg(priority) = 'none' AND c.priority IS NULL)
-      OR (sqlc.arg(priority) <> 'none' AND c.priority = sqlc.arg(priority))
-  )
-  AND (
-      sqlc.arg(author_id)::bigint = 0
-      OR (sqlc.arg(author_id) < 0 AND c.created_by_id IS NULL)
-      OR (sqlc.arg(author_id) > 0 AND c.created_by_id = sqlc.arg(author_id))
-  )
-  AND (
-      sqlc.arg(assignee_id)::bigint = 0
-      OR (
-          sqlc.arg(assignee_id) < 0
-          AND NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)
-      )
-      OR (
-          sqlc.arg(assignee_id) > 0
-          AND EXISTS (
-              SELECT 1 FROM kanban_card_assignee ca
-              WHERE ca.card_id = c.id AND ca.user_id = sqlc.arg(assignee_id)
-          )
-      )
-  )
-  AND (
-      sqlc.arg(completed)::text = ''
-      OR (c.completed_at IS NOT NULL) = (sqlc.arg(completed) = 'true')
-  )
-  AND (
-      sqlc.arg(archived)::text = ''
-      OR (
-          CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END
-      ) = (sqlc.arg(archived) = 'true')
-  )
-  AND (
-      sqlc.arg(kind)::text = ''
-      OR (sqlc.arg(kind) = 'task' AND c.parent_id IS NULL)
-      OR (sqlc.arg(kind) = 'subtask' AND c.parent_id IS NOT NULL)
-  )
-  AND (sqlc.narg('due_from')::timestamptz IS NULL OR c.due_date >= sqlc.narg('due_from'))
-  AND (sqlc.narg('due_to')::timestamptz IS NULL OR c.due_date < sqlc.narg('due_to'))
-  AND (sqlc.narg('created_from')::timestamptz IS NULL OR c.created_at >= sqlc.narg('created_from'))
-  AND (sqlc.narg('created_to')::timestamptz IS NULL OR c.created_at < sqlc.narg('created_to'))
-  AND (sqlc.narg('completed_from')::timestamptz IS NULL OR c.completed_at >= sqlc.narg('completed_from'))
-  AND (sqlc.narg('completed_to')::timestamptz IS NULL OR c.completed_at < sqlc.narg('completed_to'))
-  AND (
-      sqlc.narg('archived_from')::timestamptz IS NULL
-      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) >= sqlc.narg('archived_from')
-  )
-  AND (
-      sqlc.narg('archived_to')::timestamptz IS NULL
-      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) < sqlc.narg('archived_to')
-  );
-
--- name: ListTasks :many
-SELECT
-    p.id            AS project_id,
-    p.name          AS project_name,
-    b.id            AS board_id,
-    b.title         AS board_title,
-    col.id          AS column_id,
-    col.title       AS column_title,
-    c.id            AS card_id,
-    c.title         AS card_title,
-    c.priority      AS card_priority,
-    c.due_date      AS card_due_date,
-    c.border_color  AS card_border_color,
-    c.parent_id     AS parent_id,
-    parent.title    AS parent_title,
-    c.created_at    AS created_at,
-    c.completed_at  AS completed_at,
-    (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END)::timestamptz AS archived_at,
-    (CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END)::bool AS is_archived
-FROM kanban_card c
-LEFT JOIN kanban_card parent ON parent.id = c.parent_id
-JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
-JOIN kanban_board b ON b.id = col.board_id
-JOIN kanban_project p ON p.id = b.kanban_project_id
-WHERE c.deleted_at IS NULL
-  AND (parent.id IS NULL OR parent.deleted_at IS NULL)
-  AND col.deleted_at IS NULL
-  AND b.deleted_at IS NULL
-  AND p.deleted_at IS NULL
-  AND (
-      p.owner_id = sqlc.arg(viewer_id)
-      OR EXISTS (
-          SELECT 1 FROM kanban_project_user pu
-          WHERE pu.kanban_project_id = p.id
-            AND pu.user_id = sqlc.arg(viewer_id)
-      )
-  )
-  AND (sqlc.arg(title_query)::text = '' OR c.title ILIKE '%' || sqlc.arg(title_query) || '%' ESCAPE '\')
-  AND (sqlc.arg(project_id)::bigint = 0 OR p.id = sqlc.arg(project_id))
-  AND (
-      sqlc.arg(priority)::text = ''
-      OR (sqlc.arg(priority) = 'none' AND c.priority IS NULL)
-      OR (sqlc.arg(priority) <> 'none' AND c.priority = sqlc.arg(priority))
-  )
-  AND (
-      sqlc.arg(author_id)::bigint = 0
-      OR (sqlc.arg(author_id) < 0 AND c.created_by_id IS NULL)
-      OR (sqlc.arg(author_id) > 0 AND c.created_by_id = sqlc.arg(author_id))
-  )
-  AND (
-      sqlc.arg(assignee_id)::bigint = 0
-      OR (
-          sqlc.arg(assignee_id) < 0
-          AND NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)
-      )
-      OR (
-          sqlc.arg(assignee_id) > 0
-          AND EXISTS (
-              SELECT 1 FROM kanban_card_assignee ca
-              WHERE ca.card_id = c.id AND ca.user_id = sqlc.arg(assignee_id)
-          )
-      )
-  )
-  AND (
-      sqlc.arg(completed)::text = ''
-      OR (c.completed_at IS NOT NULL) = (sqlc.arg(completed) = 'true')
-  )
-  AND (
-      sqlc.arg(archived)::text = ''
-      OR (
-          CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END
-      ) = (sqlc.arg(archived) = 'true')
-  )
-  AND (
-      sqlc.arg(kind)::text = ''
-      OR (sqlc.arg(kind) = 'task' AND c.parent_id IS NULL)
-      OR (sqlc.arg(kind) = 'subtask' AND c.parent_id IS NOT NULL)
-  )
-  AND (sqlc.narg('due_from')::timestamptz IS NULL OR c.due_date >= sqlc.narg('due_from'))
-  AND (sqlc.narg('due_to')::timestamptz IS NULL OR c.due_date < sqlc.narg('due_to'))
-  AND (sqlc.narg('created_from')::timestamptz IS NULL OR c.created_at >= sqlc.narg('created_from'))
-  AND (sqlc.narg('created_to')::timestamptz IS NULL OR c.created_at < sqlc.narg('created_to'))
-  AND (sqlc.narg('completed_from')::timestamptz IS NULL OR c.completed_at >= sqlc.narg('completed_from'))
-  AND (sqlc.narg('completed_to')::timestamptz IS NULL OR c.completed_at < sqlc.narg('completed_to'))
-  AND (
-      sqlc.narg('archived_from')::timestamptz IS NULL
-      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) >= sqlc.narg('archived_from')
-  )
-  AND (
-      sqlc.narg('archived_to')::timestamptz IS NULL
-      OR (CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END) < sqlc.narg('archived_to')
-  )
-ORDER BY
-  CASE WHEN sqlc.arg(sort)::text = 'title' AND sqlc.arg(sort_desc)::bool THEN c.title END DESC,
-  CASE WHEN sqlc.arg(sort)::text = 'title' AND NOT sqlc.arg(sort_desc)::bool THEN c.title END ASC,
-  CASE WHEN sqlc.arg(sort)::text = 'createdAt' AND sqlc.arg(sort_desc)::bool THEN c.created_at END DESC,
-  CASE WHEN sqlc.arg(sort)::text = 'createdAt' AND NOT sqlc.arg(sort_desc)::bool THEN c.created_at END ASC,
-  CASE WHEN sqlc.arg(sort)::text = 'completedAt' AND sqlc.arg(sort_desc)::bool THEN c.completed_at END DESC NULLS LAST,
-  CASE WHEN sqlc.arg(sort)::text = 'completedAt' AND NOT sqlc.arg(sort_desc)::bool THEN c.completed_at END ASC NULLS LAST,
-  CASE WHEN sqlc.arg(sort)::text = 'priority' AND sqlc.arg(sort_desc)::bool THEN
-    CASE c.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END
-  END DESC,
-  CASE WHEN sqlc.arg(sort)::text = 'priority' AND NOT sqlc.arg(sort_desc)::bool THEN
-    CASE c.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END
-  END ASC,
-  c.id ASC
-LIMIT sqlc.arg(page_limit)
-OFFSET sqlc.arg(page_offset);
+-- Список задач (ListTasks) собирается динамически в card_repository.go:
+-- фильтров полтора десятка, и статический запрос с `$n = '' OR ...` не давал
+-- планировщику взять индекс ни по одному из них.
 
 -- ==============================
 -- TASK COLLABORANTS
 -- ==============================
-
--- name: CountTaskCollaborants :one
-WITH visible AS (
-    SELECT p.id, p.owner_id
-    FROM kanban_project p
-    WHERE p.deleted_at IS NULL
-      AND (
-          p.owner_id = sqlc.arg(viewer_id)
-          OR EXISTS (
-              SELECT 1 FROM kanban_project_user pu
-              WHERE pu.kanban_project_id = p.id
-                AND pu.user_id = sqlc.arg(viewer_id)
-          )
-      )
-),
-ids AS (
-    SELECT visible.owner_id AS user_id FROM visible
-    UNION
-    SELECT pu.user_id
-    FROM kanban_project_user pu
-    INNER JOIN visible ON visible.id = pu.kanban_project_id
-)
-SELECT COUNT(*)::bigint AS count
-FROM ids
-INNER JOIN users u ON u.id = ids.user_id
-WHERE u.deleted_at IS NULL
-  AND u.id <> sqlc.arg(viewer_id)
-  AND (
-      sqlc.arg(name_query)::text = ''
-      OR u.lastname ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
-      OR u.firstname ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
-      OR u.login ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
-      OR COALESCE(u.patronymic, '') ILIKE '%' || sqlc.arg(name_query) || '%' ESCAPE '\'
-  );
 
 -- name: ListTaskCollaborants :many
 WITH visible AS (
@@ -699,7 +505,8 @@ ids AS (
     FROM kanban_project_user pu
     INNER JOIN visible ON visible.id = pu.kanban_project_id
 )
-SELECT u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name
+SELECT COUNT(*) OVER ()::bigint AS total_count,
+       u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name
 FROM ids
 INNER JOIN users u ON u.id = ids.user_id
 WHERE u.deleted_at IS NULL

@@ -23,7 +23,13 @@ func applyHistoryUndo(ctx context.Context, q *dbgen.Queries, e model.HistoryUndo
 	case "card.moved":
 		colID, pos, ok := parseUndoPlacement(e.Before)
 		if !ok {
-			return undoImpossible()
+			// Подзадача: колонки у неё нет, в Before лежит одна позиция.
+			pos, ok := parseUndoPos(e.Before)
+			if !ok {
+				return undoImpossible()
+			}
+			_, err := q.UpdateCardPosition(ctx, dbgen.UpdateCardPositionParams{ID: e.EntityID, Position: pos})
+			return err
 		}
 		card, err := q.GetCard(ctx, e.EntityID)
 		if err != nil {

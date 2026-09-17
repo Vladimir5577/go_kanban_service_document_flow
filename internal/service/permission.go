@@ -165,15 +165,18 @@ func (s *PermissionService) RequireCardRole(ctx context.Context, cardID int64, m
 	return acc, nil
 }
 
-func (s *PermissionService) RejectIfChildCard(ctx context.Context, cardID int64) error {
-	card, err := dbgen.New(s.db).GetCard(ctx, cardID)
+// RequireRootCardRole — то же, что RequireCardRole, но для операций, которые
+// у подзадачи смысла не имеют: комментарии, вложения, метки. Родительство
+// приезжает тем же запросом, отдельного чтения карточки не нужно.
+func (s *PermissionService) RequireRootCardRole(ctx context.Context, cardID int64, minRole Role) (CardAccess, error) {
+	acc, err := s.RequireCardRole(ctx, cardID, minRole)
 	if err != nil {
-		return withNotFoundCode(repository.NormalizeError(err), apperr.CodeCardNotFound)
+		return CardAccess{}, err
 	}
-	if card.ParentID.Valid {
-		return apperr.New(apperr.CodeValidation, "operation not allowed on child card")
+	if acc.ParentID != nil {
+		return CardAccess{}, apperr.New(apperr.CodeValidation, "operation not allowed on child card")
 	}
-	return nil
+	return acc, nil
 }
 
 func (s *PermissionService) GetProjectIDByBoard(ctx context.Context, boardID int64) (int64, error) {

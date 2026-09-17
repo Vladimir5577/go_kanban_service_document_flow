@@ -44,14 +44,7 @@ func NewAttachmentService(
 }
 
 func (s *AttachmentService) GetAttachments(ctx context.Context, cardID int64, contextStr string) ([]model.Attachment, error) {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
+	if _, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer); err != nil {
 		return nil, err
 	}
 	return s.repo.GetAttachmentsByCard(ctx, cardID, contextStr)
@@ -77,14 +70,8 @@ func (s *AttachmentService) GetAttachment(ctx context.Context, cardID, id int64,
 }
 
 func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, req dto.CreateAttachmentRequest) (*model.Attachment, error) {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, cardID)
+	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleEditor)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RejectIfChildCard(ctx, cardID); err != nil {
 		return nil, err
 	}
 
@@ -116,7 +103,7 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 	if err == nil && created != nil {
 		s.populateAuthorName(ctx, created)
 		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:   projectID,
+			ProjectID:   acc.ProjectID,
 			Action:      "attachment.created",
 			EntityType:  "attachment",
 			EntityID:    created.ID,
