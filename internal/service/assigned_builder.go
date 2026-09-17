@@ -2,79 +2,48 @@ package service
 
 import (
 	"go_kanban_service/internal/dto"
+	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository"
 )
 
-func buildAssignedTree(rows []repository.AssignedCardRow) []*dto.AssignedProject {
-	projects := make([]*dto.AssignedProject, 0)
-	var curProject *dto.AssignedProject
-	var curBoard *dto.AssignedBoard
-	var curColumn *dto.AssignedColumn
-
+func mapTaskListItems(rows []repository.AssignedCardRow) []*dto.TaskListItem {
+	items := make([]*dto.TaskListItem, 0, len(rows))
 	for _, row := range rows {
-		if curProject == nil || curProject.ID != row.ProjectID {
-			curProject = &dto.AssignedProject{
-				ID:     row.ProjectID,
-				Name:   row.ProjectName,
-				Boards: make([]*dto.AssignedBoard, 0),
-			}
-			projects = append(projects, curProject)
-			curBoard, curColumn = nil, nil
-		}
-		if curBoard == nil || curBoard.ID != row.BoardID {
-			curBoard = &dto.AssignedBoard{
-				ID:      row.BoardID,
-				Title:   row.BoardTitle,
-				Columns: make([]*dto.AssignedColumn, 0),
-			}
-			curProject.Boards = append(curProject.Boards, curBoard)
-			curColumn = nil
-		}
-		if curColumn == nil || curColumn.ID != row.ColumnID {
-			curColumn = &dto.AssignedColumn{
-				ID:    row.ColumnID,
-				Title: row.ColumnTitle,
-				Cards: make([]*dto.AssignedCard, 0),
-			}
-			curBoard.Columns = append(curBoard.Columns, curColumn)
-		}
-
-		curColumn.Cards = append(curColumn.Cards, &dto.AssignedCard{
+		items = append(items, &dto.TaskListItem{
 			ID:          row.CardID,
 			Title:       row.CardTitle,
 			Priority:    row.Priority,
 			DueDate:     row.DueDate,
 			BorderColor: row.BorderColor,
+			ParentID:    row.ParentID,
+			ParentTitle: row.ParentTitle,
+			Column:      dto.TaskRef{ID: row.ColumnID, Title: row.ColumnTitle},
+			Board:       dto.TaskRef{ID: row.BoardID, Title: row.BoardTitle},
+			Project:     dto.TaskProjectRef{ID: row.ProjectID, Name: row.ProjectName},
+			CreatedAt:   row.CreatedAt,
+			CompletedAt: row.CompletedAt,
+			ArchivedAt:  row.ArchivedAt,
+			IsArchived:  row.IsArchived,
 		})
 	}
-
-	return projects
+	return items
 }
 
-func mapAssignedSubtasks(rows []repository.AssignedSubtaskRow) []*dto.AssignedSubtask {
-	subtasks := make([]*dto.AssignedSubtask, 0, len(rows))
-	for _, row := range rows {
-		subtasks = append(subtasks, &dto.AssignedSubtask{
-			ID:     row.SubtaskID,
-			Title:  row.SubtaskTitle,
-			Status: row.SubtaskStatus,
-			Card: dto.AssignedSubtaskCardRef{
-				ID:    row.CardID,
-				Title: row.CardTitle,
-			},
-			Column: dto.AssignedSubtaskColumnRef{
-				ID:    row.ColumnID,
-				Title: row.ColumnTitle,
-			},
-			Board: dto.AssignedSubtaskBoardRef{
-				ID:    row.BoardID,
-				Title: row.BoardTitle,
-			},
-			Project: dto.AssignedSubtaskProjectRef{
-				ID:   row.ProjectID,
-				Name: row.ProjectName,
-			},
-		})
+func attachAssigneesToTaskItems(items []*dto.TaskListItem, byCard map[int64][]int64, users []model.User) {
+	if len(items) == 0 {
+		return
 	}
-	return subtasks
+	userByID := make(map[int64]model.User, len(users))
+	for _, user := range users {
+		userByID[user.ID] = user
+	}
+	for _, item := range items {
+		ids := byCard[item.ID]
+		if len(ids) == 0 {
+			continue
+		}
+		if user, ok := userByID[ids[0]]; ok {
+			item.Assignee = dto.MapUserResponse(&user)
+		}
+	}
 }

@@ -28,7 +28,8 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 		r.Use(authMw.Handler)
 
 		r.Get("/spa/api/kanban/me", h.User.LoginCheck())
-		r.Get("/spa/api/kanban/assigned-to-me", h.Card.AssignedToMe())
+		r.Get("/spa/api/kanban/tasks/collaborants", h.Card.ListTaskCollaborants())
+		r.Get("/spa/api/kanban/tasks", h.Card.ListTasks())
 
 		// PROJECTS (ProjectController)
 		r.Route("/spa/api/kanban/projects", func(r chi.Router) {
@@ -92,14 +93,6 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 			r.Post("/{id}/move", h.Card.MoveCard())
 			r.Patch("/{id}/archive", h.Card.ArchiveCard())
 			r.Patch("/{id}/complete", h.Card.CompleteCard())
-
-			// SUBTASKS
-			r.Route("/{cardId}/subtasks", func(r chi.Router) {
-				r.Get("/", h.Subtask.GetSubtasks())
-				r.Post("/", h.Subtask.CreateSubtask())
-				r.Patch("/{id}", h.Subtask.UpdateSubtask())
-				r.Delete("/{id}", h.Subtask.DeleteSubtask())
-			})
 
 			// COMMENTS
 			r.Route("/{cardId}/comments", func(r chi.Router) {

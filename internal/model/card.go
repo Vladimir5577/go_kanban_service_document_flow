@@ -20,6 +20,7 @@ type Card struct {
 	CompletedAt   *time.Time `json:"completed_at,omitempty"`
 	CompletedByID *int64     `json:"completed_by_id,omitempty"`
 	ColumnID      int64      `json:"column_id"`
+	ParentID      *int64     `json:"parent_id,omitempty"`
 	CreatedByID   *int64     `json:"created_by_id,omitempty"`
 	BorderColor   *string    `json:"border_color,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
@@ -75,6 +76,11 @@ type ArchivedCard struct {
 	CompletedAt  *time.Time
 	CompletedBy  *User
 	Assignees   []User
+}
+
+type ChecklistCount struct {
+	Total int
+	Done  int
 }
 
 type BoardArchivePage struct {

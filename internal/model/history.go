@@ -26,9 +26,14 @@ type HistoryListItem struct {
 	EntityLink  string
 	Before      string
 	After       string
+	IsChild     bool
 	UserID      *int64
 	UserName    string
 	CreatedAt   string
+}
+
+func HistoryIsChild(entityType string, entityID, cardID int64) bool {
+	return entityType == "card" && cardID != 0 && entityID != cardID
 }
 
 type HistoryListPage struct {

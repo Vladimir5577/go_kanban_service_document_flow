@@ -221,6 +221,9 @@ func (s *LabelService) ensureCardInBoard(ctx context.Context, boardID int64, car
 	if err != nil {
 		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeCardNotFound)
 	}
+	if err := errIfChildCard(card); err != nil {
+		return nil, err
+	}
 	column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
 	if err != nil {
 		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)

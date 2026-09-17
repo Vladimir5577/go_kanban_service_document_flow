@@ -111,6 +111,7 @@ type CardAccess struct {
 	ColumnTitle string
 	OwnerID     int64
 	Role        Role
+	ParentID    *int64
 }
 
 // IsOwner — текущий пользователь владелец проекта.
@@ -149,14 +150,33 @@ func (s *PermissionService) RequireCardRole(ctx context.Context, cardID int64, m
 		return CardAccess{}, accessDenied()
 	}
 
-	return CardAccess{
+	acc := CardAccess{
 		ProjectID:   row.KanbanProjectID,
 		BoardID:     row.BoardID,
 		BoardTitle:  row.BoardTitle,
 		ColumnTitle: row.ColumnTitle,
 		OwnerID:     row.OwnerID,
 		Role:        role,
-	}, nil
+	}
+	if row.ParentID.Valid {
+		id := row.ParentID.Int64
+		acc.ParentID = &id
+	}
+	return acc, nil
+}
+
+// RequireRootCardRole — то же, что RequireCardRole, но для операций, которые
+// у подзадачи смысла не имеют: комментарии, вложения, метки. Родительство
+// приезжает тем же запросом, отдельного чтения карточки не нужно.
+func (s *PermissionService) RequireRootCardRole(ctx context.Context, cardID int64, minRole Role) (CardAccess, error) {
+	acc, err := s.RequireCardRole(ctx, cardID, minRole)
+	if err != nil {
+		return CardAccess{}, err
+	}
+	if acc.ParentID != nil {
+		return CardAccess{}, apperr.New(apperr.CodeValidation, "operation not allowed on child card")
+	}
+	return acc, nil
 }
 
 func (s *PermissionService) GetProjectIDByBoard(ctx context.Context, boardID int64) (int64, error) {
@@ -182,15 +202,6 @@ func (s *PermissionService) GetProjectIDByCard(ctx context.Context, cardID int64
 	projectID, err := queries.GetProjectIDByCard(ctx, cardID)
 	if err != nil {
 		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeCardNotFound)
-	}
-	return projectID, nil
-}
-
-func (s *PermissionService) GetProjectIDBySubtask(ctx context.Context, subtaskID int64) (int64, error) {
-	queries := dbgen.New(s.db)
-	projectID, err := queries.GetProjectIDBySubtask(ctx, subtaskID)
-	if err != nil {
-		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeSubtaskNotFound)
 	}
 	return projectID, nil
 }

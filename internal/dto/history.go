@@ -18,6 +18,7 @@ type HistoryItemResponse struct {
 	EntityLink  string               `json:"entityLink"`
 	Before      string               `json:"before,omitempty"`
 	After     string               `json:"after,omitempty"`
+	IsChild     bool                 `json:"isChild,omitempty"`
 	CreatedAt string               `json:"createdAt"`
 	User      *HistoryUserResponse `json:"user"`
 }
@@ -31,6 +32,7 @@ type HistoryListResponse struct {
 type HistoryUndoResponse struct {
 	Action      string `json:"action"`
 	EntityTitle string `json:"entityTitle"`
+	IsChild     bool   `json:"isChild,omitempty"`
 }
 
 func MapHistoryList(items []model.HistoryListItem, hasMore bool, nextCursor int64) HistoryListResponse {
@@ -47,6 +49,7 @@ func MapHistoryList(items []model.HistoryListItem, hasMore bool, nextCursor int6
 			EntityLink:  item.EntityLink,
 			Before:    clipHistory(item.Before),
 			After:     clipHistory(item.After),
+			IsChild:   item.IsChild,
 			CreatedAt: item.CreatedAt,
 		}
 		if item.UserID != nil {

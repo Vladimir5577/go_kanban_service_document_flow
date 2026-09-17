@@ -24,11 +24,12 @@ type CardServiceInterface interface {
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error)
 	GetCardStandalone(ctx context.Context, id int64) (*dto.CardStandaloneResponse, error)
-	GetAssignedToMe(ctx context.Context, status string) (*dto.AssignedToMeResponse, error)
+	ListTasks(ctx context.Context, f repository.TaskListParams) (*dto.TaskListResponse, error)
+	ListTaskCollaborants(ctx context.Context, f repository.TaskCollaborantsParams) (*dto.TaskCollaborantsResponse, error)
 	UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error)
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error
-	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.CardMove, error)
+	MoveCard(ctx context.Context, id int64, columnID *int64, position float64) (*model.CardMove, error)
 	ArchiveCard(ctx context.Context, id int64) error
 	CompleteCard(ctx context.Context, id int64) (*model.Card, error)
 }
@@ -37,7 +38,6 @@ type CardService struct {
 	repo              repository.CardRepositoryInterface
 	permSvc           *PermissionService
 	minioSvc          MinioServiceInterface
-	subtaskRepo       repository.SubtaskRepositoryInterface
 	commentRepo       repository.CommentRepositoryInterface
 	attachmentRepo    repository.AttachmentRepositoryInterface
 	labelRepo         repository.LabelRepositoryInterface
@@ -53,12 +53,29 @@ type CardService struct {
 }
 
 const maxActiveCardsPerBoard = 300
+const maxChildrenPerCard = 100
+
+func historyOwnerCardID(c *model.Card) int64 {
+	if c != nil && c.ParentID != nil {
+		return *c.ParentID
+	}
+	if c == nil {
+		return 0
+	}
+	return c.ID
+}
+
+func errIfChildCard(c *model.Card) error {
+	if c != nil && c.ParentID != nil {
+		return apperr.New(apperr.CodeValidation, "operation not allowed on child card")
+	}
+	return nil
+}
 
 func NewCardService(
 	repo repository.CardRepositoryInterface,
 	permSvc *PermissionService,
 	minioSvc MinioServiceInterface,
-	subtaskRepo repository.SubtaskRepositoryInterface,
 	commentRepo repository.CommentRepositoryInterface,
 	attachmentRepo repository.AttachmentRepositoryInterface,
 	labelRepo repository.LabelRepositoryInterface,
@@ -75,7 +92,6 @@ func NewCardService(
 		repo:              repo,
 		permSvc:           permSvc,
 		minioSvc:          minioSvc,
-		subtaskRepo:       subtaskRepo,
 		commentRepo:       commentRepo,
 		attachmentRepo:    attachmentRepo,
 		labelRepo:         labelRepo,
@@ -91,14 +107,102 @@ func NewCardService(
 }
 
 func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error) {
-	projectID, err := s.permSvc.GetProjectIDByColumn(ctx, req.ColumnID)
+	if (req.ColumnID == nil) == (req.ParentID == nil) {
+		return nil, apperr.New(apperr.CodeValidation, "exactly one of column_id or parent_id is required")
+	}
+	if req.ParentID != nil {
+		return s.createChildCard(ctx, req)
+	}
+	return s.createRootCard(ctx, req)
+}
+
+func (s *CardService) createChildCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error) {
+	if req.Description != nil || req.DueDate != nil || req.Priority != nil || req.BorderColor != nil || len(req.LabelIDs) > 0 {
+		return nil, apperr.New(apperr.CodeValidation, "child card accepts only title, position and assignee")
+	}
+	if len(req.AssigneeIDs) > 1 {
+		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
+	}
+
+	// Один запрос вместо GetCard + GetProjectIDByCard + RequireRole + GetColumn:
+	// отдаёт проект, доску и родительство разом.
+	parentID := *req.ParentID
+	acc, err := s.permSvc.RequireCardRole(ctx, parentID, RoleEditor)
+	if err != nil {
+		return nil, err
+	}
+	if acc.ParentID != nil {
+		return nil, apperr.New(apperr.CodeValidation, "parent must be a root card")
+	}
+	projectID := acc.ProjectID
+
+	if err := s.validateProjectAssignees(ctx, projectID, req.AssigneeIDs); err != nil {
+		return nil, err
+	}
+
+	childCount, lastPosition, err := s.repo.GetChildStats(ctx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	if childCount >= maxChildrenPerCard {
+		return nil, apperr.New(apperr.CodeValidation, "maximum number of subtasks (100) per card reached")
+	}
+
+	c := &model.Card{
+		Title:       req.Title,
+		ParentID:    req.ParentID,
+		AssigneeIDs: req.AssigneeIDs,
+	}
+	if authorID := currentUserID(ctx); authorID != nil {
+		c.CreatedByID = authorID
+	}
+	if req.Position != nil {
+		c.Position = *req.Position
+	} else {
+		c.Position = lastPosition + 65536
+	}
+
+	created, err := s.repo.CreateCard(ctx, 0, c)
+	if err != nil || created == nil {
+		return created, err
+	}
+	if len(req.AssigneeIDs) > 0 {
+		if err := s.repo.UpdateCardAssignees(ctx, created.ID, req.AssigneeIDs); err != nil {
+			return nil, err
+		}
+		created.AssigneeIDs = req.AssigneeIDs
+	}
+
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   projectID,
+		Action:      "card.created",
+		EntityType:  "card",
+		EntityID:    created.ID,
+		CardID:      parentID,
+		EntityTitle: created.Title,
+		EntityLink:  historyTaskPath(projectID, acc.BoardID, parentID),
+	})
+	s.publishParentChecklist(ctx, parentID)
+
+	if s.notificationSvc != nil && len(created.AssigneeIDs) > 0 {
+		actorID := derefInt64(currentUserID(ctx))
+		runDetached(ctx, notifyTimeout, "failed to notify kanban child assigned", func(ctx context.Context) error {
+			s.notificationSvc.NotifyTaskAssigned(ctx, projectID, acc.BoardID, parentID, actorID, created.AssigneeIDs[0], created.Title, true)
+			return nil
+		})
+	}
+	return created, nil
+}
+
+func (s *CardService) createRootCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error) {
+	projectID, err := s.permSvc.GetProjectIDByColumn(ctx, *req.ColumnID)
 	if err != nil {
 		return nil, err
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return nil, err
 	}
-	column, err := s.columnRepo.GetColumn(ctx, req.ColumnID)
+	column, err := s.columnRepo.GetColumn(ctx, *req.ColumnID)
 	if err != nil {
 		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
@@ -117,7 +221,7 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 
 	c := &model.Card{
 		Title:       req.Title,
-		ColumnID:    req.ColumnID,
+		ColumnID:    *req.ColumnID,
 		Description: req.Description,
 		DueDate:     normalizeTimePtr(req.DueDate),
 		Priority:    req.Priority,
@@ -131,7 +235,7 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	if req.Position != nil {
 		c.Position = *req.Position
 	} else {
-		cards, _ := s.repo.GetCardsByColumn(ctx, req.ColumnID)
+		cards, _ := s.repo.GetCardsByColumn(ctx, *req.ColumnID)
 		if len(cards) > 0 {
 			// Prepend at the top using FIRST/2 (halving), matching the frontend's
 			// computePosition(undefined, next) = next/2. Subtracting a fixed step
@@ -141,7 +245,7 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 			c.Position = 65536.0
 		}
 	}
-	created, err := s.repo.CreateCard(ctx, req.ColumnID, c)
+	created, err := s.repo.CreateCard(ctx, *req.ColumnID, c)
 	if err == nil && created != nil {
 		appendHistory(s.History, ctx, model.HistoryWrite{
 			ProjectID:  projectID,
@@ -166,7 +270,7 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 		if s.notificationSvc != nil {
 			actorID := derefInt64(currentUserID(ctx))
 			runDetached(ctx, notifyTimeout, "failed to notify kanban card created", func(ctx context.Context) error {
-				projectID, _ := s.permSvc.GetProjectIDByColumn(ctx, req.ColumnID)
+				projectID, _ := s.permSvc.GetProjectIDByColumn(ctx, *req.ColumnID)
 				s.notificationSvc.NotifyCardCreated(ctx, projectID, column.BoardID, created.ID, actorID, created.Title)
 
 				for _, aid := range created.AssigneeIDs {
@@ -199,16 +303,25 @@ func (s *CardService) cardDetail(ctx context.Context, id int64, acc CardAccess) 
 
 	resp := dto.MapCardResponse(card)
 
-	// Fetch Subtasks
-	subtasks, err := s.subtaskRepo.GetSubtasks(ctx, id)
-	if err != nil {
-		return nil, nil, err
-	}
-	resp.Subtasks = dto.MapSubtasksResponse(subtasks)
-	for _, st := range subtasks {
-		resp.ChecklistTotal++
-		if st.Status == "done" {
-			resp.ChecklistDone++
+	if card.ParentID == nil {
+		children, err := s.repo.GetChildCards(ctx, id)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp.Children = make([]*dto.CardChildResponse, 0, len(children))
+		for i := range children {
+			child := children[i]
+			resp.Children = append(resp.Children, &dto.CardChildResponse{
+				ID:          child.ID,
+				Title:       child.Title,
+				Position:    child.Position,
+				CompletedAt: child.CompletedAt,
+				AssigneeIDs: child.AssigneeIDs,
+			})
+			resp.ChecklistTotal++
+			if child.CompletedAt != nil {
+				resp.ChecklistDone++
+			}
 		}
 	}
 
@@ -225,10 +338,8 @@ func (s *CardService) cardDetail(ctx context.Context, id int64, acc CardAccess) 
 	for _, aid := range card.AssigneeIDs {
 		userIDs = append(userIDs, aid)
 	}
-	for i := range resp.Subtasks {
-		if resp.Subtasks[i].UserID != nil {
-			userIDs = append(userIDs, *resp.Subtasks[i].UserID)
-		}
+	for _, child := range resp.Children {
+		userIDs = append(userIDs, child.AssigneeIDs...)
 	}
 	// Include creators for createdBy / completedBy enrichment
 	if card.CreatedByID != nil {
@@ -286,15 +397,6 @@ func (s *CardService) cardDetail(ctx context.Context, id int64, acc CardAccess) 
 			if u, ok := userMap[*att.AuthorID]; ok {
 				name := dto.UserDisplayName(*u)
 				resp.Attachments[i].AuthorName = &name
-			}
-		}
-	}
-
-	for _, st := range resp.Subtasks {
-		if st.UserID != nil {
-			if u, ok := userMap[*st.UserID]; ok {
-				name := dto.UserDisplayName(*u)
-				st.UserName = &name
 			}
 		}
 	}
@@ -458,25 +560,68 @@ func (s *CardService) GetCard(ctx context.Context, id int64) (*model.Card, error
 	return card, nil
 }
 
-func (s *CardService) GetAssignedToMe(ctx context.Context, status string) (*dto.AssignedToMeResponse, error) {
+func (s *CardService) ListTasks(ctx context.Context, f repository.TaskListParams) (*dto.TaskListResponse, error) {
 	userID := currentUserID(ctx)
 	if userID == nil {
 		return nil, apperr.ErrUnauthorized
 	}
+	f.ViewerID = *userID
 
-	cardRows, err := s.repo.GetAssignedCards(ctx, *userID, status)
+	rows, total, err := s.repo.ListTasks(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-	subtaskRows, err := s.repo.GetAssignedSubtasks(ctx, *userID, status)
+	items := mapTaskListItems(rows)
+	if err := s.attachTaskAssignees(ctx, items); err != nil {
+		return nil, err
+	}
+	return &dto.TaskListResponse{Items: items, Total: total}, nil
+}
+
+func (s *CardService) attachTaskAssignees(ctx context.Context, items []*dto.TaskListItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	cardIDs := make([]int64, len(items))
+	for i, item := range items {
+		cardIDs[i] = item.ID
+	}
+	byCard, err := s.repo.GetAssigneesByCardIDs(ctx, cardIDs)
+	if err != nil {
+		return err
+	}
+	userIDs := make([]int64, 0, len(byCard))
+	seen := make(map[int64]struct{}, len(byCard))
+	for _, ids := range byCard {
+		if len(ids) == 0 {
+			continue
+		}
+		if _, ok := seen[ids[0]]; ok {
+			continue
+		}
+		seen[ids[0]] = struct{}{}
+		userIDs = append(userIDs, ids[0])
+	}
+	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
+	if err != nil {
+		return err
+	}
+	attachAssigneesToTaskItems(items, byCard, users)
+	return nil
+}
+
+func (s *CardService) ListTaskCollaborants(ctx context.Context, f repository.TaskCollaborantsParams) (*dto.TaskCollaborantsResponse, error) {
+	userID := currentUserID(ctx)
+	if userID == nil {
+		return nil, apperr.ErrUnauthorized
+	}
+	f.ViewerID = *userID
+
+	rows, total, err := s.repo.ListTaskCollaborants(ctx, f)
 	if err != nil {
 		return nil, err
 	}
-
-	return &dto.AssignedToMeResponse{
-		AssignedCards:    buildAssignedTree(cardRows),
-		AssignedSubtasks: mapAssignedSubtasks(subtaskRows),
-	}, nil
+	return &dto.TaskCollaborantsResponse{Items: dto.MapUsersResponse(rows), Total: total}, nil
 }
 
 func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error) {
@@ -491,6 +636,9 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 	c, err := s.repo.GetCard(ctx, id)
 	if err != nil {
 		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+	}
+	if c.ParentID != nil && (req.HasDescription || req.HasDueDate || req.HasPriority || req.HasBorderColor) {
+		return nil, apperr.New(apperr.CodeValidation, "child card accepts only title")
 	}
 	var titleChanged, descChanged, dueChanged, priorityChanged, colorChanged bool
 	var oldTitle, newTitle *string
@@ -578,12 +726,12 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 			Action:      action,
 			EntityType:  "card",
 			EntityID:    id,
-			CardID:      id,
+			CardID:      historyOwnerCardID(updatedCard),
 			EntityTitle: updatedCard.Title,
 			Before:      before,
 			After:       after,
 		})
-		if s.realtimePublisher != nil {
+		if s.realtimePublisher != nil && updatedCard.ParentID == nil {
 			patch := map[string]any{}
 			if titleChanged {
 				patch["title"] = updatedCard.Title
@@ -612,16 +760,16 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
-		return err
-	}
 	card, err := s.repo.GetCard(ctx, id)
 	if err != nil {
 		return withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
-	column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
-	if err != nil {
-		return withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+	minRole := RoleAdmin
+	if card.ParentID != nil {
+		minRole = RoleEditor
+	}
+	if err := s.permSvc.RequireRole(ctx, projectID, minRole); err != nil {
+		return err
 	}
 
 	err = s.repo.DeleteCard(ctx, id)
@@ -632,17 +780,25 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 		}
 		return err
 	}
+	ownerID := historyOwnerCardID(card)
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:   projectID,
 		Action:      "card.deleted",
 		EntityType:  "card",
 		EntityID:    id,
-		CardID:      id,
+		CardID:      ownerID,
 		EntityTitle: card.Title,
-		EntityLink:  historyTaskPath(projectID, column.BoardID, id),
 	})
+	if card.ParentID != nil {
+		s.publishParentChecklist(ctx, *card.ParentID)
+		return nil
+	}
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
+			if err != nil {
+				return err
+			}
 			return s.realtimePublisher.PublishCardDeleted(ctx, column.BoardID, id, realtimeSenderID(ctx))
 		})
 	}
@@ -687,12 +843,12 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 			Action:      action,
 			EntityType:  "card",
 			EntityID:    id,
-			CardID:      id,
+			CardID:      historyOwnerCardID(card),
 			EntityTitle: title,
 			Before:      historyIDsJSON(oldIDs),
 			After:       historyIDsJSON(userIDs),
 		})
-		if s.realtimePublisher != nil {
+		if s.realtimePublisher != nil && (card == nil || card.ParentID == nil) {
 			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
 				patch, err := s.realtimePublisher.BuildAssignees(ctx, id)
 				if err != nil {
@@ -702,18 +858,17 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 			})
 		}
 
-		// Notify assignee
 		if s.notificationSvc != nil && len(userIDs) > 0 {
 			actorID := derefInt64(currentUserID(ctx))
 			newAssignee := userIDs[0]
+			isChild := card != nil && card.ParentID != nil
+			notifyCardID := id
+			if isChild {
+				notifyCardID = *card.ParentID
+			}
 			runDetached(ctx, notifyTimeout, "failed to notify kanban task assigned", func(ctx context.Context) error {
 				projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
-				card, err := s.repo.GetCard(ctx, id)
-				if err != nil {
-					return err
-				}
-				// board may be resolved inside if not passed; here we don't have column loaded cheaply
-				s.notificationSvc.NotifyTaskAssigned(ctx, projectID, 0, id, actorID, newAssignee, card.Title, false)
+				s.notificationSvc.NotifyTaskAssigned(ctx, projectID, 0, notifyCardID, actorID, newAssignee, title, isChild)
 				return nil
 			})
 		}
@@ -752,19 +907,41 @@ func (s *CardService) validateProjectAssignees(ctx context.Context, projectID in
 	return nil
 }
 
-func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.CardMove, error) {
-	if columnID == 0 {
-		return nil, apperr.New(apperr.CodeColumnIDAndPositionRequired, "column_id and position required")
-	}
-
-	// Один запрос вместо GetProjectIDByCard + RequireRole: заодно отдаёт проект,
-	// доску и заголовок исходной колонки — читать её отдельно больше не нужно.
+func (s *CardService) MoveCard(ctx context.Context, id int64, columnID *int64, position float64) (*model.CardMove, error) {
 	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
 	if err != nil {
 		return nil, err
 	}
+	// Родительство уже приехало вместе с проверкой прав — читать карточку
+	// целиком (а с ней assignees и labels, которые тут не нужны) незачем.
+	if acc.ParentID != nil {
+		if columnID != nil {
+			return nil, apperr.New(apperr.CodeValidation, "child card cannot change column")
+		}
+		updated, err := s.repo.MoveChildCard(ctx, id, position)
+		if err != nil {
+			return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+		}
+		// У подзадачи нет колонки, поэтому Before/After — только позиция.
+		// applyHistoryUndo разбирает такой формат отдельной веткой.
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   acc.ProjectID,
+			Action:      "card.moved",
+			EntityType:  "card",
+			EntityID:    id,
+			CardID:      *acc.ParentID,
+			EntityTitle: updated.Title,
+			EntityLink:  historyTaskPath(acc.ProjectID, acc.BoardID, *acc.ParentID),
+			Before:      historyPos(updated.FromPosition),
+			After:       historyPos(updated.Position),
+		})
+		return updated, nil
+	}
+	if columnID == nil || *columnID == 0 {
+		return nil, apperr.New(apperr.CodeColumnIDAndPositionRequired, "column_id and position required")
+	}
 
-	targetColumn, err := s.columnRepo.GetColumn(ctx, columnID)
+	targetColumn, err := s.columnRepo.GetColumn(ctx, *columnID)
 	if err != nil {
 		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
@@ -772,11 +949,11 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 		return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
 	}
 
-	move, err := s.repo.MoveCard(ctx, id, columnID, position)
+	move, err := s.repo.MoveCard(ctx, id, *columnID, position)
 	if err != nil {
 		return nil, err
 	}
-	columnChanged := move.FromColumnID != columnID
+	columnChanged := move.FromColumnID != *columnID
 
 	appendHistory(s.History, ctx, model.HistoryWrite{
 		ProjectID:   acc.ProjectID,
@@ -790,7 +967,7 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID int64, po
 		// четыре запроса ради строки, все части которой уже лежат здесь.
 		EntityLink: historyTaskPath(acc.ProjectID, acc.BoardID, id),
 		Before:     historyPlacement(move.FromColumnID, move.FromPosition),
-		After:      historyPlacement(columnID, move.Position),
+		After:      historyPlacement(*columnID, move.Position),
 	})
 
 	if s.realtimePublisher != nil {
@@ -858,6 +1035,9 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
 	card, err := s.repo.GetCard(ctx, id)
 	if err != nil {
 		return withNotFoundCode(err, apperr.CodeCardNotFound)
+	}
+	if err := errIfChildCard(card); err != nil {
+		return err
 	}
 	action := "card.archived"
 	if card.IsArchived {
@@ -962,9 +1142,13 @@ func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, 
 		Action:      action,
 		EntityType:  "card",
 		EntityID:    id,
-		CardID:      id,
+		CardID:      historyOwnerCardID(updated),
 		EntityTitle: updated.Title,
 	})
+	if updated.ParentID != nil {
+		s.publishParentChecklist(ctx, *updated.ParentID)
+		return updated, nil
+	}
 	if completing {
 		if col, colErr := s.columnRepo.GetColumn(ctx, updated.ColumnID); colErr == nil {
 			if board, boardErr := s.boardRepo.GetBoard(ctx, col.BoardID); boardErr == nil && board.DoneColumnID != nil && *board.DoneColumnID != updated.ColumnID {
@@ -1009,6 +1193,9 @@ func (s *CardService) DuplicateCard(ctx context.Context, id int64, columnID int6
 	source, err := s.repo.GetCard(ctx, id)
 	if err != nil {
 		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+	}
+	if err := errIfChildCard(source); err != nil {
+		return nil, err
 	}
 	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
 	if err != nil {
@@ -1063,12 +1250,18 @@ func (s *CardService) DuplicateCard(ctx context.Context, id int64, columnID int6
 			_, _ = s.labelRepo.ToggleLabel(ctx, created.ID, labelID)
 		}
 	}
-	if subtasks, stErr := s.subtaskRepo.GetSubtasks(ctx, id); stErr == nil {
-		for i := range subtasks {
-			st := subtasks[i]
-			st.ID = 0
-			st.CardID = created.ID
-			_, _ = s.subtaskRepo.CreateSubtask(ctx, created.ID, &st)
+	if children, stErr := s.repo.GetChildCards(ctx, id); stErr == nil {
+		for i := range children {
+			child := children[i]
+			cloneChild := &model.Card{
+				Title:       child.Title,
+				ParentID:    &created.ID,
+				Position:    child.Position,
+				CreatedByID: currentUserID(ctx),
+			}
+			if copied, err := s.repo.CreateCard(ctx, 0, cloneChild); err == nil && copied != nil && len(child.AssigneeIDs) > 0 {
+				_ = s.repo.UpdateCardAssignees(ctx, copied.ID, child.AssigneeIDs)
+			}
 		}
 	}
 
@@ -1166,6 +1359,26 @@ func normalizeCardBorderColor(color *string) *string {
 	default:
 		return nil
 	}
+}
+
+func (s *CardService) publishParentChecklist(ctx context.Context, parentID int64) {
+	if s.realtimePublisher == nil {
+		return
+	}
+	s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+		patch, err := s.realtimePublisher.BuildChecklistCounters(ctx, parentID)
+		if err != nil {
+			return err
+		}
+		return s.realtimePublisher.PublishCardPatchByID(ctx, parentID, patch, realtimeSenderID(ctx))
+	})
+}
+
+func sameOptionalID(a, b *int64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func sameOptionalString(a, b *string) bool {

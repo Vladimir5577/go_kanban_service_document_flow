@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
+	sq "github.com/Masterminds/squirrel"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -17,8 +17,12 @@ type CardRepositoryInterface interface {
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error)
 	GetCardsByBoard(ctx context.Context, boardID int64) ([]model.Card, error)
-	GetAssignedCards(ctx context.Context, userID int64, status string) ([]AssignedCardRow, error)
-	GetAssignedSubtasks(ctx context.Context, userID int64, status string) ([]AssignedSubtaskRow, error)
+	ListTasks(ctx context.Context, f TaskListParams) ([]AssignedCardRow, int64, error)
+	ListTaskCollaborants(ctx context.Context, f TaskCollaborantsParams) ([]model.User, int64, error)
+	GetChildCards(ctx context.Context, parentID int64) ([]model.Card, error)
+	GetChildStats(ctx context.Context, parentID int64) (total int64, maxPosition float64, err error)
+	MoveChildCard(ctx context.Context, id int64, position float64) (*model.CardMove, error)
+	GetChildCountsByParentIDs(ctx context.Context, parentIDs []int64) (map[int64]model.ChecklistCount, error)
 	CountActiveCardsByBoard(ctx context.Context, boardID int64) (int, error)
 	GetAssigneesByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
 	GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
@@ -39,6 +43,37 @@ type CardRepository struct {
 	Db *pgxpool.Pool
 }
 
+type TaskListParams struct {
+	ViewerID      int64
+	TitleQuery    string
+	ProjectID     int64
+	Priority      string
+	AuthorID      int64
+	AssigneeID    int64
+	Completed     string
+	Archived      string
+	Kind          string
+	DueFrom       *time.Time
+	DueTo         *time.Time
+	CreatedFrom   *time.Time
+	CreatedTo     *time.Time
+	CompletedFrom *time.Time
+	CompletedTo   *time.Time
+	ArchivedFrom  *time.Time
+	ArchivedTo    *time.Time
+	Sort          string
+	SortDesc      bool
+	Limit         int32
+	Offset        int32
+}
+
+type TaskCollaborantsParams struct {
+	ViewerID  int64
+	NameQuery string
+	Limit     int32
+	Offset    int32
+}
+
 type AssignedCardRow struct {
 	ProjectID   int64
 	ProjectName string
@@ -51,20 +86,12 @@ type AssignedCardRow struct {
 	Priority    *string
 	DueDate     *time.Time
 	BorderColor *string
-}
-
-type AssignedSubtaskRow struct {
-	SubtaskID     int64
-	SubtaskTitle  string
-	SubtaskStatus string
-	CardID        int64
-	CardTitle     string
-	ColumnID      int64
-	ColumnTitle   string
-	BoardID       int64
-	BoardTitle    string
-	ProjectID     int64
-	ProjectName   string
+	ParentID    *int64
+	ParentTitle *string
+	CreatedAt   time.Time
+	CompletedAt *time.Time
+	ArchivedAt  *time.Time
+	IsArchived  bool
 }
 
 func NewCardRepository(db *pgxpool.Pool) *CardRepository {
@@ -73,126 +100,322 @@ func NewCardRepository(db *pgxpool.Pool) *CardRepository {
 	}
 }
 
-func (r *CardRepository) GetAssignedCards(ctx context.Context, userID int64, status string) ([]AssignedCardRow, error) {
+// Архивность и дата архивации у подзадачи берутся у родителя: сама она
+// не архивируется.
+const (
+	taskArchivedExpr   = `CASE WHEN c.parent_id IS NULL THEN c.is_archived ELSE COALESCE(parent.is_archived, FALSE) END`
+	taskArchivedAtExpr = `CASE WHEN c.parent_id IS NULL THEN c.archived_at ELSE parent.archived_at END`
+	taskPriorityRank   = `CASE c.priority WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END`
+)
+
+var taskListColumns = []string{
+	// Окно считается до LIMIT — отдельный COUNT-запрос не нужен.
+	"COUNT(*) OVER ()::bigint",
+	"p.id", "p.name",
+	"b.id", "b.title",
+	"col.id", "col.title",
+	"c.id", "c.title", "c.priority", "c.due_date", "c.border_color",
+	"c.parent_id", "parent.title",
+	"c.created_at", "c.completed_at",
+	"(" + taskArchivedAtExpr + ")::timestamptz",
+	"(" + taskArchivedExpr + ")::bool",
+}
+
+// taskListQuery собирает запрос только из активных фильтров. Прежний вариант
+// прошивал каждый как «параметр пуст ИЛИ предикат»: планировщик строил один
+// generic plan на все комбинации и всегда выбирал полный скан. Здесь он видит
+// настоящие предикаты. Для assignee_id это вдобавок смена точки входа — JOIN
+// по idx_kanban_card_assignee_user_id вместо EXISTS поверх скана всех карточек.
+func taskListQuery(f TaskListParams) sq.SelectBuilder {
+	q := sq.Select(taskListColumns...).
+		PlaceholderFormat(sq.Dollar).
+		From("kanban_card c").
+		LeftJoin("kanban_card parent ON parent.id = c.parent_id").
+		Join("kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)").
+		Join("kanban_board b ON b.id = col.board_id").
+		Join("kanban_project p ON p.id = b.kanban_project_id").
+		Where("c.deleted_at IS NULL").
+		Where("(parent.id IS NULL OR parent.deleted_at IS NULL)").
+		Where("col.deleted_at IS NULL").
+		Where("b.deleted_at IS NULL").
+		Where("p.deleted_at IS NULL").
+		Where(`(p.owner_id = ? OR EXISTS (
+			SELECT 1 FROM kanban_project_user pu
+			WHERE pu.kanban_project_id = p.id AND pu.user_id = ?
+		))`, f.ViewerID, f.ViewerID)
+
+	if f.TitleQuery != "" {
+		// Спецсимволы LIKE экранированы ещё в обработчике, отсюда ESCAPE.
+		q = q.Where(`c.title ILIKE '%' || ? || '%' ESCAPE '\'`, f.TitleQuery)
+	}
+	if f.ProjectID != 0 {
+		q = q.Where(sq.Eq{"p.id": f.ProjectID})
+	}
+	switch {
+	case f.Priority == "none":
+		q = q.Where("c.priority IS NULL")
+	case f.Priority != "":
+		q = q.Where(sq.Eq{"c.priority": f.Priority})
+	}
+	switch {
+	case f.AuthorID < 0:
+		q = q.Where("c.created_by_id IS NULL")
+	case f.AuthorID > 0:
+		q = q.Where(sq.Eq{"c.created_by_id": f.AuthorID})
+	}
+	switch {
+	case f.AssigneeID < 0:
+		q = q.Where("NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)")
+	case f.AssigneeID > 0:
+		// PK (card_id, user_id) гарантирует не больше одной строки — дублей не будет.
+		q = q.Join("kanban_card_assignee ca ON ca.card_id = c.id").
+			Where(sq.Eq{"ca.user_id": f.AssigneeID})
+	}
+	switch f.Completed {
+	case "true":
+		q = q.Where("c.completed_at IS NOT NULL")
+	case "false":
+		q = q.Where("c.completed_at IS NULL")
+	}
+	switch f.Archived {
+	case "true":
+		q = q.Where("(" + taskArchivedExpr + ")")
+	case "false":
+		q = q.Where("NOT (" + taskArchivedExpr + ")")
+	}
+	switch f.Kind {
+	case "task":
+		q = q.Where("c.parent_id IS NULL")
+	case "subtask":
+		q = q.Where("c.parent_id IS NOT NULL")
+	}
+
+	for _, r := range []struct {
+		expr string
+		from *time.Time
+		to   *time.Time
+	}{
+		{"c.due_date", f.DueFrom, f.DueTo},
+		{"c.created_at", f.CreatedFrom, f.CreatedTo},
+		{"c.completed_at", f.CompletedFrom, f.CompletedTo},
+		{"(" + taskArchivedAtExpr + ")", f.ArchivedFrom, f.ArchivedTo},
+	} {
+		if r.from != nil {
+			q = q.Where(r.expr+" >= ?", *r.from)
+		}
+		if r.to != nil {
+			q = q.Where(r.expr+" < ?", *r.to)
+		}
+	}
+
+	return q.OrderBy(taskListOrderBy(f.Sort, f.SortDesc)...)
+}
+
+// taskListOrderBy — белый список: sort выбирает ветку и никогда не попадает
+// в SQL как текст, направление приходит из bool.
+func taskListOrderBy(sort string, desc bool) []string {
+	dir := "ASC"
+	if desc {
+		dir = "DESC"
+	}
+	switch sort {
+	case "title":
+		return []string{"c.title " + dir, "c.id ASC"}
+	case "createdAt":
+		return []string{"c.created_at " + dir, "c.id ASC"}
+	case "completedAt":
+		return []string{"c.completed_at " + dir + " NULLS LAST", "c.id ASC"}
+	default: // priority — он же значение по умолчанию в обработчике
+		return []string{taskPriorityRank + " " + dir, "c.id ASC"}
+	}
+}
+
+func (r *CardRepository) queryTaskList(ctx context.Context, q sq.SelectBuilder, limit, offset int32) ([]AssignedCardRow, int64, error) {
+	if limit < 0 {
+		limit = 0
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	sqlStr, args, err := q.Limit(uint64(limit)).Offset(uint64(offset)).ToSql()
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.Db.Query(ctx, sqlStr, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	result := make([]AssignedCardRow, 0, limit)
+	var total int64
+	for rows.Next() {
+		var row AssignedCardRow
+		var priority, borderColor, parentTitle pgtype.Text
+		var dueDate, createdAt, completedAt, archivedAt pgtype.Timestamptz
+		var parentID pgtype.Int8
+
+		if err := rows.Scan(
+			&total,
+			&row.ProjectID, &row.ProjectName,
+			&row.BoardID, &row.BoardTitle,
+			&row.ColumnID, &row.ColumnTitle,
+			&row.CardID, &row.CardTitle, &priority, &dueDate, &borderColor,
+			&parentID, &parentTitle,
+			&createdAt, &completedAt,
+			&archivedAt, &row.IsArchived,
+		); err != nil {
+			return nil, 0, err
+		}
+
+		row.Priority = textPtr(priority)
+		row.DueDate = timestamptzPtr(dueDate)
+		row.BorderColor = textPtr(borderColor)
+		row.ParentID = int8Ptr(parentID)
+		row.ParentTitle = textPtr(parentTitle)
+		row.CreatedAt = createdAt.Time
+		row.CompletedAt = timestamptzPtr(completedAt)
+		row.ArchivedAt = timestamptzPtr(archivedAt)
+		result = append(result, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return result, total, nil
+}
+
+func (r *CardRepository) ListTasks(ctx context.Context, f TaskListParams) ([]AssignedCardRow, int64, error) {
+	q := taskListQuery(f)
+	rows, total, err := r.queryTaskList(ctx, q, f.Limit, f.Offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(rows) == 0 && f.Offset > 0 {
+		// Страница за пределами набора: окно считать не с чего, а отдать
+		// total=0 нельзя — клиент потеряет пагинацию. Добираем одной строкой
+		// с начала, и только в этой редкой ветке.
+		if _, total, err = r.queryTaskList(ctx, q, 1, 0); err != nil {
+			return nil, 0, err
+		}
+	}
+	return rows, total, nil
+}
+
+func (r *CardRepository) ListTaskCollaborants(ctx context.Context, f TaskCollaborantsParams) ([]model.User, int64, error) {
 	queries := dbgen.New(r.Db)
+	params := dbgen.ListTaskCollaborantsParams{
+		ViewerID:   f.ViewerID,
+		NameQuery:  f.NameQuery,
+		PageLimit:  f.Limit,
+		PageOffset: f.Offset,
+	}
+	rows, err := queries.ListTaskCollaborants(ctx, params)
+	if err != nil {
+		return nil, 0, err
+	}
 
-	switch status {
-	case "open":
-		rows, err := queries.GetAssignedCardsOpen(ctx, userID)
+	var total int64
+	if len(rows) > 0 {
+		total = rows[0].TotalCount
+	} else if f.Offset > 0 {
+		probe := params
+		probe.PageLimit, probe.PageOffset = 1, 0
+		first, err := queries.ListTaskCollaborants(ctx, probe)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
-		result := make([]AssignedCardRow, 0, len(rows))
-		for _, row := range rows {
-			result = append(result, assignedCardRowFromOpen(row))
+		if len(first) > 0 {
+			total = first[0].TotalCount
 		}
-		return result, nil
-	case "closed":
-		rows, err := queries.GetAssignedCardsClosed(ctx, userID)
-		if err != nil {
-			return nil, err
-		}
-		result := make([]AssignedCardRow, 0, len(rows))
-		for _, row := range rows {
-			result = append(result, assignedCardRowFromClosed(row))
-		}
-		return result, nil
-	default:
-		return nil, apperr.New(apperr.CodeValidation, "invalid status filter")
 	}
+
+	result := make([]model.User, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, model.User{
+			ID:         row.ID,
+			Login:      row.Login,
+			Lastname:   row.Lastname,
+			Firstname:  row.Firstname,
+			Patronymic: textPtr(row.Patronymic),
+			AvatarName: textPtr(row.AvatarName),
+		})
+	}
+	return result, total, nil
 }
 
-func (r *CardRepository) GetAssignedSubtasks(ctx context.Context, userID int64, status string) ([]AssignedSubtaskRow, error) {
-	queries := dbgen.New(r.Db)
-
-	switch status {
-	case "open":
-		rows, err := queries.GetAssignedSubtasksOpen(ctx, userID)
-		if err != nil {
-			return nil, err
-		}
-		result := make([]AssignedSubtaskRow, 0, len(rows))
-		for _, row := range rows {
-			result = append(result, assignedSubtaskRowFromOpen(row))
-		}
-		return result, nil
-	case "closed":
-		rows, err := queries.GetAssignedSubtasksClosed(ctx, userID)
-		if err != nil {
-			return nil, err
-		}
-		result := make([]AssignedSubtaskRow, 0, len(rows))
-		for _, row := range rows {
-			result = append(result, assignedSubtaskRowFromClosed(row))
-		}
-		return result, nil
-	default:
-		return nil, apperr.New(apperr.CodeValidation, "invalid status filter")
+func int8Ptr(v pgtype.Int8) *int64 {
+	if !v.Valid {
+		return nil
 	}
+	value := v.Int64
+	return &value
 }
 
-func assignedCardRowFromOpen(row dbgen.GetAssignedCardsOpenRow) AssignedCardRow {
-	return AssignedCardRow{
-		ProjectID:   row.ProjectID,
-		ProjectName: row.ProjectName,
-		BoardID:     row.BoardID,
-		BoardTitle:  row.BoardTitle,
-		ColumnID:    row.ColumnID,
-		ColumnTitle: row.ColumnTitle,
-		CardID:      row.CardID,
-		CardTitle:   row.CardTitle,
-		Priority:    textPtr(row.CardPriority),
-		DueDate:     timestamptzPtr(row.CardDueDate),
-		BorderColor: textPtr(row.CardBorderColor),
-	}
+func int8Arg(id int64) pgtype.Int8 {
+	return pgtype.Int8{Int64: id, Valid: true}
 }
 
-func assignedCardRowFromClosed(row dbgen.GetAssignedCardsClosedRow) AssignedCardRow {
-	return AssignedCardRow{
-		ProjectID:   row.ProjectID,
-		ProjectName: row.ProjectName,
-		BoardID:     row.BoardID,
-		BoardTitle:  row.BoardTitle,
-		ColumnID:    row.ColumnID,
-		ColumnTitle: row.ColumnTitle,
-		CardID:      row.CardID,
-		CardTitle:   row.CardTitle,
-		Priority:    textPtr(row.CardPriority),
-		DueDate:     timestamptzPtr(row.CardDueDate),
-		BorderColor: textPtr(row.CardBorderColor),
+func columnIDArg(c *model.Card) pgtype.Int8 {
+	if c.ParentID != nil {
+		return pgtype.Int8{}
 	}
+	return pgtype.Int8{Int64: c.ColumnID, Valid: true}
 }
 
-func assignedSubtaskRowFromOpen(row dbgen.GetAssignedSubtasksOpenRow) AssignedSubtaskRow {
-	return AssignedSubtaskRow{
-		SubtaskID:     row.SubtaskID,
-		SubtaskTitle:  row.SubtaskTitle,
-		SubtaskStatus: row.SubtaskStatus,
-		CardID:        row.CardID,
-		CardTitle:     row.CardTitle,
-		ColumnID:      row.ColumnID,
-		ColumnTitle:   row.ColumnTitle,
-		BoardID:       row.BoardID,
-		BoardTitle:    row.BoardTitle,
-		ProjectID:     row.ProjectID,
-		ProjectName:   row.ProjectName,
+func parentIDArg(c *model.Card) pgtype.Int8 {
+	if c.ParentID == nil {
+		return pgtype.Int8{}
 	}
+	return pgtype.Int8{Int64: *c.ParentID, Valid: true}
 }
 
-func assignedSubtaskRowFromClosed(row dbgen.GetAssignedSubtasksClosedRow) AssignedSubtaskRow {
-	return AssignedSubtaskRow{
-		SubtaskID:     row.SubtaskID,
-		SubtaskTitle:  row.SubtaskTitle,
-		SubtaskStatus: row.SubtaskStatus,
-		CardID:        row.CardID,
-		CardTitle:     row.CardTitle,
-		ColumnID:      row.ColumnID,
-		ColumnTitle:   row.ColumnTitle,
-		BoardID:       row.BoardID,
-		BoardTitle:    row.BoardTitle,
-		ProjectID:     row.ProjectID,
-		ProjectName:   row.ProjectName,
+func mapDBCard(c dbgen.KanbanCard) model.Card {
+	card := model.Card{
+		ID:         c.ID,
+		Title:      c.Title,
+		Position:   c.Position,
+		IsArchived: c.IsArchived,
+		CreatedAt:  c.CreatedAt.Time,
+		UpdatedAt:  c.UpdatedAt.Time,
 	}
+	if c.ColumnID.Valid {
+		card.ColumnID = c.ColumnID.Int64
+	}
+	card.ParentID = int8Ptr(c.ParentID)
+	if c.Description.Valid {
+		card.Description = &c.Description.String
+	}
+	if c.Priority.Valid {
+		card.Priority = &c.Priority.String
+	}
+	if c.BorderColor.Valid {
+		card.BorderColor = &c.BorderColor.String
+	}
+	if c.DueDate.Valid {
+		t := c.DueDate.Time
+		card.DueDate = &t
+	}
+	if c.ArchivedAt.Valid {
+		t := c.ArchivedAt.Time
+		card.ArchivedAt = &t
+	}
+	if c.ArchivedByID.Valid {
+		v := c.ArchivedByID.Int64
+		card.ArchivedByID = &v
+	}
+	if c.CompletedAt.Valid {
+		t := c.CompletedAt.Time
+		card.CompletedAt = &t
+	}
+	if c.CompletedByID.Valid {
+		v := c.CompletedByID.Int64
+		card.CompletedByID = &v
+	}
+	if c.CreatedByID.Valid {
+		v := c.CreatedByID.Int64
+		card.CreatedByID = &v
+	}
+	return card
 }
 
 func textPtr(v pgtype.Text) *string {
@@ -216,7 +439,7 @@ func (r *CardRepository) CountActiveCardsByBoard(ctx context.Context, boardID in
 		SELECT COUNT(c.id)
 		FROM kanban_card c
 		JOIN kanban_column col ON col.id = c.column_id
-		WHERE col.board_id = $1 AND c.is_archived = FALSE AND c.deleted_at IS NULL AND col.deleted_at IS NULL`
+		WHERE col.board_id = $1 AND c.parent_id IS NULL AND c.is_archived = FALSE AND c.deleted_at IS NULL AND col.deleted_at IS NULL`
 
 	var count int
 	if err := r.Db.QueryRow(ctx, query, boardID).Scan(&count); err != nil {
@@ -227,7 +450,7 @@ func (r *CardRepository) CountActiveCardsByBoard(ctx context.Context, boardID in
 
 func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error) {
 	queries := dbgen.New(r.Db)
-	dbCards, err := queries.GetCardsByColumn(ctx, columnID)
+	dbCards, err := queries.GetCardsByColumn(ctx, int8Arg(columnID))
 	if err != nil {
 		return nil, err
 	}
@@ -254,56 +477,81 @@ func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) (
 
 	var cards []model.Card
 	for _, c := range dbCards {
-		card := model.Card{
-			ID:         c.ID,
-			Title:      c.Title,
-			Position:   c.Position,
-			IsArchived: c.IsArchived,
-			ColumnID:   c.ColumnID,
-			CreatedAt:  c.CreatedAt.Time,
-			UpdatedAt:  c.UpdatedAt.Time,
-		}
-		if c.Description.Valid {
-			card.Description = &c.Description.String
-		}
-		if c.Priority.Valid {
-			card.Priority = &c.Priority.String
-		}
-		if c.BorderColor.Valid {
-			card.BorderColor = &c.BorderColor.String
-		}
-		if c.DueDate.Valid {
-			t := c.DueDate.Time
-			card.DueDate = &t
-		}
-		if c.ArchivedAt.Valid {
-			t := c.ArchivedAt.Time
-			card.ArchivedAt = &t
-		}
-		if c.ArchivedByID.Valid {
-			v := c.ArchivedByID.Int64
-			card.ArchivedByID = &v
-		}
-		if c.CompletedAt.Valid {
-			t := c.CompletedAt.Time
-			card.CompletedAt = &t
-		}
-		if c.CompletedByID.Valid {
-			v := c.CompletedByID.Int64
-			card.CompletedByID = &v
-		}
-		if c.CreatedByID.Valid {
-			v := c.CreatedByID.Int64
-			card.CreatedByID = &v
-		}
-
-		// Проставить assignees и labels из bulk-результатов
+		card := mapDBCard(c)
 		card.AssigneeIDs = assigneesByCard[card.ID]
 		card.LabelIDs = labelsByCard[card.ID]
-
 		cards = append(cards, card)
 	}
 	return cards, nil
+}
+
+func (r *CardRepository) GetChildCards(ctx context.Context, parentID int64) ([]model.Card, error) {
+	queries := dbgen.New(r.Db)
+	dbCards, err := queries.GetChildCards(ctx, int8Arg(parentID))
+	if err != nil {
+		return nil, err
+	}
+	if len(dbCards) == 0 {
+		return []model.Card{}, nil
+	}
+	cardIDs := make([]int64, len(dbCards))
+	for i, c := range dbCards {
+		cardIDs[i] = c.ID
+	}
+	assigneesByCard, err := r.GetAssigneesByCardIDs(ctx, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	cards := make([]model.Card, 0, len(dbCards))
+	for _, c := range dbCards {
+		card := mapDBCard(c)
+		card.AssigneeIDs = assigneesByCard[card.ID]
+		cards = append(cards, card)
+	}
+	return cards, nil
+}
+
+func (r *CardRepository) MoveChildCard(ctx context.Context, id int64, position float64) (*model.CardMove, error) {
+	row, err := dbgen.New(r.Db).UpdateCardPosition(ctx, dbgen.UpdateCardPositionParams{
+		ID:       id,
+		Position: position,
+	})
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &model.CardMove{
+		ID:           row.ID,
+		Title:        row.Title,
+		Position:     row.Position,
+		FromPosition: row.OldPosition,
+		UpdatedAt:    row.UpdatedAt.Time,
+	}, nil
+}
+
+func (r *CardRepository) GetChildStats(ctx context.Context, parentID int64) (total int64, maxPosition float64, err error) {
+	row, err := dbgen.New(r.Db).GetChildStats(ctx, int8Arg(parentID))
+	if err != nil {
+		return 0, 0, err
+	}
+	return row.Total, row.MaxPosition, nil
+}
+
+func (r *CardRepository) GetChildCountsByParentIDs(ctx context.Context, parentIDs []int64) (map[int64]model.ChecklistCount, error) {
+	result := make(map[int64]model.ChecklistCount)
+	if len(parentIDs) == 0 {
+		return result, nil
+	}
+	rows, err := dbgen.New(r.Db).GetChildCountsByParentIDs(ctx, parentIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if !row.ParentID.Valid {
+			continue
+		}
+		result[row.ParentID.Int64] = model.ChecklistCount{Total: int(row.Total), Done: int(row.Done)}
+	}
+	return result, nil
 }
 
 func (r *CardRepository) GetCardsByBoard(ctx context.Context, boardID int64) ([]model.Card, error) {
@@ -315,50 +563,7 @@ func (r *CardRepository) GetCardsByBoard(ctx context.Context, boardID int64) ([]
 
 	var cards []model.Card
 	for _, c := range dbCards {
-		card := model.Card{
-			ID:         c.ID,
-			Title:      c.Title,
-			Position:   c.Position,
-			IsArchived: c.IsArchived,
-			ColumnID:   c.ColumnID,
-			CreatedAt:  c.CreatedAt.Time,
-			UpdatedAt:  c.UpdatedAt.Time,
-		}
-		if c.Description.Valid {
-			card.Description = &c.Description.String
-		}
-		if c.Priority.Valid {
-			card.Priority = &c.Priority.String
-		}
-		if c.BorderColor.Valid {
-			card.BorderColor = &c.BorderColor.String
-		}
-		if c.DueDate.Valid {
-			t := c.DueDate.Time
-			card.DueDate = &t
-		}
-		if c.ArchivedAt.Valid {
-			t := c.ArchivedAt.Time
-			card.ArchivedAt = &t
-		}
-		if c.ArchivedByID.Valid {
-			v := c.ArchivedByID.Int64
-			card.ArchivedByID = &v
-		}
-		if c.CompletedAt.Valid {
-			t := c.CompletedAt.Time
-			card.CompletedAt = &t
-		}
-		if c.CompletedByID.Valid {
-			v := c.CompletedByID.Int64
-			card.CompletedByID = &v
-		}
-		if c.CreatedByID.Valid {
-			v := c.CreatedByID.Int64
-			card.CreatedByID = &v
-		}
-
-		cards = append(cards, card)
+		cards = append(cards, mapDBCard(c))
 	}
 	return cards, nil
 }
@@ -407,7 +612,11 @@ func (r *CardRepository) CreateCard(ctx context.Context, columnID int64, c *mode
 	params := dbgen.CreateCardParams{
 		Title:    c.Title,
 		Position: c.Position,
-		ColumnID: columnID,
+		ColumnID: columnIDArg(c),
+		ParentID: parentIDArg(c),
+	}
+	if c.ParentID == nil && columnID != 0 {
+		params.ColumnID = int8Arg(columnID)
 	}
 	if c.Description != nil {
 		params.Description = pgtype.Text{String: *c.Description, Valid: true}
@@ -443,63 +652,23 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 		return nil, NormalizeError(err)
 	}
 
-	card := &model.Card{
-		ID:         c.ID,
-		Title:      c.Title,
-		Position:   c.Position,
-		IsArchived: c.IsArchived,
-		ColumnID:   c.ColumnID,
-		CreatedAt:  c.CreatedAt.Time,
-		UpdatedAt:  c.UpdatedAt.Time,
-	}
-	if c.Description.Valid {
-		card.Description = &c.Description.String
-	}
-	if c.Priority.Valid {
-		card.Priority = &c.Priority.String
-	}
-	if c.BorderColor.Valid {
-		card.BorderColor = &c.BorderColor.String
-	}
-	if c.DueDate.Valid {
-		t := c.DueDate.Time
-		card.DueDate = &t
-	}
-	if c.ArchivedAt.Valid {
-		t := c.ArchivedAt.Time
-		card.ArchivedAt = &t
-	}
-	if c.ArchivedByID.Valid {
-		v := c.ArchivedByID.Int64
-		card.ArchivedByID = &v
-	}
-	if c.CompletedAt.Valid {
-		t := c.CompletedAt.Time
-		card.CompletedAt = &t
-	}
-	if c.CompletedByID.Valid {
-		v := c.CompletedByID.Int64
-		card.CompletedByID = &v
-	}
-	if c.CreatedByID.Valid {
-		v := c.CreatedByID.Int64
-		card.CreatedByID = &v
-	}
+	card := mapDBCard(c)
+	cardPtr := &card
 
 	// Bulk-запросы для assignees и labels (используем существующие методы)
-	assigneesByCard, err := r.GetAssigneesByCardIDs(ctx, []int64{card.ID})
+	assigneesByCard, err := r.GetAssigneesByCardIDs(ctx, []int64{cardPtr.ID})
 	if err != nil {
 		return nil, err
 	}
-	card.AssigneeIDs = assigneesByCard[card.ID]
+	cardPtr.AssigneeIDs = assigneesByCard[cardPtr.ID]
 
-	labelsByCard, err := r.GetLabelIDsByCardIDs(ctx, []int64{card.ID})
+	labelsByCard, err := r.GetLabelIDsByCardIDs(ctx, []int64{cardPtr.ID})
 	if err != nil {
 		return nil, err
 	}
-	card.LabelIDs = labelsByCard[card.ID]
+	cardPtr.LabelIDs = labelsByCard[cardPtr.ID]
 
-	return card, nil
+	return cardPtr, nil
 }
 
 func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error) {
@@ -509,7 +678,8 @@ func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.
 		Title:      c.Title,
 		Position:   c.Position,
 		IsArchived: c.IsArchived,
-		ColumnID:   c.ColumnID,
+		ColumnID:   columnIDArg(c),
+		ParentID:   parentIDArg(c),
 		ID:         c.ID,
 	}
 	if c.Description != nil {
@@ -575,7 +745,7 @@ func (r *CardRepository) columnCardPositions(ctx context.Context, columnID int64
 	rows, err := r.Db.Query(ctx, `
 		SELECT id, position, updated_at
 		FROM kanban_card
-		WHERE column_id = $1 AND is_archived = FALSE
+		WHERE column_id = $1 AND parent_id IS NULL AND is_archived = FALSE AND deleted_at IS NULL
 		ORDER BY position ASC, id ASC`, columnID)
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -606,15 +776,19 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 	// 1. Исходная колонка, позиция и заголовок — всё, что от карточки нужно
 	// перемещению. Заголовок уедет в уведомление о смене колонки, позиция — в
 	// историю как Before.
+	var fromColumn pgtype.Int8
 	if err := r.Db.QueryRow(ctx, `
 		SELECT column_id, position, title FROM kanban_card WHERE id = $1
-	`, id).Scan(&move.FromColumnID, &move.FromPosition, &move.Title); err != nil {
+	`, id).Scan(&fromColumn, &move.FromPosition, &move.Title); err != nil {
 		return nil, NormalizeError(err)
+	}
+	if fromColumn.Valid {
+		move.FromColumnID = fromColumn.Int64
 	}
 
 	// 2. Занята ли целевая позиция — один EXISTS вместо чтения всей колонки.
 	needsRebalance, err := dbgen.New(r.Db).ColumnPositionTaken(ctx, dbgen.ColumnPositionTakenParams{
-		ColumnID: columnID,
+		ColumnID: int8Arg(columnID),
 		ID:       id,
 		Position: position,
 	})
@@ -641,7 +815,7 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 
 	// 4. Ребалансировка переписала позиции всей колонки — перечитываем, иначе
 	// у клиента останутся устаревшие позиции соседних карточек.
-	if err := dbgen.New(r.Db).RebalanceColumnCards(ctx, columnID); err != nil {
+	if err := dbgen.New(r.Db).RebalanceColumnCards(ctx, int8Arg(columnID)); err != nil {
 		return nil, err
 	}
 	rebalanced, err := r.columnCardPositions(ctx, columnID)
@@ -673,7 +847,10 @@ func (r *CardRepository) GetInvolvedUserIDsForNotifications(ctx context.Context,
 	// Get subtask users + card author in one round-trip (raw to avoid missing sqlc query).
 	// Dedup is handled by the ids map below, so UNION ALL is enough.
 	rows, err := r.Db.Query(ctx, `
-		SELECT user_id FROM kanban_card_subtask WHERE card_id = $1 AND user_id IS NOT NULL AND deleted_at IS NULL
+		SELECT ca.user_id
+		FROM kanban_card_assignee ca
+		JOIN kanban_card child ON child.id = ca.card_id
+		WHERE child.parent_id = $1 AND child.deleted_at IS NULL
 		UNION ALL
 		SELECT created_by_id FROM kanban_card WHERE id = $1 AND created_by_id IS NOT NULL`, cardID)
 	if err != nil {

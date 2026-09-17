@@ -19,7 +19,7 @@ type HistoryServiceInterface interface {
 	Append(ctx context.Context, e model.HistoryWrite) error
 	List(ctx context.Context, projectID, cursor int64, limit int32, userID int64, title string) (*model.HistoryListPage, error)
 	ListByCard(ctx context.Context, cardID, cursor int64, limit int32, userID int64, title string) (*model.HistoryListPage, error)
-	Undo(ctx context.Context, projectID int64) (action, entityTitle string, err error)
+	Undo(ctx context.Context, projectID int64) (action, entityTitle string, isChild bool, err error)
 }
 
 type HistoryService struct {
@@ -123,49 +123,49 @@ func (s *HistoryService) list(ctx context.Context, projectID, cardID, cursor int
 	return page, nil
 }
 
-func (s *HistoryService) Undo(ctx context.Context, projectID int64) (string, string, error) {
+func (s *HistoryService) Undo(ctx context.Context, projectID int64) (string, string, bool, error) {
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	user, ok := middleware.GetUser(ctx)
 	if !ok || user.ID == 0 {
-		return "", "", apperr.ErrUnauthorized
+		return "", "", false, apperr.ErrUnauthorized
 	}
 
 	entry, err := s.repo.LastByUser(ctx, projectID, user.ID)
 	if err != nil {
 		if errors.Is(err, apperr.ErrNotFound) {
-			return "", "", apperr.New(apperr.CodeUndoEmpty, "нечего отменять")
+			return "", "", false, apperr.New(apperr.CodeUndoEmpty, "нечего отменять")
 		}
-		return "", "", err
+		return "", "", false, err
 	}
 	if entry.CreatedAt.IsZero() || time.Since(entry.CreatedAt) > undoMaxAge {
-		return "", "", apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
+		return "", "", false, apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
 	}
 
 	overlap, err := s.repo.HasForeignOverlap(ctx, projectID, entry.ID, user.ID, entry.EntityType, entry.EntityID)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	if overlap {
-		return "", "", apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
+		return "", "", false, apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
 	}
 
 	if isMembersHistoryAction(entry.Action) {
 		if err := s.applyMembersUndo(ctx, entry); err != nil {
-			return "", "", err
+			return "", "", false, err
 		}
 		if err := s.repo.DeleteEntry(ctx, entry.ID); err != nil {
-			return "", "", err
+			return "", "", false, err
 		}
 	} else {
 		if err := s.repo.ApplyUndo(ctx, *entry); err != nil {
-			return "", "", err
+			return "", "", false, err
 		}
 	}
 
 	s.publishUndo(ctx, *entry)
-	return entry.Action, entry.EntityTitle, nil
+	return entry.Action, entry.EntityTitle, model.HistoryIsChild(entry.EntityType, entry.EntityID, entry.CardID), nil
 }
 
 func isMembersHistoryAction(action string) bool {

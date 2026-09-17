@@ -46,7 +46,6 @@ type BoardService struct {
 	cardRepo       repository.CardRepositoryInterface
 	labelRepo      repository.LabelRepositoryInterface
 	userRepo       repository.UserRepositoryInterface
-	subtaskRepo    repository.SubtaskRepositoryInterface
 	commentRepo    repository.CommentRepositoryInterface
 	attachmentRepo repository.AttachmentRepositoryInterface
 	permSvc        *PermissionService
@@ -60,7 +59,6 @@ func NewBoardService(
 	cardRepo repository.CardRepositoryInterface,
 	labelRepo repository.LabelRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
-	subtaskRepo repository.SubtaskRepositoryInterface,
 	commentRepo repository.CommentRepositoryInterface,
 	attachmentRepo repository.AttachmentRepositoryInterface,
 	permSvc *PermissionService,
@@ -72,7 +70,6 @@ func NewBoardService(
 		cardRepo:       cardRepo,
 		labelRepo:      labelRepo,
 		userRepo:       userRepo,
-		subtaskRepo:    subtaskRepo,
 		commentRepo:    commentRepo,
 		attachmentRepo: attachmentRepo,
 		permSvc:        permSvc,
@@ -193,7 +190,7 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 	if err != nil {
 		return nil, err
 	}
-	checklistsByCard, err := s.subtaskRepo.GetChecklistCountsByCardIDs(ctx, cardIDs)
+	checklistsByCard, err := s.cardRepo.GetChildCountsByParentIDs(ctx, cardIDs)
 	if err != nil {
 		return nil, err
 	}

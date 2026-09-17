@@ -13,7 +13,8 @@ type DuplicateCardRequest struct {
 
 type CreateCardRequest struct {
 	Title       string     `json:"title" validate:"required,max=500"`
-	ColumnID    int64      `json:"column_id" validate:"required"`
+	ColumnID    *int64     `json:"column_id,omitempty"`
+	ParentID    *int64     `json:"parent_id,omitempty"`
 	Description *string    `json:"description,omitempty"`
 	Position    *float64   `json:"position,omitempty"`
 	DueDate     *time.Time `json:"dueDate,omitempty"`
@@ -118,7 +119,8 @@ type CardResponse struct {
 	CompletedAt    *time.Time              `json:"completedAt"`
 	CompletedByID  *int64                  `json:"completedById"`
 	CompletedBy    *CardUserResponse       `json:"completedBy,omitempty"`
-	ColumnID       int64                   `json:"columnId"`
+	ColumnID       *int64                  `json:"columnId"`
+	ParentID       *int64                  `json:"parentId,omitempty"`
 	BoardID        int64                   `json:"boardId"`
 	ColumnTitle    string                  `json:"columnTitle,omitempty"`
 	CreatedByID    *int64                  `json:"createdById"`
@@ -131,7 +133,7 @@ type CardResponse struct {
 	Labels         []*LabelResponse        `json:"labels"`
 	Assignees      []*CardAssigneeResponse `json:"assignees"`
 	Comments       []*CommentResponse      `json:"comments"`
-	Subtasks       []*SubtaskResponse      `json:"subtasks"`
+	Children       []*CardChildResponse    `json:"children"`
 	Attachments    []*AttachmentResponse   `json:"attachments"`
 	ChecklistTotal int                     `json:"checklistTotal"`
 	ChecklistDone  int                     `json:"checklistDone"`
@@ -183,9 +185,22 @@ func MapCardPositions(cards []model.CardPosition) []*CardPositionResponse {
 	return positions
 }
 
+type CardChildResponse struct {
+	ID          int64      `json:"id"`
+	Title       string     `json:"title"`
+	Position    float64    `json:"position"`
+	CompletedAt *time.Time `json:"completedAt"`
+	AssigneeIDs []int64    `json:"assigneeIds"`
+}
+
 func MapCardResponse(c *model.Card) *CardResponse {
 	if c == nil {
 		return nil
+	}
+	var columnID *int64
+	if c.ParentID == nil {
+		id := c.ColumnID
+		columnID = &id
 	}
 	return &CardResponse{
 		ID:            c.ID,
@@ -199,7 +214,8 @@ func MapCardResponse(c *model.Card) *CardResponse {
 		ArchivedByID:  c.ArchivedByID,
 		CompletedAt:   c.CompletedAt,
 		CompletedByID: c.CompletedByID,
-		ColumnID:      c.ColumnID,
+		ColumnID:      columnID,
+		ParentID:      c.ParentID,
 		CreatedByID:   c.CreatedByID,
 		BorderColor:   c.BorderColor,
 		CreatedAt:     c.CreatedAt,
@@ -209,7 +225,7 @@ func MapCardResponse(c *model.Card) *CardResponse {
 		Labels:        make([]*LabelResponse, 0),
 		Assignees:     make([]*CardAssigneeResponse, 0),
 		Comments:      make([]*CommentResponse, 0),
-		Subtasks:      make([]*SubtaskResponse, 0),
+		Children:      make([]*CardChildResponse, 0),
 		Attachments:   make([]*AttachmentResponse, 0),
 	}
 }
