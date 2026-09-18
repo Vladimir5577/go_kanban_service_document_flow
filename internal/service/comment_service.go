@@ -27,13 +27,12 @@ type CommentServiceInterface interface {
 	UpdateComment(ctx context.Context, cardID int64, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error)
 	DeleteComment(ctx context.Context, cardID int64, commentID int64) error
 	MarkRead(ctx context.Context, cardID int64, lastCommentID int64) error
-	GetCommentReaders(ctx context.Context, cardID int64, commentID int64) (*model.CommentReaders, error)
+	GetCommentReaders(ctx context.Context, cardID int64, commentID int64) ([]model.CommentReader, error)
 }
 
 type CommentService struct {
 	repo              repository.CommentRepositoryInterface
 	readRepo          repository.CommentReadRepositoryInterface
-	memberRepo        repository.ProjectMemberRepositoryInterface
 	permSvc           *PermissionService
 	userRepo          repository.UserRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
@@ -44,7 +43,6 @@ type CommentService struct {
 func NewCommentService(
 	repo repository.CommentRepositoryInterface,
 	readRepo repository.CommentReadRepositoryInterface,
-	memberRepo repository.ProjectMemberRepositoryInterface,
 	permSvc *PermissionService,
 	userRepo repository.UserRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
@@ -53,7 +51,6 @@ func NewCommentService(
 	return &CommentService{
 		repo:              repo,
 		readRepo:          readRepo,
-		memberRepo:        memberRepo,
 		permSvc:           permSvc,
 		userRepo:          userRepo,
 		realtimePublisher: realtimePublisher,
@@ -273,11 +270,11 @@ func (s *CommentService) MarkRead(ctx context.Context, cardID int64, lastComment
 	return s.readRepo.MarkRead(ctx, cardID, user.ID, lastCommentID)
 }
 
-// GetCommentReaders — содержимое модалки «кто видел». Автор не попадает ни в
-// один из списков: свой комментарий он видел по определению.
-func (s *CommentService) GetCommentReaders(ctx context.Context, cardID int64, commentID int64) (*model.CommentReaders, error) {
-	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
-	if err != nil {
+// GetCommentReaders — содержимое модалки «кто видел». Список строится от
+// отметок, а не от текущего состава проекта: выбывший участник, который
+// комментарий прочитал, из выдачи не пропадает.
+func (s *CommentService) GetCommentReaders(ctx context.Context, cardID int64, commentID int64) ([]model.CommentReader, error) {
+	if _, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer); err != nil {
 		return nil, err
 	}
 
@@ -293,58 +290,37 @@ func (s *CommentService) GetCommentReaders(ctx context.Context, cardID int64, co
 	if err != nil {
 		return nil, err
 	}
+
+	// Автор выпадает: «Иванов прочитал комментарий Иванова» — шум, а отметка
+	// ему проставляется автоматически при создании.
 	readAt := make(map[int64]time.Time, len(marks))
+	userIDs := make([]int64, 0, len(marks))
 	for _, m := range marks {
-		readAt[m.UserID] = m.ReadAt
-	}
-
-	members, err := s.memberRepo.GetMembers(ctx, acc.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-
-	users, err := s.userRepo.GetUsersByIDs(ctx, commentAudienceIDs(acc.OwnerID, members, c.AuthorID))
-	if err != nil {
-		return nil, err
-	}
-
-	return splitCommentReaders(users, readAt, c.UpdatedAt), nil
-}
-
-// commentAudienceIDs — кого вообще показывать в модалке. Владелец проекта
-// строки в kanban_project_user не имеет, поэтому идёт отдельно; автор
-// исключается — свой комментарий он видел по определению.
-func commentAudienceIDs(ownerID int64, members []model.ProjectUser, authorID int64) []int64 {
-	audience := make([]int64, 0, len(members)+1)
-	seen := map[int64]bool{authorID: true}
-	add := func(id int64) {
-		if id == 0 || seen[id] {
-			return
+		if m.UserID == c.AuthorID {
+			continue
 		}
-		seen[id] = true
-		audience = append(audience, id)
+		readAt[m.UserID] = m.ReadAt
+		userIDs = append(userIDs, m.UserID)
 	}
-	add(ownerID)
-	for i := range members {
-		add(members[i].UserID)
+
+	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
+	if err != nil {
+		return nil, err
 	}
-	return audience
+
+	return buildCommentReaders(users, readAt, c.UpdatedAt), nil
 }
 
-// splitCommentReaders раскладывает участников на прочитавших и остальных.
+// buildCommentReaders сшивает отметки с людьми и сортирует по времени.
 // updatedAt — время правки комментария, если она была.
-func splitCommentReaders(users []model.User, readAt map[int64]time.Time, updatedAt *time.Time) *model.CommentReaders {
-	res := &model.CommentReaders{
-		Readers: make([]model.CommentReader, 0, len(users)),
-		Pending: make([]model.User, 0, len(users)),
-	}
+func buildCommentReaders(users []model.User, readAt map[int64]time.Time, updatedAt *time.Time) []model.CommentReader {
+	readers := make([]model.CommentReader, 0, len(users))
 	for i := range users {
 		t, ok := readAt[users[i].ID]
 		if !ok {
-			res.Pending = append(res.Pending, users[i])
 			continue
 		}
-		res.Readers = append(res.Readers, model.CommentReader{
+		readers = append(readers, model.CommentReader{
 			User:   users[i],
 			ReadAt: t,
 			// Текст правили после того, как человек его прочитал: в споре это
@@ -353,13 +329,10 @@ func splitCommentReaders(users []model.User, readAt map[int64]time.Time, updated
 		})
 	}
 
-	sort.Slice(res.Readers, func(i, j int) bool {
-		return res.Readers[i].ReadAt.Before(res.Readers[j].ReadAt)
+	sort.Slice(readers, func(i, j int) bool {
+		return readers[i].ReadAt.Before(readers[j].ReadAt)
 	})
-	sort.Slice(res.Pending, func(i, j int) bool {
-		return dto.UserDisplayName(res.Pending[i]) < dto.UserDisplayName(res.Pending[j])
-	})
-	return res
+	return readers
 }
 
 func normalizeCommentBody(body string) (string, error) {

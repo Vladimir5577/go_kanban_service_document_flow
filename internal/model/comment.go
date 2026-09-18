@@ -28,10 +28,3 @@ type CommentReader struct {
 	ReadAt         time.Time
 	ReadBeforeEdit bool
 }
-
-// CommentReaders — содержимое модалки «кто видел»: прочитавшие и остальные
-// участники проекта. Автор комментария не попадает ни в один из списков.
-type CommentReaders struct {
-	Readers []CommentReader
-	Pending []User
-}

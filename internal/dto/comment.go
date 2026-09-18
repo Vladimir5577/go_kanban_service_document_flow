@@ -25,24 +25,13 @@ type CommentReaderResponse struct {
 	ReadBeforeEdit bool          `json:"readBeforeEdit"`
 }
 
-type CommentReadersResponse struct {
-	Readers []*CommentReaderResponse `json:"readers"`
-	Pending []*UserResponse          `json:"pending"`
-}
-
-func MapCommentReadersResponse(r *model.CommentReaders) *CommentReadersResponse {
-	if r == nil {
-		return nil
-	}
-	resp := &CommentReadersResponse{
-		Readers: make([]*CommentReaderResponse, 0, len(r.Readers)),
-		Pending: MapUsersResponse(r.Pending),
-	}
-	for i := range r.Readers {
-		resp.Readers = append(resp.Readers, &CommentReaderResponse{
-			User:           MapUserResponse(&r.Readers[i].User),
-			ReadAt:         r.Readers[i].ReadAt,
-			ReadBeforeEdit: r.Readers[i].ReadBeforeEdit,
+func MapCommentReadersResponse(readers []model.CommentReader) []*CommentReaderResponse {
+	resp := make([]*CommentReaderResponse, 0, len(readers))
+	for i := range readers {
+		resp = append(resp, &CommentReaderResponse{
+			User:           MapUserResponse(&readers[i].User),
+			ReadAt:         readers[i].ReadAt,
+			ReadBeforeEdit: readers[i].ReadBeforeEdit,
 		})
 	}
 	return resp
