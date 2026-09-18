@@ -332,6 +332,44 @@ WHERE id = $1;
 
 
 -- ==============================
+-- COMMENT READ MARKS
+-- ==============================
+
+-- Проверка «знак вырос» живёт внутри запроса: иначе между чтением максимума
+-- и вставкой влезает соседняя вкладка того же пользователя. Устаревшее или
+-- меньшее число просто не вставится, ON CONFLICT добивает точные дубли.
+-- EXISTS обязателен: без него клиент присылает id из будущего и помечает
+-- прочитанными комментарии, которых ещё нет.
+-- name: MarkCommentsRead :exec
+INSERT INTO kanban_card_read (card_id, user_id, up_to_comment_id)
+SELECT sqlc.arg(card_id)::bigint, sqlc.arg(user_id)::bigint, sqlc.arg(up_to_comment_id)::bigint
+WHERE EXISTS (
+    SELECT 1 FROM kanban_card_comment
+    WHERE id = sqlc.arg(up_to_comment_id)
+      AND card_id = sqlc.arg(card_id)
+      AND deleted_at IS NULL
+)
+AND sqlc.arg(up_to_comment_id) > COALESCE((
+    SELECT MAX(up_to_comment_id) FROM kanban_card_read
+    WHERE card_id = sqlc.arg(card_id) AND user_id = sqlc.arg(user_id)
+), 0)
+ON CONFLICT DO NOTHING;
+
+-- Самый ранний заход, накрывший комментарий, — это и есть момент, когда
+-- человек его увидел. Порядок берётся из первичного ключа, без сортировки.
+-- name: GetCommentReaders :many
+SELECT DISTINCT ON (user_id) user_id, read_at
+FROM kanban_card_read
+WHERE card_id = $1 AND up_to_comment_id >= $2
+ORDER BY user_id, up_to_comment_id;
+
+-- name: GetCardReadMark :one
+SELECT COALESCE(MAX(up_to_comment_id), 0)::bigint AS last_read_comment_id
+FROM kanban_card_read
+WHERE card_id = $1 AND user_id = $2;
+
+
+-- ==============================
 -- ATTACHMENTS
 -- ==============================
 

@@ -74,6 +74,13 @@ type KanbanCardLabel struct {
 	KanbanLabelID int64 `json:"kanban_label_id"`
 }
 
+type KanbanCardRead struct {
+	CardID        int64              `json:"card_id"`
+	UserID        int64              `json:"user_id"`
+	UpToCommentID int64              `json:"up_to_comment_id"`
+	ReadAt        pgtype.Timestamptz `json:"read_at"`
+}
+
 type KanbanColumn struct {
 	ID          int64              `json:"id"`
 	Title       string             `json:"title"`

@@ -950,6 +950,24 @@ func (q *Queries) GetCardLabelsByCardIDs(ctx context.Context, dollar_1 []int64) 
 	return items, nil
 }
 
+const getCardReadMark = `-- name: GetCardReadMark :one
+SELECT COALESCE(MAX(up_to_comment_id), 0)::bigint AS last_read_comment_id
+FROM kanban_card_read
+WHERE card_id = $1 AND user_id = $2
+`
+
+type GetCardReadMarkParams struct {
+	CardID int64 `json:"card_id"`
+	UserID int64 `json:"user_id"`
+}
+
+func (q *Queries) GetCardReadMark(ctx context.Context, arg GetCardReadMarkParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getCardReadMark, arg.CardID, arg.UserID)
+	var last_read_comment_id int64
+	err := row.Scan(&last_read_comment_id)
+	return last_read_comment_id, err
+}
+
 const getCardsByBoard = `-- name: GetCardsByBoard :many
 SELECT c.id, c.title, c.description, c.position, c.due_date, c.priority, c.is_archived, c.archived_at, c.archived_by_id, c.completed_at, c.completed_by_id, c.column_id, c.created_by_id, c.border_color, c.created_at, c.updated_at, c.deleted_at, c.parent_id FROM kanban_card c
 JOIN kanban_column col ON col.id = c.column_id
@@ -1276,6 +1294,45 @@ func (q *Queries) GetCommentCountsByCardIDs(ctx context.Context, dollar_1 []int6
 	for rows.Next() {
 		var i GetCommentCountsByCardIDsRow
 		if err := rows.Scan(&i.CardID, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getCommentReaders = `-- name: GetCommentReaders :many
+SELECT DISTINCT ON (user_id) user_id, read_at
+FROM kanban_card_read
+WHERE card_id = $1 AND up_to_comment_id >= $2
+ORDER BY user_id, up_to_comment_id
+`
+
+type GetCommentReadersParams struct {
+	CardID        int64 `json:"card_id"`
+	UpToCommentID int64 `json:"up_to_comment_id"`
+}
+
+type GetCommentReadersRow struct {
+	UserID int64              `json:"user_id"`
+	ReadAt pgtype.Timestamptz `json:"read_at"`
+}
+
+// Самый ранний заход, накрывший комментарий, — это и есть момент, когда
+// человек его увидел. Порядок берётся из первичного ключа, без сортировки.
+func (q *Queries) GetCommentReaders(ctx context.Context, arg GetCommentReadersParams) ([]GetCommentReadersRow, error) {
+	rows, err := q.db.Query(ctx, getCommentReaders, arg.CardID, arg.UpToCommentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetCommentReadersRow{}
+	for rows.Next() {
+		var i GetCommentReadersRow
+		if err := rows.Scan(&i.UserID, &i.ReadAt); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1830,6 +1887,42 @@ func (q *Queries) ListTaskCollaborants(ctx context.Context, arg ListTaskCollabor
 		return nil, err
 	}
 	return items, nil
+}
+
+const markCommentsRead = `-- name: MarkCommentsRead :exec
+
+INSERT INTO kanban_card_read (card_id, user_id, up_to_comment_id)
+SELECT $1::bigint, $2::bigint, $3::bigint
+WHERE EXISTS (
+    SELECT 1 FROM kanban_card_comment
+    WHERE id = $3
+      AND card_id = $1
+      AND deleted_at IS NULL
+)
+AND $3 > COALESCE((
+    SELECT MAX(up_to_comment_id) FROM kanban_card_read
+    WHERE card_id = $1 AND user_id = $2
+), 0)
+ON CONFLICT DO NOTHING
+`
+
+type MarkCommentsReadParams struct {
+	CardID        int64 `json:"card_id"`
+	UserID        int64 `json:"user_id"`
+	UpToCommentID int64 `json:"up_to_comment_id"`
+}
+
+// ==============================
+// COMMENT READ MARKS
+// ==============================
+// Проверка «знак вырос» живёт внутри запроса: иначе между чтением максимума
+// и вставкой влезает соседняя вкладка того же пользователя. Устаревшее или
+// меньшее число просто не вставится, ON CONFLICT добивает точные дубли.
+// EXISTS обязателен: без него клиент присылает id из будущего и помечает
+// прочитанными комментарии, которых ещё нет.
+func (q *Queries) MarkCommentsRead(ctx context.Context, arg MarkCommentsReadParams) error {
+	_, err := q.db.Exec(ctx, markCommentsRead, arg.CardID, arg.UserID, arg.UpToCommentID)
+	return err
 }
 
 const rebalanceColumnCards = `-- name: RebalanceColumnCards :exec

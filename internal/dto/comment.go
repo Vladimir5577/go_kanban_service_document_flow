@@ -14,6 +14,40 @@ type UpdateCommentRequest struct {
 	Body *string `json:"body" validate:"required"`
 }
 
+type MarkCommentsReadRequest struct {
+	LastCommentID *int64 `json:"lastCommentId" validate:"required,gt=0"`
+}
+
+// CommentReaderResponse — строка модалки «кто видел».
+type CommentReaderResponse struct {
+	User           *UserResponse `json:"user"`
+	ReadAt         time.Time     `json:"readAt"`
+	ReadBeforeEdit bool          `json:"readBeforeEdit"`
+}
+
+type CommentReadersResponse struct {
+	Readers []*CommentReaderResponse `json:"readers"`
+	Pending []*UserResponse          `json:"pending"`
+}
+
+func MapCommentReadersResponse(r *model.CommentReaders) *CommentReadersResponse {
+	if r == nil {
+		return nil
+	}
+	resp := &CommentReadersResponse{
+		Readers: make([]*CommentReaderResponse, 0, len(r.Readers)),
+		Pending: MapUsersResponse(r.Pending),
+	}
+	for i := range r.Readers {
+		resp.Readers = append(resp.Readers, &CommentReaderResponse{
+			User:           MapUserResponse(&r.Readers[i].User),
+			ReadAt:         r.Readers[i].ReadAt,
+			ReadBeforeEdit: r.Readers[i].ReadBeforeEdit,
+		})
+	}
+	return resp
+}
+
 type CommentResponse struct {
 	ID         int64      `json:"id"`
 	Body       string     `json:"body"`

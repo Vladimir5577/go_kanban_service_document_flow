@@ -75,6 +75,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 
 	attachmentRepo := repository.NewAttachmentRepository(db)
 	commentRepo := repository.NewCommentRepository(db)
+	commentReadRepo := repository.NewCommentReadRepository(db)
 	labelRepo := repository.NewLabelRepository(db)
 
 	boardRepo := repository.NewBoardRepository(db)
@@ -107,13 +108,13 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, realtimePublisher, userRepo)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
-	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, commentRepo, attachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
+	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, commentRepo, commentReadRepo, attachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
 	columnHandler := handler.NewColumnHandler(columnSvc)
 
-	commentSvc := service.NewCommentService(commentRepo, permSvc, userRepo, realtimePublisher, kanbanNotificationSvc)
+	commentSvc := service.NewCommentService(commentRepo, commentReadRepo, projectMemberRepo, permSvc, userRepo, realtimePublisher, kanbanNotificationSvc)
 	commentHandler := handler.NewCommentHandler(commentSvc)
 
 	labelSvc := service.NewLabelService(labelRepo, permSvc, boardRepo, cardRepo, columnRepo, realtimePublisher)

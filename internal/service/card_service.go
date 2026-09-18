@@ -39,6 +39,7 @@ type CardService struct {
 	permSvc           *PermissionService
 	minioSvc          MinioServiceInterface
 	commentRepo       repository.CommentRepositoryInterface
+	commentReadRepo   repository.CommentReadRepositoryInterface
 	attachmentRepo    repository.AttachmentRepositoryInterface
 	labelRepo         repository.LabelRepositoryInterface
 	userRepo          repository.UserRepositoryInterface
@@ -77,6 +78,7 @@ func NewCardService(
 	permSvc *PermissionService,
 	minioSvc MinioServiceInterface,
 	commentRepo repository.CommentRepositoryInterface,
+	commentReadRepo repository.CommentReadRepositoryInterface,
 	attachmentRepo repository.AttachmentRepositoryInterface,
 	labelRepo repository.LabelRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
@@ -93,6 +95,7 @@ func NewCardService(
 		permSvc:           permSvc,
 		minioSvc:          minioSvc,
 		commentRepo:       commentRepo,
+		commentReadRepo:   commentReadRepo,
 		attachmentRepo:    attachmentRepo,
 		labelRepo:         labelRepo,
 		userRepo:          userRepo,
@@ -390,6 +393,16 @@ func (s *CardService) cardDetail(ctx context.Context, id int64, acc CardAccess) 
 		}
 	}
 	resp.Comments = dto.MapCommentsResponse(comments)
+
+	// Точка старта ленты: фронт прокручивает к первому непрочитанному по этому
+	// числу, и только потом шлёт новую отметку. Ноль — карточку ещё не открывали.
+	if uid := currentUserID(ctx); uid != nil {
+		mark, err := s.commentReadRepo.GetMark(ctx, id, *uid)
+		if err != nil {
+			return nil, nil, err
+		}
+		resp.LastReadCommentID = mark
+	}
 
 	resp.Attachments = dto.MapAttachmentsResponse(s.cfg, allAttachments)
 	for i, att := range resp.Attachments {

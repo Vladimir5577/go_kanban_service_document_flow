@@ -100,6 +100,55 @@ func (h *CommentHandler) UpdateComment() http.HandlerFunc {
 	}
 }
 
+func (h *CommentHandler) MarkRead() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cardID, err := helper.IDParam(r, "cardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		var req dto.MarkCommentsReadRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			helper.WriteError(w, invalidJSONError())
+			return
+		}
+		if err := validator.Validate.Struct(req); err != nil {
+			helper.WriteError(w, validationError(err, nil))
+			return
+		}
+
+		if err := h.service.MarkRead(r.Context(), cardID, *req.LastCommentID); err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusNoContent, nil)
+	}
+}
+
+func (h *CommentHandler) GetCommentReaders() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cardID, err := helper.IDParam(r, "cardId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		commentID, err := helper.IDParam(r, "commentId")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		res, err := h.service.GetCommentReaders(r.Context(), cardID, commentID)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusOK, dto.MapCommentReadersResponse(res))
+	}
+}
+
 func (h *CommentHandler) DeleteComment() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cardID, err := helper.IDParam(r, "cardId")

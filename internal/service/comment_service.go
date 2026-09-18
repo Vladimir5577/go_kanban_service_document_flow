@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"log/slog"
+	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"go_kanban_service/internal/apperr"
@@ -23,10 +26,14 @@ type CommentServiceInterface interface {
 	CreateComment(ctx context.Context, cardID int64, req dto.CreateCommentRequest) (*model.Comment, error)
 	UpdateComment(ctx context.Context, cardID int64, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error)
 	DeleteComment(ctx context.Context, cardID int64, commentID int64) error
+	MarkRead(ctx context.Context, cardID int64, lastCommentID int64) error
+	GetCommentReaders(ctx context.Context, cardID int64, commentID int64) (*model.CommentReaders, error)
 }
 
 type CommentService struct {
 	repo              repository.CommentRepositoryInterface
+	readRepo          repository.CommentReadRepositoryInterface
+	memberRepo        repository.ProjectMemberRepositoryInterface
 	permSvc           *PermissionService
 	userRepo          repository.UserRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
@@ -36,6 +43,8 @@ type CommentService struct {
 
 func NewCommentService(
 	repo repository.CommentRepositoryInterface,
+	readRepo repository.CommentReadRepositoryInterface,
+	memberRepo repository.ProjectMemberRepositoryInterface,
 	permSvc *PermissionService,
 	userRepo repository.UserRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
@@ -43,6 +52,8 @@ func NewCommentService(
 ) *CommentService {
 	return &CommentService{
 		repo:              repo,
+		readRepo:          readRepo,
+		memberRepo:        memberRepo,
 		permSvc:           permSvc,
 		userRepo:          userRepo,
 		realtimePublisher: realtimePublisher,
@@ -114,6 +125,11 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 		return nil, err
 	}
 	s.populateAuthorName(ctx, created)
+	// Свой комментарий не должен висеть у автора непрочитанным — иначе он сам
+	// себе создаёт бейдж. Не повод валить создание комментария, если не легло.
+	if err := s.readRepo.MarkRead(ctx, cardID, user.ID, created.ID); err != nil {
+		slog.Warn("failed to mark own comment read", "card_id", cardID, "comment_id", created.ID, "error", err)
+	}
 	// Ссылка собирается из acc — иначе historyEntityLink пойдёт добывать проект
 	// и доску заново, а это GetCard (карточка + assignees + labels) и GetColumn.
 	appendHistory(s.History, ctx, model.HistoryWrite{
@@ -240,6 +256,110 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 		})
 	}
 	return nil
+}
+
+// MarkRead двигает знак прочтения карточки. Что именно считать прочитанным,
+// решает фронт — сюда приходит одно число, и оно может только расти.
+func (s *CommentService) MarkRead(ctx context.Context, cardID int64, lastCommentID int64) error {
+	if _, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer); err != nil {
+		return err
+	}
+
+	user, ok := middleware.GetUser(ctx)
+	if !ok {
+		return apperr.ErrUnauthorized
+	}
+
+	return s.readRepo.MarkRead(ctx, cardID, user.ID, lastCommentID)
+}
+
+// GetCommentReaders — содержимое модалки «кто видел». Автор не попадает ни в
+// один из списков: свой комментарий он видел по определению.
+func (s *CommentService) GetCommentReaders(ctx context.Context, cardID int64, commentID int64) (*model.CommentReaders, error) {
+	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
+	if err != nil {
+		return nil, err
+	}
+
+	c, err := s.repo.GetComment(ctx, commentID)
+	if err != nil {
+		return nil, withNotFoundCode(err, apperr.CodeCommentNotFound)
+	}
+	if c.CardID != cardID {
+		return nil, apperr.New(apperr.CodeCommentNotFound, "comment not found")
+	}
+
+	marks, err := s.readRepo.GetReaders(ctx, cardID, commentID)
+	if err != nil {
+		return nil, err
+	}
+	readAt := make(map[int64]time.Time, len(marks))
+	for _, m := range marks {
+		readAt[m.UserID] = m.ReadAt
+	}
+
+	members, err := s.memberRepo.GetMembers(ctx, acc.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+
+	users, err := s.userRepo.GetUsersByIDs(ctx, commentAudienceIDs(acc.OwnerID, members, c.AuthorID))
+	if err != nil {
+		return nil, err
+	}
+
+	return splitCommentReaders(users, readAt, c.UpdatedAt), nil
+}
+
+// commentAudienceIDs — кого вообще показывать в модалке. Владелец проекта
+// строки в kanban_project_user не имеет, поэтому идёт отдельно; автор
+// исключается — свой комментарий он видел по определению.
+func commentAudienceIDs(ownerID int64, members []model.ProjectUser, authorID int64) []int64 {
+	audience := make([]int64, 0, len(members)+1)
+	seen := map[int64]bool{authorID: true}
+	add := func(id int64) {
+		if id == 0 || seen[id] {
+			return
+		}
+		seen[id] = true
+		audience = append(audience, id)
+	}
+	add(ownerID)
+	for i := range members {
+		add(members[i].UserID)
+	}
+	return audience
+}
+
+// splitCommentReaders раскладывает участников на прочитавших и остальных.
+// updatedAt — время правки комментария, если она была.
+func splitCommentReaders(users []model.User, readAt map[int64]time.Time, updatedAt *time.Time) *model.CommentReaders {
+	res := &model.CommentReaders{
+		Readers: make([]model.CommentReader, 0, len(users)),
+		Pending: make([]model.User, 0, len(users)),
+	}
+	for i := range users {
+		t, ok := readAt[users[i].ID]
+		if !ok {
+			res.Pending = append(res.Pending, users[i])
+			continue
+		}
+		res.Readers = append(res.Readers, model.CommentReader{
+			User:   users[i],
+			ReadAt: t,
+			// Текст правили после того, как человек его прочитал: в споре это
+			// значит, что видел он другую формулировку.
+			ReadBeforeEdit: updatedAt != nil && updatedAt.After(t),
+		})
+	}
+
+	sort.Slice(res.Readers, func(i, j int) bool {
+		return res.Readers[i].ReadAt.Before(res.Readers[j].ReadAt)
+	})
+	sort.Slice(res.Pending, func(i, j int) bool {
+		return dto.UserDisplayName(res.Pending[i]) < dto.UserDisplayName(res.Pending[j])
+	})
+	return res
 }
 
 func normalizeCommentBody(body string) (string, error) {

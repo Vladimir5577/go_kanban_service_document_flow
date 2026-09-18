@@ -138,6 +138,8 @@ type CardResponse struct {
 	ChecklistTotal int                     `json:"checklistTotal"`
 	ChecklistDone  int                     `json:"checklistDone"`
 	CommentsCount  int                     `json:"commentsCount"`
+	// LastReadCommentID — докуда текущий пользователь дочитал комментарии.
+	LastReadCommentID int64 `json:"lastReadCommentId"`
 }
 
 // CardPositionResponse — новая позиция карточки после ребалансировки колонки.
