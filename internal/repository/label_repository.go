@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"slices"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -15,7 +16,8 @@ type LabelRepositoryInterface interface {
 	CreateLabel(ctx context.Context, boardID int64, l *model.Label) (*model.Label, error)
 	DeleteLabel(ctx context.Context, labelID int64) error
 	GetCardIDsByLabel(ctx context.Context, labelID int64) ([]int64, error)
-	ToggleLabel(ctx context.Context, cardID int64, labelID int64) (bool, error)
+	// ToggleLabel отдаёт, повешена ли метка, и новый набор меток карточки.
+	ToggleLabel(ctx context.Context, cardID int64, labelID int64) (bool, []int64, error)
 }
 
 type LabelRepository struct {
@@ -87,20 +89,20 @@ func (r *LabelRepository) GetCardIDsByLabel(ctx context.Context, labelID int64) 
 	return dbgen.New(r.Db).GetCardIDsByLabel(ctx, labelID)
 }
 
-func (r *LabelRepository) ToggleLabel(ctx context.Context, cardID int64, labelID int64) (bool, error) {
+func (r *LabelRepository) ToggleLabel(ctx context.Context, cardID int64, labelID int64) (bool, []int64, error) {
 	queries := dbgen.New(r.Db)
 	cardLabels, err := queries.GetCardLabels(ctx, cardID)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 
-	for _, id := range cardLabels {
+	for i, id := range cardLabels {
 		if id == labelID {
 			err := queries.RemoveCardLabel(ctx, dbgen.RemoveCardLabelParams{
 				KanbanCardID:  cardID,
 				KanbanLabelID: labelID,
 			})
-			return false, err
+			return false, slices.Delete(cardLabels, i, i+1), err
 		}
 	}
 
@@ -108,5 +110,5 @@ func (r *LabelRepository) ToggleLabel(ctx context.Context, cardID int64, labelID
 		KanbanCardID:  cardID,
 		KanbanLabelID: labelID,
 	})
-	return true, err
+	return true, append(cardLabels, labelID), err
 }

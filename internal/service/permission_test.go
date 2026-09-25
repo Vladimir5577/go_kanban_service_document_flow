@@ -3,6 +3,9 @@ package service
 import (
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/model"
@@ -68,6 +71,45 @@ func TestHasRole(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := hasRole(tt.userRole, tt.minRole); got != tt.want {
 				t.Fatalf("hasRole(%q, %q) = %v, want %v", tt.userRole, tt.minRole, got, tt.want)
+			}
+		})
+	}
+}
+
+// checkContextRole — общая проверка RequireCardRole и RequireColumnRole: ошибка
+// в ней открывает или закрывает доступ сразу ко всем операциям с карточками.
+func TestCheckContextRole(t *testing.T) {
+	role := func(r Role) pgtype.Text { return pgtype.Text{String: string(r), Valid: true} }
+	deleted := pgtype.Timestamptz{Time: time.Now(), Valid: true}
+
+	tests := []struct {
+		name     string
+		userID   int64
+		member   pgtype.Text
+		deleted  pgtype.Timestamptz
+		minRole  Role
+		want     Role
+		wantCode apperr.ErrorCode
+	}{
+		{name: "владелец без членства — админ", userID: 1, minRole: RoleAdmin, want: RoleAdmin},
+		{name: "редактор проходит на редактора", userID: 7, member: role(RoleEditor), minRole: RoleEditor, want: RoleEditor},
+		{name: "вьюер не проходит на редактора", userID: 7, member: role(RoleViewer), minRole: RoleEditor, wantCode: apperr.CodeAccessDenied},
+		{name: "не участник — отказ", userID: 7, minRole: RoleViewer, wantCode: apperr.CodeAccessDenied},
+		{name: "удалённый проект важнее прав", userID: 1, deleted: deleted, minRole: RoleViewer, wantCode: apperr.CodeProjectNotFound},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := checkContextRole(tt.userID, 1, tt.member, tt.deleted, tt.minRole)
+			if tt.wantCode != "" {
+				var appErr *apperr.Error
+				if !errors.As(err, &appErr) || appErr.Code != tt.wantCode {
+					t.Fatalf("err = %v, want %s", err, tt.wantCode)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("got %q, %v; want %q", got, err, tt.want)
 			}
 		})
 	}

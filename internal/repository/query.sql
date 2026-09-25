@@ -108,11 +108,6 @@ SELECT EXISTS(
 SELECT * FROM kanban_card
 WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
 
--- name: GetCardsByColumn :many
-SELECT * FROM kanban_card
-WHERE column_id = $1 AND parent_id IS NULL AND is_archived = FALSE AND deleted_at IS NULL
-ORDER BY position ASC;
-
 -- name: GetCardsByBoard :many
 SELECT c.* FROM kanban_card c
 JOIN kanban_column col ON col.id = c.column_id
@@ -151,6 +146,73 @@ SET title = $1, description = $2, position = $3, due_date = $4, priority = $5, i
 WHERE id = $14
 RETURNING *;
 
+-- name: UpdateCardFields :one
+-- Только то, что редактируется в карточке. Выполнение, архив, колонку и позицию
+-- правка не пишет: иначе откатит завершение или перенос, случившиеся между
+-- чтением карточки и записью. Строка целиком нужна ответу и realtime.
+UPDATE kanban_card
+SET title = $2, description = $3, due_date = $4, priority = $5, border_color = $6, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING *;
+
+-- name: SetCardArchived :one
+-- Только поля архива, а не вся строка, как в UpdateCard: иначе архивация
+-- затрёт заголовок или описание, которые в этот момент правит кто-то другой.
+-- Заголовок нужен истории — отдельное чтение карточки ради него не требуется.
+UPDATE kanban_card
+SET is_archived = $2, archived_at = $3, archived_by_id = $4, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING title;
+
+-- name: SetCardCompleted :one
+-- Только поля выполнения — по той же причине, что SetCardArchived: перезапись
+-- всей строки откатывала перемещение, случившееся между чтением и записью.
+UPDATE kanban_card
+SET completed_at = $2, completed_by_id = $3, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING updated_at;
+
+-- name: GetColumnPrependTarget :one
+-- Колонка, в которую карточка встаёт наверх: автоперенос в «Готово» и копия.
+-- Позиция — над верхней карточкой (FIRST/2, как при создании; пустая колонка —
+-- 65536): раньше ради одного MIN читалась вся колонка с исполнителями и метками.
+-- Проект — чтобы копия не ушла в чужой; удалённая колонка — «не найдена»
+-- (удаление колонки не сбрасывает done_column_id доски).
+SELECT col.title, col.board_id, b.kanban_project_id,
+       COALESCE((
+           SELECT MIN(c.position) / 2 FROM kanban_card c
+           WHERE c.column_id = col.id AND c.parent_id IS NULL
+             AND c.is_archived = FALSE AND c.deleted_at IS NULL
+       ), 65536)::float8 AS target_position
+FROM kanban_column col
+JOIN kanban_board b ON b.id = col.board_id
+WHERE col.id = $1 AND col.deleted_at IS NULL;
+
+-- name: DuplicateCard :many
+-- Копия карточки с подзадачами одним оператором — он атомарен сам по себе.
+-- Переносятся заголовок, описание, срок, приоритет и цвет, у подзадач —
+-- заголовок и порядок. Метки, исполнители, выполнение, комментарии и вложения
+-- остаются у оригинала; автор копии и её подзадач — тот, кто копирует.
+-- Первая строка — сама копия, дальше её подзадачи по порядку.
+WITH copy AS (
+    INSERT INTO kanban_card (title, description, position, due_date, priority, column_id, created_by_id, border_color)
+    SELECT title, description, sqlc.arg(position)::float8, due_date, priority,
+           sqlc.arg(column_id)::bigint, sqlc.narg(created_by_id)::bigint, border_color
+    FROM kanban_card
+    WHERE id = sqlc.arg(source_id)::bigint AND deleted_at IS NULL
+    RETURNING *
+), children AS (
+    INSERT INTO kanban_card (title, position, parent_id, created_by_id)
+    SELECT src.title, src.position, copy.id, sqlc.narg(created_by_id)::bigint
+    FROM kanban_card src CROSS JOIN copy
+    WHERE src.parent_id = sqlc.arg(source_id)::bigint AND src.deleted_at IS NULL
+    RETURNING *
+)
+SELECT * FROM copy
+UNION ALL
+SELECT * FROM children
+ORDER BY parent_id NULLS FIRST, position;
+
 -- name: UpdateCardPosition :one
 -- Перестановка не должна затирать заголовок, который в этот же момент правит
 -- кто-то другой, — поэтому узкий UPDATE, а не перезапись всей строки.
@@ -162,7 +224,8 @@ FROM kanban_card old
 WHERE c.id = $1 AND old.id = c.id AND c.deleted_at IS NULL
 RETURNING c.id, c.title, c.position, c.updated_at, old.position AS old_position;
 
--- name: DeleteCard :exec
+-- name: DeleteCard :execrows
+-- Ноль строк — карточки нет или она уже удалена: вызывающий отвечает 404.
 UPDATE kanban_card
 SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1);
@@ -231,6 +294,22 @@ WHERE card_id = $1 AND user_id = $2;
 -- name: ClearCardAssignees :exec
 DELETE FROM kanban_card_assignee
 WHERE card_id = $1;
+
+-- name: ReplaceCardAssignees :many
+-- Замена исполнителей одним оператором — он атомарен сам по себе, транзакция
+-- не нужна. Все части видят состояние до оператора: old — прежний состав для
+-- истории, DELETE не трогает остающихся, INSERT добавляет новых.
+WITH old AS (
+    SELECT user_id FROM kanban_card_assignee WHERE card_id = sqlc.arg(card_id)::bigint
+), removed AS (
+    DELETE FROM kanban_card_assignee
+    WHERE card_id = sqlc.arg(card_id)::bigint AND user_id <> ALL(sqlc.arg(user_ids)::bigint[])
+), added AS (
+    INSERT INTO kanban_card_assignee (card_id, user_id)
+    SELECT sqlc.arg(card_id)::bigint, unnest(sqlc.arg(user_ids)::bigint[])
+    ON CONFLICT DO NOTHING
+)
+SELECT user_id FROM old;
 
 
 -- ==============================
@@ -462,11 +541,6 @@ WHERE kanban_project_id = $1 AND user_id = $2;
 SELECT id, kanban_project_id, user_id, role, folder_id, position FROM kanban_project_user
 WHERE kanban_project_id = $1 AND user_id = $2;
 
--- name: GetProjectIDByColumn :one
-SELECT b.kanban_project_id FROM kanban_column c
-JOIN kanban_board b ON c.board_id = b.id
-WHERE c.id = $1;
-
 -- name: GetProjectIDByLabel :one
 SELECT b.kanban_project_id as project_id
 FROM kanban_label l
@@ -479,6 +553,43 @@ LEFT JOIN kanban_card parent ON parent.id = card.parent_id
 JOIN kanban_column c ON c.id = COALESCE(card.column_id, parent.column_id)
 JOIN kanban_board b ON c.board_id = b.id
 WHERE card.id = $1;
+
+-- name: GetProjectAssignee :one
+-- Кандидат в исполнители вместе с членством в проекте — одним запросом вместо
+-- GetUsersByIDs + GetProject + GetProjectMember. Владельца в kanban_project_user
+-- может не быть: его отличает вызывающий по owner_id из контекста карточки.
+SELECT u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name,
+       (pu.user_id IS NOT NULL)::bool AS is_member
+FROM users u
+LEFT JOIN kanban_project_user pu
+       ON pu.kanban_project_id = sqlc.arg(project_id) AND pu.user_id = u.id
+WHERE u.id = sqlc.arg(user_id);
+
+-- name: GetColumnContext :one
+-- То же, что GetCardContext, но от колонки — всё, что нужно созданию карточки,
+-- одним запросом: права, доска с названием, заголовок колонки и позиция над
+-- верхней карточкой (FIRST/2; пустая колонка — 65536). Удалённая колонка —
+-- «не найдена», удалённый проект возвращается, а не фильтруется, по той же
+-- причине, что в GetCardContext.
+SELECT
+    b.kanban_project_id,
+    b.id AS board_id,
+    b.title AS board_title,
+    col.title AS column_title,
+    p.owner_id,
+    p.deleted_at AS project_deleted_at,
+    pu.role AS member_role,
+    COALESCE((
+        SELECT MIN(c.position) / 2 FROM kanban_card c
+        WHERE c.column_id = col.id AND c.parent_id IS NULL
+          AND c.is_archived = FALSE AND c.deleted_at IS NULL
+    ), 65536)::float8 AS prepend_position
+FROM kanban_column col
+JOIN kanban_board b ON b.id = col.board_id
+JOIN kanban_project p ON p.id = b.kanban_project_id
+LEFT JOIN kanban_project_user pu
+       ON pu.kanban_project_id = p.id AND pu.user_id = $2
+WHERE col.id = $1 AND col.deleted_at IS NULL;
 
 -- name: GetCardContext :one
 -- Всё, что нужно для проверки прав и для шапки карточки, одним запросом:
@@ -499,7 +610,13 @@ SELECT
     p.owner_id,
     p.deleted_at AS project_deleted_at,
     pu.role AS member_role,
-    card.parent_id AS parent_id
+    card.parent_id AS parent_id,
+    card.is_archived,
+    card.title AS card_title,
+    col.id AS column_id,
+    card.position,
+    card.completed_at,
+    b.done_column_id
 FROM kanban_card card
 LEFT JOIN kanban_card parent ON parent.id = card.parent_id
 JOIN kanban_column col ON col.id = COALESCE(card.column_id, parent.column_id)

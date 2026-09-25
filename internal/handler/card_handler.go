@@ -43,13 +43,7 @@ func (h *CardHandler) CreateCard() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		// Return full enriched card (with boardId, createdBy, etc.)
-		detail, err := h.service.GetCardDetail(r.Context(), created.ID)
-		if err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-		helper.WriteJSON(w, http.StatusCreated, detail)
+		helper.WriteJSON(w, http.StatusCreated, created)
 	}
 }
 
@@ -72,12 +66,7 @@ func (h *CardHandler) DuplicateCard() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		detail, err := h.service.GetCardDetail(r.Context(), created.ID)
-		if err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-		helper.WriteJSON(w, http.StatusCreated, detail)
+		helper.WriteJSON(w, http.StatusCreated, created)
 	}
 }
 
@@ -170,17 +159,12 @@ func (h *CardHandler) UpdateCard() http.HandlerFunc {
 			return
 		}
 
-		if _, err = h.service.UpdateCard(r.Context(), id, req); err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-		// Return full enriched card (with boardId, createdBy, etc.)
-		detail, err := h.service.GetCardDetail(r.Context(), id)
+		resp, err := h.service.UpdateCard(r.Context(), id, req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, detail)
+		helper.WriteJSON(w, http.StatusOK, resp)
 	}
 }
 
@@ -216,19 +200,14 @@ func (h *CardHandler) UpdateAssignees() http.HandlerFunc {
 			return
 		}
 
-		if err := h.service.UpdateAssignees(r.Context(), id, payload.UserIDs); err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-
-		cardDetail, err := h.service.GetCardDetail(r.Context(), id)
+		assignees, err := h.service.UpdateAssignees(r.Context(), id, payload.UserIDs)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 
 		helper.WriteJSON(w, http.StatusOK, map[string]interface{}{
-			"assignees": cardDetail.Assignees,
+			"assignees": assignees,
 		})
 	}
 }
@@ -267,19 +246,14 @@ func (h *CardHandler) ArchiveCard() http.HandlerFunc {
 			return
 		}
 
-		if err := h.service.ArchiveCard(r.Context(), id); err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-
-		cardDetail, err := h.service.GetCardDetail(r.Context(), id)
+		archived, err := h.service.ArchiveCard(r.Context(), id)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
 		helper.WriteJSON(w, http.StatusOK, map[string]interface{}{
 			"id":         id,
-			"isArchived": cardDetail.IsArchived,
+			"isArchived": archived,
 		})
 	}
 }
@@ -292,17 +266,12 @@ func (h *CardHandler) CompleteCard() http.HandlerFunc {
 			return
 		}
 
-		if _, err = h.service.CompleteCard(r.Context(), id); err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-		// Return full enriched card (with boardId, createdBy, etc.)
-		detail, err := h.service.GetCardDetail(r.Context(), id)
+		resp, err := h.service.CompleteCard(r.Context(), id)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, detail)
+		helper.WriteJSON(w, http.StatusOK, resp)
 	}
 }
 

@@ -19,19 +19,19 @@ import (
 )
 
 type CardServiceInterface interface {
-	CreateCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error)
-	DuplicateCard(ctx context.Context, id int64, columnID int64) (*model.Card, error)
+	CreateCard(ctx context.Context, req dto.CreateCardRequest) (*dto.CardResponse, error)
+	DuplicateCard(ctx context.Context, id int64, columnID int64) (*dto.CardResponse, error)
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
 	GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error)
 	GetCardStandalone(ctx context.Context, id int64) (*dto.CardStandaloneResponse, error)
 	ListTasks(ctx context.Context, f repository.TaskListParams) (*dto.TaskListResponse, error)
 	ListTaskCollaborants(ctx context.Context, f repository.TaskCollaborantsParams) (*dto.TaskCollaborantsResponse, error)
-	UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error)
+	UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*dto.CardUpdateResponse, error)
 	DeleteCard(ctx context.Context, id int64) error
-	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error
+	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) ([]*dto.CardAssigneeResponse, error)
 	MoveCard(ctx context.Context, id int64, columnID *int64, position float64) (*model.CardMove, error)
-	ArchiveCard(ctx context.Context, id int64) error
-	CompleteCard(ctx context.Context, id int64) (*model.Card, error)
+	ArchiveCard(ctx context.Context, id int64) (bool, error)
+	CompleteCard(ctx context.Context, id int64) (*dto.CardCompletionResponse, error)
 }
 
 type CardService struct {
@@ -45,7 +45,6 @@ type CardService struct {
 	userRepo          repository.UserRepositoryInterface
 	columnRepo        repository.ColumnRepositoryInterface
 	boardRepo         repository.BoardRepositoryInterface
-	projectRepo       repository.ProjectRepositoryInterface
 	projectMemberRepo repository.ProjectMemberRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
 	notificationSvc   *KanbanNotificationService
@@ -84,7 +83,6 @@ func NewCardService(
 	userRepo repository.UserRepositoryInterface,
 	columnRepo repository.ColumnRepositoryInterface,
 	boardRepo repository.BoardRepositoryInterface,
-	projectRepo repository.ProjectRepositoryInterface,
 	projectMemberRepo repository.ProjectMemberRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
 	notificationSvc *KanbanNotificationService,
@@ -101,7 +99,6 @@ func NewCardService(
 		userRepo:          userRepo,
 		columnRepo:        columnRepo,
 		boardRepo:         boardRepo,
-		projectRepo:       projectRepo,
 		projectMemberRepo: projectMemberRepo,
 		realtimePublisher: realtimePublisher,
 		notificationSvc:   notificationSvc,
@@ -109,7 +106,7 @@ func NewCardService(
 	}
 }
 
-func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error) {
+func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest) (*dto.CardResponse, error) {
 	if (req.ColumnID == nil) == (req.ParentID == nil) {
 		return nil, apperr.New(apperr.CodeValidation, "exactly one of column_id or parent_id is required")
 	}
@@ -119,12 +116,22 @@ func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest)
 	return s.createRootCard(ctx, req)
 }
 
-func (s *CardService) createChildCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error) {
-	if req.Description != nil || req.DueDate != nil || req.Priority != nil || req.BorderColor != nil || len(req.LabelIDs) > 0 {
-		return nil, apperr.New(apperr.CodeValidation, "child card accepts only title, position and assignee")
-	}
-	if len(req.AssigneeIDs) > 1 {
-		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
+// createdCardResponse — ответ на создание и копию. Метки, исполнители и
+// комментарии у новой карточки пусты по-настоящему, поэтому пустые списки
+// MapCardResponse здесь правдивы, и перечитывать карточку незачем.
+func createdCardResponse(c *model.Card, boardID int64, columnTitle string) *dto.CardResponse {
+	resp := dto.MapCardResponse(c)
+	resp.BoardID = boardID
+	resp.ColumnTitle = columnTitle
+	return resp
+}
+
+// createChildCard создаёт пустую подзадачу: только заголовок и позиция,
+// исполнитель назначается потом. Запросы: контекст родителя, счётчик
+// подзадач, INSERT, история; в фоне — счётчик у родителя.
+func (s *CardService) createChildCard(ctx context.Context, req dto.CreateCardRequest) (*dto.CardResponse, error) {
+	if req.Description != nil || req.DueDate != nil || req.Priority != nil || req.BorderColor != nil {
+		return nil, apperr.New(apperr.CodeValidation, "child card accepts only title and position")
 	}
 
 	// Один запрос вместо GetCard + GetProjectIDByCard + RequireRole + GetColumn:
@@ -136,11 +143,6 @@ func (s *CardService) createChildCard(ctx context.Context, req dto.CreateCardReq
 	}
 	if acc.ParentID != nil {
 		return nil, apperr.New(apperr.CodeValidation, "parent must be a root card")
-	}
-	projectID := acc.ProjectID
-
-	if err := s.validateProjectAssignees(ctx, projectID, req.AssigneeIDs); err != nil {
-		return nil, err
 	}
 
 	childCount, lastPosition, err := s.repo.GetChildStats(ctx, parentID)
@@ -154,10 +156,7 @@ func (s *CardService) createChildCard(ctx context.Context, req dto.CreateCardReq
 	c := &model.Card{
 		Title:       req.Title,
 		ParentID:    req.ParentID,
-		AssigneeIDs: req.AssigneeIDs,
-	}
-	if authorID := currentUserID(ctx); authorID != nil {
-		c.CreatedByID = authorID
+		CreatedByID: currentUserID(ctx),
 	}
 	if req.Position != nil {
 		c.Position = *req.Position
@@ -166,51 +165,35 @@ func (s *CardService) createChildCard(ctx context.Context, req dto.CreateCardReq
 	}
 
 	created, err := s.repo.CreateCard(ctx, 0, c)
-	if err != nil || created == nil {
-		return created, err
-	}
-	if len(req.AssigneeIDs) > 0 {
-		if err := s.repo.UpdateCardAssignees(ctx, created.ID, req.AssigneeIDs); err != nil {
-			return nil, err
-		}
-		created.AssigneeIDs = req.AssigneeIDs
+	if err != nil {
+		return nil, err
 	}
 
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:   projectID,
+		ProjectID:   acc.ProjectID,
 		Action:      "card.created",
 		EntityType:  "card",
 		EntityID:    created.ID,
 		CardID:      parentID,
 		EntityTitle: created.Title,
-		EntityLink:  historyTaskPath(projectID, acc.BoardID, parentID),
+		EntityLink:  historyTaskPath(acc.ProjectID, acc.BoardID, parentID),
 	})
-	s.publishParentChecklist(ctx, parentID)
-
-	if s.notificationSvc != nil && len(created.AssigneeIDs) > 0 {
-		actorID := derefInt64(currentUserID(ctx))
-		runDetached(ctx, notifyTimeout, "failed to notify kanban child assigned", func(ctx context.Context) error {
-			s.notificationSvc.NotifyTaskAssigned(ctx, projectID, acc.BoardID, parentID, actorID, created.AssigneeIDs[0], created.Title, true)
-			return nil
-		})
-	}
-	return created, nil
+	s.publishParentChecklist(ctx, acc.BoardID, parentID)
+	return createdCardResponse(created, acc.BoardID, acc.ColumnTitle), nil
 }
 
-func (s *CardService) createRootCard(ctx context.Context, req dto.CreateCardRequest) (*model.Card, error) {
-	projectID, err := s.permSvc.GetProjectIDByColumn(ctx, *req.ColumnID)
+// createRootCard создаёт пустую карточку: заголовок, описание, срок, приоритет
+// и цвет; исполнитель и метки добавляются потом. Запросы: контекст колонки с
+// правами и позицией, лимит доски, INSERT, история; в фоне — админы для
+// уведомления. Ответ и realtime собираются из того, что вернул INSERT.
+func (s *CardService) createRootCard(ctx context.Context, req dto.CreateCardRequest) (*dto.CardResponse, error) {
+	columnID := *req.ColumnID
+	acc, err := s.permSvc.RequireColumnRole(ctx, columnID, RoleEditor)
 	if err != nil {
 		return nil, err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return nil, err
-	}
-	column, err := s.columnRepo.GetColumn(ctx, *req.ColumnID)
-	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 
-	activeCardsCount, err := s.repo.CountActiveCardsByBoard(ctx, column.BoardID)
+	activeCardsCount, err := s.repo.CountActiveCardsByBoard(ctx, acc.BoardID)
 	if err != nil {
 		return nil, err
 	}
@@ -218,72 +201,51 @@ func (s *CardService) createRootCard(ctx context.Context, req dto.CreateCardRequ
 		return nil, apperr.New(apperr.CodeBoardCardLimitReached, "maximum number of cards (300) on board reached")
 	}
 
-	if len(req.AssigneeIDs) > 1 {
-		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
-	}
-
 	c := &model.Card{
 		Title:       req.Title,
-		ColumnID:    *req.ColumnID,
+		ColumnID:    columnID,
 		Description: req.Description,
 		DueDate:     normalizeTimePtr(req.DueDate),
 		Priority:    req.Priority,
 		BorderColor: req.BorderColor,
-		AssigneeIDs: req.AssigneeIDs,
-		LabelIDs:    req.LabelIDs,
-	}
-	if authorID := currentUserID(ctx); authorID != nil {
-		c.CreatedByID = authorID
+		CreatedByID: currentUserID(ctx),
 	}
 	if req.Position != nil {
 		c.Position = *req.Position
 	} else {
-		cards, _ := s.repo.GetCardsByColumn(ctx, *req.ColumnID)
-		if len(cards) > 0 {
-			// Prepend at the top using FIRST/2 (halving), matching the frontend's
-			// computePosition(undefined, next) = next/2. Subtracting a fixed step
-			// hit 0/negative on the first prepend and collided with the move math.
-			c.Position = cards[0].Position / 2.0
-		} else {
-			c.Position = 65536.0
-		}
+		// Наверх колонки: FIRST/2, как computePosition(undefined, next) = next/2
+		// на фронте. Вычитание фиксированного шага уходило в 0 и минус на первом
+		// же добавлении и ломало расчёт перемещений. Позицию посчитал контекст.
+		c.Position = acc.PrependPosition
 	}
-	created, err := s.repo.CreateCard(ctx, *req.ColumnID, c)
-	if err == nil && created != nil {
-		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:  projectID,
-			Action:     "card.created",
-			EntityType: "card",
-			EntityID:   created.ID,
-			CardID:     created.ID,
-			EntityTitle: created.Title,
+	created, err := s.repo.CreateCard(ctx, columnID, c)
+	if err != nil {
+		return nil, err
+	}
+
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   acc.ProjectID,
+		Action:      "card.created",
+		EntityType:  "card",
+		EntityID:    created.ID,
+		CardID:      created.ID,
+		EntityTitle: created.Title,
+		EntityLink:  historyTaskPath(acc.ProjectID, acc.BoardID, created.ID),
+	})
+	if s.realtimePublisher != nil {
+		event := s.realtimePublisher.BuildCreatedCard(created, &model.Column{ID: columnID, BoardID: acc.BoardID})
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			return s.realtimePublisher.PublishCardCreated(ctx, acc.BoardID, event, realtimeSenderID(ctx))
 		})
-		if s.realtimePublisher != nil {
-			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-				return s.realtimePublisher.PublishCardCreated(
-					ctx,
-					column.BoardID,
-					s.realtimePublisher.BuildCreatedCard(created, column),
-					realtimeSenderID(ctx),
-				)
-			})
-		}
-
-		// Notifications via unified service
-		if s.notificationSvc != nil {
-			actorID := derefInt64(currentUserID(ctx))
-			runDetached(ctx, notifyTimeout, "failed to notify kanban card created", func(ctx context.Context) error {
-				projectID, _ := s.permSvc.GetProjectIDByColumn(ctx, *req.ColumnID)
-				s.notificationSvc.NotifyCardCreated(ctx, projectID, column.BoardID, created.ID, actorID, created.Title)
-
-				for _, aid := range created.AssigneeIDs {
-					s.notificationSvc.NotifyTaskAssigned(ctx, projectID, column.BoardID, created.ID, actorID, aid, created.Title, false)
-				}
-				return nil
-			})
-		}
 	}
-	return created, err
+	if s.notificationSvc != nil {
+		actorID := derefInt64(currentUserID(ctx))
+		runDetached(ctx, notifyTimeout, "failed to notify kanban card created", func(ctx context.Context) error {
+			s.notificationSvc.NotifyCardCreated(ctx, acc.ProjectID, acc.BoardID, acc.BoardTitle, created.ID, actorID, created.Title)
+			return nil
+		})
+	}
+	return createdCardResponse(created, acc.BoardID, acc.ColumnTitle), nil
 }
 
 func (s *CardService) GetCardDetail(ctx context.Context, id int64) (*dto.CardResponse, error) {
@@ -637,16 +599,16 @@ func (s *CardService) ListTaskCollaborants(ctx context.Context, f repository.Tas
 	return &dto.TaskCollaborantsResponse{Items: dto.MapUsersResponse(rows), Total: total}, nil
 }
 
-func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*model.Card, error) {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
+// UpdateCard правит собственные поля карточки. Запросы: контекст с правами,
+// строка карточки ради старых значений, узкий UPDATE, история. Доску для
+// ссылки истории и realtime приносит контекст, ответ собирается из строки.
+func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*dto.CardUpdateResponse, error) {
+	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return nil, err
-	}
 
-	c, err := s.repo.GetCard(ctx, id)
+	c, err := s.repo.GetCardRow(ctx, id)
 	if err != nil {
 		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
@@ -715,209 +677,242 @@ func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCa
 	}
 
 	if !titleChanged && !descChanged && !dueChanged && !priorityChanged && !colorChanged {
-		return c, nil
+		return s.cardUpdateResponse(ctx, c, acc.BoardID)
 	}
 
-	updatedCard, err := s.repo.UpdateCard(ctx, c)
-	if err == nil {
-		action := cardFieldAction(titleChanged, descChanged, dueChanged, priorityChanged, colorChanged)
-		before, after := "", ""
-		switch action {
-		case "card.updated.renamed":
-			before, after = historyText(oldTitle), historyText(newTitle)
-		case "card.updated.description":
-			before, after = historyText(oldDescription), historyText(req.Description)
-		case "card.updated.due_date":
-			before, after = historyText(oldDue), historyText(newDue)
-		case "card.updated.priority":
-			before, after = oldPriorityKey, newPriorityKey
-		case "card.updated.color":
-			before, after = oldColorKey, newColorKey
+	updatedCard, err := s.repo.UpdateCardFields(ctx, c)
+	if err != nil {
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+	}
+	action := cardFieldAction(titleChanged, descChanged, dueChanged, priorityChanged, colorChanged)
+	before, after := "", ""
+	switch action {
+	case "card.updated.renamed":
+		before, after = historyText(oldTitle), historyText(newTitle)
+	case "card.updated.description":
+		before, after = historyText(oldDescription), historyText(req.Description)
+	case "card.updated.due_date":
+		before, after = historyText(oldDue), historyText(newDue)
+	case "card.updated.priority":
+		before, after = oldPriorityKey, newPriorityKey
+	case "card.updated.color":
+		before, after = oldColorKey, newColorKey
+	}
+	ownerCardID := historyOwnerCardID(updatedCard)
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   acc.ProjectID,
+		Action:      action,
+		EntityType:  "card",
+		EntityID:    id,
+		CardID:      ownerCardID,
+		EntityTitle: updatedCard.Title,
+		EntityLink:  historyTaskPath(acc.ProjectID, acc.BoardID, ownerCardID),
+		Before:      before,
+		After:       after,
+	})
+	if s.realtimePublisher != nil && updatedCard.ParentID == nil {
+		patch := map[string]any{}
+		if titleChanged {
+			patch["title"] = updatedCard.Title
 		}
-		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:   projectID,
-			Action:      action,
-			EntityType:  "card",
-			EntityID:    id,
-			CardID:      historyOwnerCardID(updatedCard),
-			EntityTitle: updatedCard.Title,
-			Before:      before,
-			After:       after,
-		})
-		if s.realtimePublisher != nil && updatedCard.ParentID == nil {
-			patch := map[string]any{}
-			if titleChanged {
-				patch["title"] = updatedCard.Title
-			}
-			if priorityChanged {
-				patch["priority"] = updatedCard.Priority
-			}
-			if dueChanged {
-				patch["dueDate"] = formatRealtimeTime(updatedCard.DueDate)
-			}
-			if colorChanged {
-				patch["borderColor"] = updatedCard.BorderColor
-			}
-			if len(patch) > 0 {
-				s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-					return s.realtimePublisher.PublishCardPatch(ctx, updatedCard, patch, realtimeSenderID(ctx))
-				})
-			}
+		if priorityChanged {
+			patch["priority"] = updatedCard.Priority
+		}
+		if dueChanged {
+			patch["dueDate"] = formatRealtimeTime(updatedCard.DueDate)
+		}
+		if colorChanged {
+			patch["borderColor"] = updatedCard.BorderColor
+		}
+		if len(patch) > 0 {
+			patch["id"] = updatedCard.ID
+			patch["updatedAt"] = formatRealtimeTimeValue(updatedCard.UpdatedAt)
+			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+				return s.realtimePublisher.PublishCardUpdated(ctx, acc.BoardID, patch, realtimeSenderID(ctx))
+			})
 		}
 	}
-	return updatedCard, err
+	return s.cardUpdateResponse(ctx, updatedCard, acc.BoardID)
 }
 
-func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
-	if err != nil {
-		return err
+// cardUpdateResponse собирает ответ правки из строки карточки. Подзадаче
+// дописывает исполнителя: фронт показывает его в списке подзадач.
+func (s *CardService) cardUpdateResponse(ctx context.Context, c *model.Card, boardID int64) (*dto.CardUpdateResponse, error) {
+	resp := &dto.CardUpdateResponse{
+		ID:          c.ID,
+		Title:       c.Title,
+		Description: c.Description,
+		Position:    c.Position,
+		DueDate:     c.DueDate,
+		Priority:    c.Priority,
+		BorderColor: c.BorderColor,
+		ParentID:    c.ParentID,
+		BoardID:     boardID,
+		CompletedAt: c.CompletedAt,
+		UpdatedAt:   c.UpdatedAt,
 	}
-	card, err := s.repo.GetCard(ctx, id)
-	if err != nil {
-		return withNotFoundCode(err, apperr.CodeCardNotFound)
-	}
-	minRole := RoleAdmin
-	if card.ParentID != nil {
-		minRole = RoleEditor
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, minRole); err != nil {
-		return err
+	if c.ParentID == nil {
+		columnID := c.ColumnID
+		resp.ColumnID = &columnID
+		return resp, nil
 	}
 
-	err = s.repo.DeleteCard(ctx, id)
+	byCard, err := s.repo.GetAssigneesByCardIDs(ctx, []int64{c.ID})
 	if err != nil {
+		return nil, err
+	}
+	resp.AssigneeIDs = byCard[c.ID]
+	if len(resp.AssigneeIDs) == 0 {
+		return resp, nil
+	}
+	users, err := s.userRepo.GetUsersByIDs(ctx, resp.AssigneeIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range users {
+		resp.Assignees = append(resp.Assignees, &dto.CardAssigneeResponse{
+			ID:        users[i].ID,
+			Name:      dto.UserDisplayName(users[i]),
+			AvatarUrl: dto.UserAvatarURL(s.cfg, users[i].AvatarName, dto.AvatarSizeThumbnail),
+		})
+	}
+	return resp, nil
+}
+
+// DeleteCard мягко удаляет карточку вместе с подзадачами или одну подзадачу.
+// Карточку удаляет админ, подзадачу — редактор. Запросы: контекст с правами,
+// удаление, история; доску для realtime приносит контекст.
+func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
+	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
+	if err != nil {
+		return err
+	}
+	if acc.ParentID == nil && !hasRole(acc.Role, RoleAdmin) {
+		return accessDenied()
+	}
+
+	if err := s.repo.DeleteCard(ctx, id); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
 			return apperr.New(apperr.CodeValidation, "Нельзя удалить задачу, пока в ней есть прикрепленные данные.")
 		}
-		return err
+		return withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
-	ownerID := historyOwnerCardID(card)
+
+	// Удалённую карточку не открыть — ссылка ведёт в проект; подзадача — в родителя.
+	ownerID := id
+	link := historyProjectPath(acc.ProjectID)
+	if acc.ParentID != nil {
+		ownerID = *acc.ParentID
+		link = historyTaskPath(acc.ProjectID, acc.BoardID, ownerID)
+	}
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:   projectID,
+		ProjectID:   acc.ProjectID,
 		Action:      "card.deleted",
 		EntityType:  "card",
 		EntityID:    id,
 		CardID:      ownerID,
-		EntityTitle: card.Title,
+		EntityTitle: acc.CardTitle,
+		EntityLink:  link,
 	})
-	if card.ParentID != nil {
-		s.publishParentChecklist(ctx, *card.ParentID)
+	if acc.ParentID != nil {
+		s.publishParentChecklist(ctx, acc.BoardID, *acc.ParentID)
 		return nil
 	}
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
-			if err != nil {
-				return err
-			}
-			return s.realtimePublisher.PublishCardDeleted(ctx, column.BoardID, id, realtimeSenderID(ctx))
+			return s.realtimePublisher.PublishCardDeleted(ctx, acc.BoardID, id, realtimeSenderID(ctx))
 		})
 	}
 	return nil
 }
 
-func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []int64) error {
+// UpdateAssignees ставит или снимает исполнителя (не больше одного) и отдаёт
+// новый состав для ответа. Запросы: контекст с правами, кандидат с членством,
+// замена исполнителей, история. Доска, заголовок и владелец приезжают с
+// контекстом, исполнитель — с проверкой, поэтому ни ответу, ни realtime, ни
+// уведомлению перечитывать карточку не нужно.
+func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []int64) ([]*dto.CardAssigneeResponse, error) {
 	if len(userIDs) > 1 {
-		return apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
+		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
 	}
 
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
+	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
 	if err != nil {
-		return err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return err
-	}
-	if err := s.validateProjectAssignees(ctx, projectID, userIDs); err != nil {
-		return err
-	}
-	card, _ := s.repo.GetCard(ctx, id)
-	var oldIDs []int64
-	if card != nil {
-		oldIDs = card.AssigneeIDs
+		return nil, err
 	}
 
-	err = s.repo.UpdateCardAssignees(ctx, id, userIDs)
-	if err == nil {
-		title := ""
-		if card != nil {
-			title = card.Title
+	var assignee *model.User
+	if len(userIDs) == 1 {
+		u, isMember, err := s.userRepo.GetProjectAssignee(ctx, acc.ProjectID, userIDs[0])
+		if errors.Is(err, apperr.ErrNotFound) {
+			return nil, apperr.New(apperr.CodeUserNotFound, "user not found")
 		}
-		action := "card.assignees"
-		if len(oldIDs) > 0 && len(userIDs) == 0 {
-			action = "card.assignee_removed"
-		} else if len(oldIDs) == 0 && len(userIDs) > 0 {
-			action = "card.assignee_added"
+		if err != nil {
+			return nil, err
 		}
-		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:   projectID,
-			Action:      action,
-			EntityType:  "card",
-			EntityID:    id,
-			CardID:      historyOwnerCardID(card),
-			EntityTitle: title,
-			Before:      historyIDsJSON(oldIDs),
-			After:       historyIDsJSON(userIDs),
+		if !isMember && u.ID != acc.OwnerID {
+			return nil, apperr.New(apperr.CodeUserNotProjectMember, "user is not project member")
+		}
+		assignee = u
+	}
+
+	oldIDs, err := s.repo.ReplaceCardAssignees(ctx, id, userIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Подзадача пишется в историю и уведомляет от имени родителя.
+	ownerCardID := id
+	if acc.ParentID != nil {
+		ownerCardID = *acc.ParentID
+	}
+	action := "card.assignees"
+	if len(oldIDs) > 0 && len(userIDs) == 0 {
+		action = "card.assignee_removed"
+	} else if len(oldIDs) == 0 && len(userIDs) > 0 {
+		action = "card.assignee_added"
+	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   acc.ProjectID,
+		Action:      action,
+		EntityType:  "card",
+		EntityID:    id,
+		CardID:      ownerCardID,
+		EntityTitle: acc.CardTitle,
+		EntityLink:  historyTaskPath(acc.ProjectID, acc.BoardID, ownerCardID),
+		Before:      historyIDsJSON(oldIDs),
+		After:       historyIDsJSON(userIDs),
+	})
+
+	var assignees []*dto.CardAssigneeResponse
+	realtimeAssignees := []map[string]any{}
+	if assignee != nil {
+		assignees = []*dto.CardAssigneeResponse{{
+			ID:        assignee.ID,
+			Name:      dto.UserDisplayName(*assignee),
+			AvatarUrl: dto.UserAvatarURL(s.cfg, assignee.AvatarName, dto.AvatarSizeThumbnail),
+		}}
+		realtimeAssignees = append(realtimeAssignees, formatRealtimeAssignee(s.cfg, *assignee))
+	}
+
+	if s.realtimePublisher != nil && acc.ParentID == nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			return s.realtimePublisher.PublishCardUpdated(ctx, acc.BoardID, map[string]any{
+				"id":        id,
+				"assignees": realtimeAssignees,
+			}, realtimeSenderID(ctx))
 		})
-		if s.realtimePublisher != nil && (card == nil || card.ParentID == nil) {
-			s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-				patch, err := s.realtimePublisher.BuildAssignees(ctx, id)
-				if err != nil {
-					return err
-				}
-				return s.realtimePublisher.PublishCardPatchByID(ctx, id, patch, realtimeSenderID(ctx))
-			})
-		}
-
-		if s.notificationSvc != nil && len(userIDs) > 0 {
-			actorID := derefInt64(currentUserID(ctx))
-			newAssignee := userIDs[0]
-			isChild := card != nil && card.ParentID != nil
-			notifyCardID := id
-			if isChild {
-				notifyCardID = *card.ParentID
-			}
-			runDetached(ctx, notifyTimeout, "failed to notify kanban task assigned", func(ctx context.Context) error {
-				projectID, _ := s.permSvc.GetProjectIDByCard(ctx, id)
-				s.notificationSvc.NotifyTaskAssigned(ctx, projectID, 0, notifyCardID, actorID, newAssignee, title, isChild)
-				return nil
-			})
-		}
-	}
-	return err
-}
-
-func (s *CardService) validateProjectAssignees(ctx context.Context, projectID int64, userIDs []int64) error {
-	if len(userIDs) == 0 {
-		return nil
 	}
 
-	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
-	if err != nil {
-		return err
+	if s.notificationSvc != nil && assignee != nil {
+		actorID := derefInt64(currentUserID(ctx))
+		runDetached(ctx, notifyTimeout, "failed to notify kanban task assigned", func(ctx context.Context) error {
+			s.notificationSvc.NotifyTaskAssigned(ctx, acc.ProjectID, acc.BoardID, acc.BoardTitle, ownerCardID, actorID, assignee.ID, acc.CardTitle, acc.ParentID != nil)
+			return nil
+		})
 	}
-	if len(users) != len(userIDs) {
-		return apperr.New(apperr.CodeUserNotFound, "user not found")
-	}
-
-	project, err := s.projectRepo.GetProject(ctx, projectID)
-	if err != nil {
-		return err
-	}
-	for _, userID := range userIDs {
-		if userID == project.OwnerID {
-			continue
-		}
-		if _, err := s.projectMemberRepo.GetProjectMember(ctx, projectID, userID); err != nil {
-			if errors.Is(err, apperr.ErrNotFound) {
-				return apperr.New(apperr.CodeUserNotProjectMember, "user is not project member")
-			}
-			return err
-		}
-	}
-	return nil
+	return assignees, nil
 }
 
 func (s *CardService) MoveCard(ctx context.Context, id int64, columnID *int64, position float64) (*model.CardMove, error) {
@@ -999,27 +994,7 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID *int64, p
 			if err := s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, patch, senderID); err != nil {
 				return err
 			}
-			// Ребалансировка переписала позиции всей колонки — досылаем их соседям,
-			// иначе у чужих вкладок останутся старые позиции и следующее перетаскивание
-			// оттуда посчитает позицию по числам, которых в базе уже нет.
-			// На обычном перемещении Rebalanced == nil и цикл не выполняется.
-			//
-			// ponytail: по сообщению на карточку, весь цикл под общим mercurePublishTimeout.
-			// При большой колонке хвост может не уйти — отдельное событие с массивом позиций,
-			// если упрёшься (нужен новый обработчик на фронте).
-			for _, c := range move.Rebalanced {
-				if c.ID == move.ID {
-					continue // уже ушла патчем выше, вместе с колонкой и статусом
-				}
-				if err := s.realtimePublisher.PublishCardUpdated(ctx, targetColumn.BoardID, map[string]any{
-					"id":        c.ID,
-					"position":  c.Position,
-					"updatedAt": formatRealtimeTimeValue(c.UpdatedAt),
-				}, senderID); err != nil {
-					return err
-				}
-			}
-			return nil
+			return s.publishRebalanced(ctx, targetColumn.BoardID, move.ID, move.Rebalanced, senderID)
 		})
 	}
 
@@ -1036,267 +1011,286 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID *int64, p
 	return move, nil
 }
 
-func (s *CardService) ArchiveCard(ctx context.Context, id int64) error {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
+// ArchiveCard переключает карточку между архивом и доской и отдаёт новое
+// состояние. Три запроса: контекст с правами и текущим флагом, узкий UPDATE,
+// запись в историю. Доска приезжает с контекстом, поэтому ни ссылке истории,
+// ни событию realtime не нужно перечитывать карточку и колонку.
+func (s *CardService) ArchiveCard(ctx context.Context, id int64) (bool, error) {
+	acc, err := s.permSvc.RequireRootCardRole(ctx, id, RoleAdmin)
 	if err != nil {
-		return err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
-		return err
+		return false, err
 	}
 
-	card, err := s.repo.GetCard(ctx, id)
-	if err != nil {
-		return withNotFoundCode(err, apperr.CodeCardNotFound)
-	}
-	if err := errIfChildCard(card); err != nil {
-		return err
-	}
-	action := "card.archived"
-	if card.IsArchived {
-		action = "card.restored"
-		card.IsArchived = false
-		card.ArchivedAt = nil
-		card.ArchivedByID = nil
-	} else {
-		card.IsArchived = true
+	archived := !acc.IsArchived
+	action := "card.restored"
+	link := historyTaskPath(acc.ProjectID, acc.BoardID, id)
+	var archivedAt *time.Time
+	var archivedByID *int64
+	if archived {
+		action = "card.archived"
+		link = historyArchivePath(acc.ProjectID, acc.BoardID)
 		now := s.cfg.Clock.Now()
-		card.ArchivedAt = &now
-		card.ArchivedByID = currentUserID(ctx)
+		archivedAt = &now
+		archivedByID = currentUserID(ctx)
 	}
 
-	updated, err := s.repo.UpdateCard(ctx, card)
+	title, err := s.repo.SetCardArchived(ctx, id, archived, archivedAt, archivedByID)
 	if err != nil {
-		return err
+		return false, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:   projectID,
+		ProjectID:   acc.ProjectID,
 		Action:      action,
 		EntityType:  "card",
 		EntityID:    id,
 		CardID:      id,
-		EntityTitle: card.Title,
+		EntityTitle: title,
+		EntityLink:  link,
 	})
 
 	// Архивация убирает карточку с доски, восстановление возвращает её обратно.
 	// Без события у чужих вкладок она висит (или не появляется) до перезагрузки.
 	if s.realtimePublisher != nil {
 		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			column, err := s.columnRepo.GetColumn(ctx, updated.ColumnID)
+			senderID := realtimeSenderID(ctx)
+			if archived {
+				return s.realtimePublisher.PublishCardDeleted(ctx, acc.BoardID, id, senderID)
+			}
+			created, err := s.realtimePublisher.BuildRestoredCard(ctx, id, acc.BoardID)
 			if err != nil {
 				return err
 			}
-			senderID := realtimeSenderID(ctx)
-			if updated.IsArchived {
-				return s.realtimePublisher.PublishCardDeleted(ctx, column.BoardID, updated.ID, senderID)
-			}
-
-			// Восстановленная карточка, в отличие от новой, не пустая: BuildCreatedCard
-			// обнуляет метки, исполнителей и счётчики — дозаполняем готовыми билдерами.
-			created := s.realtimePublisher.BuildCreatedCard(updated, column)
-			created["updatedAt"] = formatRealtimeTimeValue(updated.UpdatedAt)
-			for _, build := range []func(context.Context, int64) (map[string]any, error){
-				s.realtimePublisher.BuildLabels,
-				s.realtimePublisher.BuildAssignees,
-				s.realtimePublisher.BuildChecklistCounters,
-				s.realtimePublisher.BuildCommentsCount,
-			} {
-				patch, err := build(ctx, updated.ID)
-				if err != nil {
-					return err
-				}
-				for key, value := range patch {
-					created[key] = value
-				}
-			}
-			return s.realtimePublisher.PublishCardCreated(ctx, column.BoardID, created, senderID)
+			return s.realtimePublisher.PublishCardCreated(ctx, acc.BoardID, created, senderID)
 		})
+	}
+	return archived, nil
+}
+
+// CompleteCard переключает выполнение и отдаёт то, что поменялось; корневую
+// карточку при завершении уносит наверх колонки «Готово». Колонку, позицию,
+// флаг выполнения и колонку «Готово» приносит контекст с правами, поэтому
+// карточку, колонку и доску отдельно не читаем, а ссылки истории собираем сами.
+func (s *CardService) CompleteCard(ctx context.Context, id int64) (*dto.CardCompletionResponse, error) {
+	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
+	if err != nil {
+		return nil, err
+	}
+
+	completing := acc.CompletedAt == nil
+	action := "card.reopened"
+	var completedAt *time.Time
+	var completedByID *int64
+	if completing {
+		action = "card.completed"
+		now := s.cfg.Clock.Now()
+		completedAt = &now
+		completedByID = currentUserID(ctx)
+	}
+
+	updatedAt, err := s.repo.SetCardCompleted(ctx, id, completedAt, completedByID)
+	if err != nil {
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
+	}
+
+	// Подзадача пишется в историю от имени родителя.
+	ownerCardID := id
+	if acc.ParentID != nil {
+		ownerCardID = *acc.ParentID
+	}
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   acc.ProjectID,
+		Action:      action,
+		EntityType:  "card",
+		EntityID:    id,
+		CardID:      ownerCardID,
+		EntityTitle: acc.CardTitle,
+		EntityLink:  historyTaskPath(acc.ProjectID, acc.BoardID, ownerCardID),
+	})
+
+	resp := &dto.CardCompletionResponse{
+		ID:            id,
+		Title:         acc.CardTitle,
+		Position:      acc.Position,
+		BoardID:       acc.BoardID,
+		ParentID:      acc.ParentID,
+		CompletedAt:   completedAt,
+		CompletedByID: completedByID,
+		UpdatedAt:     updatedAt,
+	}
+	if acc.ParentID != nil {
+		// Подзадаче фронт показывает исполнителя — он нужен в ответе.
+		byCard, err := s.repo.GetAssigneesByCardIDs(ctx, []int64{id})
+		if err != nil {
+			return nil, err
+		}
+		resp.AssigneeIDs = byCard[id]
+	} else {
+		columnID := acc.ColumnID
+		resp.ColumnID = &columnID
+		resp.ColumnTitle = acc.ColumnTitle
+	}
+
+	var rebalanced []model.CardPosition
+	moved := false
+	if completing && acc.ParentID == nil && acc.DoneColumnID != nil && *acc.DoneColumnID != acc.ColumnID {
+		// Автоперенос — побочный эффект: его сбой не отменяет завершения.
+		if target, err := s.repo.ColumnPrependTarget(ctx, *acc.DoneColumnID); err == nil {
+			if move, err := s.repo.MoveCard(ctx, id, *acc.DoneColumnID, target.Position); err == nil && move != nil {
+				moved = true
+				rebalanced = move.Rebalanced
+				resp.ColumnID = &move.ToColumnID
+				resp.ColumnTitle = target.Title
+				resp.Position = move.Position
+				resp.UpdatedAt = move.UpdatedAt
+				appendHistory(s.History, ctx, model.HistoryWrite{
+					ProjectID:   acc.ProjectID,
+					Action:      "card.moved",
+					EntityType:  "card",
+					EntityID:    id,
+					CardID:      id,
+					EntityTitle: acc.CardTitle,
+					EntityLink:  historyTaskPath(acc.ProjectID, acc.BoardID, id),
+					Before:      historyPlacement(acc.ColumnID, acc.Position),
+					After:       historyPlacement(move.ToColumnID, move.Position),
+				})
+			}
+		}
+	}
+
+	if err := s.fillCompletionUsers(ctx, resp); err != nil {
+		return nil, err
+	}
+
+	if acc.ParentID != nil {
+		s.publishParentChecklist(ctx, acc.BoardID, *acc.ParentID)
+		return resp, nil
+	}
+	if s.realtimePublisher != nil {
+		patch := map[string]any{
+			"id":            id,
+			"completedAt":   formatRealtimeTime(completedAt),
+			"completedById": completedByID,
+			"columnId":      *resp.ColumnID,
+			"position":      resp.Position,
+			"updatedAt":     formatRealtimeTimeValue(resp.UpdatedAt),
+		}
+		if moved {
+			// Как у обычного перемещения: доска раскладывает карточки по статусу.
+			patch["columnTitle"] = resp.ColumnTitle
+			patch["status"] = strconv.FormatInt(*resp.ColumnID, 10)
+		}
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			senderID := realtimeSenderID(ctx)
+			if err := s.realtimePublisher.PublishCardUpdated(ctx, acc.BoardID, patch, senderID); err != nil {
+				return err
+			}
+			return s.publishRebalanced(ctx, acc.BoardID, id, rebalanced, senderID)
+		})
+	}
+	return resp, nil
+}
+
+// fillCompletionUsers дописывает в ответ того, кто завершил, и исполнителей
+// подзадачи — одним запросом пользователей на всех.
+func (s *CardService) fillCompletionUsers(ctx context.Context, resp *dto.CardCompletionResponse) error {
+	userIDs := append([]int64{}, resp.AssigneeIDs...)
+	if resp.CompletedByID != nil {
+		userIDs = append(userIDs, *resp.CompletedByID)
+	}
+	if len(userIDs) == 0 {
+		return nil
+	}
+	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
+	if err != nil {
+		return err
+	}
+	userMap := make(map[int64]*model.User, len(users))
+	for i := range users {
+		userMap[users[i].ID] = &users[i]
+	}
+	if resp.CompletedByID != nil {
+		if u, ok := userMap[*resp.CompletedByID]; ok {
+			resp.CompletedBy = &dto.CardUserResponse{
+				ID:        u.ID,
+				Firstname: u.Firstname,
+				Lastname:  u.Lastname,
+				AvatarUrl: dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail),
+			}
+		}
+	}
+	for _, uid := range resp.AssigneeIDs {
+		if u, ok := userMap[uid]; ok {
+			resp.Assignees = append(resp.Assignees, &dto.CardAssigneeResponse{
+				ID:        u.ID,
+				Name:      dto.UserDisplayName(*u),
+				AvatarUrl: dto.UserAvatarURL(s.cfg, u.AvatarName, dto.AvatarSizeThumbnail),
+			})
+		}
 	}
 	return nil
 }
 
-func (s *CardService) CompleteCard(ctx context.Context, id int64) (*model.Card, error) {
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
+// DuplicateCard копирует карточку с подзадачами наверх выбранной колонки (по
+// умолчанию — той же). Что переносится, описано у запроса DuplicateCard.
+// Запросов пять при любом числе подзадач: контекст с правами, целевая колонка
+// с позицией, лимит доски, копия одним оператором, история. Ответ и realtime
+// собираются из того, что вернула вставка.
+func (s *CardService) DuplicateCard(ctx context.Context, id int64, columnID int64) (*dto.CardResponse, error) {
+	acc, err := s.permSvc.RequireRootCardRole(ctx, id, RoleEditor)
 	if err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return nil, err
-	}
-
-	card, err := s.repo.GetCard(ctx, id)
-	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
-	}
-	oldCol := card.ColumnID
-	oldPos := card.Position
-
-	completing := card.CompletedAt == nil
-	if !completing {
-		card.CompletedAt = nil
-		card.CompletedByID = nil
-	} else {
-		now := s.cfg.Clock.Now()
-		card.CompletedAt = &now
-		card.CompletedByID = currentUserID(ctx)
-	}
-
-	updated, err := s.repo.UpdateCard(ctx, card)
-	if err != nil {
-		return nil, err
-	}
-
-	action := "card.completed"
-	if !completing {
-		action = "card.reopened"
-	}
-	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:   projectID,
-		Action:      action,
-		EntityType:  "card",
-		EntityID:    id,
-		CardID:      historyOwnerCardID(updated),
-		EntityTitle: updated.Title,
-	})
-	if updated.ParentID != nil {
-		s.publishParentChecklist(ctx, *updated.ParentID)
-		return updated, nil
-	}
-	if completing {
-		if col, colErr := s.columnRepo.GetColumn(ctx, updated.ColumnID); colErr == nil {
-			if board, boardErr := s.boardRepo.GetBoard(ctx, col.BoardID); boardErr == nil && board.DoneColumnID != nil && *board.DoneColumnID != updated.ColumnID {
-				pos := 65536.0
-				if dest, destErr := s.repo.GetCardsByColumn(ctx, *board.DoneColumnID); destErr == nil && len(dest) > 0 {
-					pos = dest[0].Position / 2
-				}
-				if moved, moveErr := s.repo.MoveCard(ctx, id, *board.DoneColumnID, pos); moveErr == nil && moved != nil {
-					// MoveCard отдаёт только изменённое — переносим в карточку,
-					// которую отдаём наружу и шлём в realtime.
-					updated.ColumnID = moved.ToColumnID
-					updated.Position = moved.Position
-					updated.UpdatedAt = moved.UpdatedAt
-					appendHistory(s.History, ctx, model.HistoryWrite{
-						ProjectID:   projectID,
-						Action:      "card.moved",
-						EntityType:  "card",
-						EntityID:    id,
-						CardID:      id,
-						EntityTitle: updated.Title,
-						Before:      historyPlacement(oldCol, oldPos),
-						After:       historyPlacement(updated.ColumnID, updated.Position),
-					})
-				}
-			}
-		}
-	}
-	if s.realtimePublisher != nil {
-		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			return s.realtimePublisher.PublishCardPatch(ctx, updated, map[string]any{
-				"completedAt":   formatRealtimeTime(updated.CompletedAt),
-				"completedById": updated.CompletedByID,
-				"columnId":      updated.ColumnID,
-				"position":      updated.Position,
-			}, realtimeSenderID(ctx))
-		})
-	}
-	return updated, nil
-}
-
-func (s *CardService) DuplicateCard(ctx context.Context, id int64, columnID int64) (*model.Card, error) {
-	source, err := s.repo.GetCard(ctx, id)
-	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
-	}
-	if err := errIfChildCard(source); err != nil {
-		return nil, err
-	}
-	projectID, err := s.permSvc.GetProjectIDByCard(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return nil, err
 	}
 	if columnID == 0 {
-		columnID = source.ColumnID
+		columnID = acc.ColumnID
 	}
-	srcCol, err := s.columnRepo.GetColumn(ctx, source.ColumnID)
+	target, err := s.repo.ColumnPrependTarget(ctx, columnID)
 	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+		return nil, withNotFoundCode(err, apperr.CodeColumnNotFound)
 	}
-	dstCol, err := s.columnRepo.GetColumn(ctx, columnID)
-	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
+	if target.ProjectID != acc.ProjectID {
+		return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
 	}
-	dstProject, err := s.permSvc.GetProjectIDByColumn(ctx, columnID)
+	activeCardsCount, err := s.repo.CountActiveCardsByBoard(ctx, target.BoardID)
 	if err != nil {
 		return nil, err
 	}
-	if dstProject != projectID {
-		return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
+	if activeCardsCount >= maxActiveCardsPerBoard {
+		return nil, apperr.New(apperr.CodeBoardCardLimitReached, "maximum number of cards (300) on board reached")
 	}
 
-	clone := &model.Card{
-		Title:       source.Title,
-		Description: source.Description,
-		DueDate:     source.DueDate,
-		Priority:    source.Priority,
-		BorderColor: source.BorderColor,
-		ColumnID:    columnID,
-		CreatedByID: currentUserID(ctx),
-	}
-	if cards, _ := s.repo.GetCardsByColumn(ctx, columnID); len(cards) > 0 {
-		clone.Position = cards[0].Position / 2
-	} else {
-		clone.Position = 65536
-	}
-	created, err := s.repo.CreateCard(ctx, columnID, clone)
-	if err != nil || created == nil {
-		return created, err
-	}
-	if len(source.AssigneeIDs) > 0 {
-		_ = s.repo.UpdateCardAssignees(ctx, created.ID, source.AssigneeIDs)
-		created.AssigneeIDs = source.AssigneeIDs
-	}
-	if srcCol.BoardID == dstCol.BoardID {
-		for _, labelID := range source.LabelIDs {
-			_, _ = s.labelRepo.ToggleLabel(ctx, created.ID, labelID)
-		}
-	}
-	if children, stErr := s.repo.GetChildCards(ctx, id); stErr == nil {
-		for i := range children {
-			child := children[i]
-			cloneChild := &model.Card{
-				Title:       child.Title,
-				ParentID:    &created.ID,
-				Position:    child.Position,
-				CreatedByID: currentUserID(ctx),
-			}
-			if copied, err := s.repo.CreateCard(ctx, 0, cloneChild); err == nil && copied != nil && len(child.AssigneeIDs) > 0 {
-				_ = s.repo.UpdateCardAssignees(ctx, copied.ID, child.AssigneeIDs)
-			}
-		}
+	created, children, err := s.repo.DuplicateCard(ctx, id, columnID, target.Position, currentUserID(ctx))
+	if err != nil {
+		return nil, withNotFoundCode(err, apperr.CodeCardNotFound)
 	}
 
 	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:   projectID,
+		ProjectID:   acc.ProjectID,
 		Action:      "card.duplicated",
 		EntityType:  "card",
 		EntityID:    created.ID,
 		CardID:      created.ID,
-		EntityTitle: source.Title,
+		EntityTitle: created.Title,
+		EntityLink:  historyTaskPath(acc.ProjectID, target.BoardID, created.ID),
 	})
-	if s.realtimePublisher != nil {
-		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			return s.realtimePublisher.PublishCardCreated(
-				ctx,
-				dstCol.BoardID,
-				s.realtimePublisher.BuildCreatedCard(created, dstCol),
-				realtimeSenderID(ctx),
-			)
+
+	resp := createdCardResponse(created, target.BoardID, target.Title)
+	for i := range children {
+		resp.Children = append(resp.Children, &dto.CardChildResponse{
+			ID:       children[i].ID,
+			Title:    children[i].Title,
+			Position: children[i].Position,
 		})
 	}
-	return created, nil
+	resp.ChecklistTotal = len(children)
+
+	if s.realtimePublisher != nil {
+		event := s.realtimePublisher.BuildCreatedCard(created, &model.Column{ID: columnID, BoardID: target.BoardID})
+		event["checklistTotal"] = len(children)
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			return s.realtimePublisher.PublishCardCreated(ctx, target.BoardID, event, realtimeSenderID(ctx))
+		})
+	}
+	return resp, nil
 }
 
 func currentUserID(ctx context.Context) *int64 {
@@ -1374,7 +1368,34 @@ func normalizeCardBorderColor(color *string) *string {
 	}
 }
 
-func (s *CardService) publishParentChecklist(ctx context.Context, parentID int64) {
+// publishRebalanced досылает соседям позиции, переписанные ребалансировкой
+// колонки: иначе у чужих вкладок останутся старые, и следующее перетаскивание
+// оттуда посчитает позицию по числам, которых в базе уже нет. Сама перемещённая
+// карточка уходит патчем вместе с колонкой и статусом — её пропускаем.
+// На обычном перемещении rebalanced == nil и цикл не выполняется.
+//
+// ponytail: по сообщению на карточку, весь цикл под общим mercurePublishTimeout.
+// При большой колонке хвост может не уйти — отдельное событие с массивом позиций,
+// если упрёшься (нужен новый обработчик на фронте).
+func (s *CardService) publishRebalanced(ctx context.Context, boardID, movedID int64, rebalanced []model.CardPosition, senderID int64) error {
+	for _, c := range rebalanced {
+		if c.ID == movedID {
+			continue
+		}
+		if err := s.realtimePublisher.PublishCardUpdated(ctx, boardID, map[string]any{
+			"id":        c.ID,
+			"position":  c.Position,
+			"updatedAt": formatRealtimeTimeValue(c.UpdatedAt),
+		}, senderID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// publishParentChecklist шлёт родителю новые счётчики подзадач. Доску знает
+// вызывающий — поэтому ни карточку, ни колонку ради неё не читаем.
+func (s *CardService) publishParentChecklist(ctx context.Context, boardID, parentID int64) {
 	if s.realtimePublisher == nil {
 		return
 	}
@@ -1383,7 +1404,8 @@ func (s *CardService) publishParentChecklist(ctx context.Context, parentID int64
 		if err != nil {
 			return err
 		}
-		return s.realtimePublisher.PublishCardPatchByID(ctx, parentID, patch, realtimeSenderID(ctx))
+		patch["id"] = parentID
+		return s.realtimePublisher.PublishCardUpdated(ctx, boardID, patch, realtimeSenderID(ctx))
 	})
 }
 

@@ -137,23 +137,15 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 		CardID:     cardID,
 		EntityLink: historyTaskPath(acc.ProjectID, acc.BoardID, cardID),
 	})
-	if s.realtimePublisher != nil {
-		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, cardID)
-			if err != nil {
-				return err
-			}
-			return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
-		})
-	}
+	s.publishCommentsCount(ctx, acc.BoardID, cardID)
 
 	// Comment notification (unified)
 	if s.notificationSvc != nil {
 		actorID := derefInt64(currentUserID(ctx))
 		runDetached(ctx, notifyTimeout, "failed to notify kanban comment added", func(ctx context.Context) error {
-			// Проект и доска уже в acc: без них resolveBoardID внутри уведомления
-			// снова читал бы карточку с колонкой.
-			s.notificationSvc.NotifyCommentAdded(ctx, acc.ProjectID, acc.BoardID, cardID, actorID, "")
+			// Проект, доска, заголовок и автор уже известны — уведомление
+			// не перечитывает ради них карточку, доску и пользователя.
+			s.notificationSvc.NotifyCommentAdded(ctx, acc.ProjectID, acc.BoardID, acc.BoardTitle, cardID, actorID, acc.CardTitle, created.AuthorName)
 			return nil
 		})
 	}
@@ -243,16 +235,24 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 		CardID:     cardID,
 		EntityLink: historyTaskPath(acc.ProjectID, acc.BoardID, cardID),
 	})
-	if s.realtimePublisher != nil {
-		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, cardID)
-			if err != nil {
-				return err
-			}
-			return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
-		})
-	}
+	s.publishCommentsCount(ctx, acc.BoardID, cardID)
 	return nil
+}
+
+// publishCommentsCount шлёт доске новый счётчик комментариев. Доску знает
+// вызывающий — карточку и колонку ради неё не читаем.
+func (s *CommentService) publishCommentsCount(ctx context.Context, boardID, cardID int64) {
+	if s.realtimePublisher == nil {
+		return
+	}
+	s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+		patch, err := s.realtimePublisher.BuildCommentsCount(ctx, cardID)
+		if err != nil {
+			return err
+		}
+		patch["id"] = cardID
+		return s.realtimePublisher.PublishCardUpdated(ctx, boardID, patch, realtimeSenderID(ctx))
+	})
 }
 
 // MarkRead двигает знак прочтения карточки. Что именно считать прочитанным,

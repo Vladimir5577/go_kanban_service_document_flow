@@ -17,7 +17,8 @@ import (
 func applyHistoryUndo(ctx context.Context, q *dbgen.Queries, e model.HistoryUndoEntry) error {
 	switch e.Action {
 	case "card.created", "card.duplicated":
-		return q.DeleteCard(ctx, e.EntityID)
+		_, err := q.DeleteCard(ctx, e.EntityID)
+		return err
 	case "card.deleted":
 		return q.RestoreCard(ctx, e.EntityID)
 	case "card.moved":

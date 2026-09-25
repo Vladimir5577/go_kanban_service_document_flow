@@ -2,18 +2,23 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/client"
 	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/model"
+	"go_kanban_service/internal/repository/dbgen"
 )
 
 type UserRepositoryInterface interface {
 	LoginCheck(ctx context.Context) (*model.User, error)
 	GetUsersByIDs(ctx context.Context, ids []int64) ([]model.User, error)
+	// GetProjectAssignee — пользователь и его членство в проекте одним запросом.
+	GetProjectAssignee(ctx context.Context, projectID, userID int64) (*model.User, bool, error)
 }
 
 type UserRepository struct {
@@ -98,6 +103,35 @@ func (r *UserRepository) GetUsersByIDs(ctx context.Context, ids []int64) ([]mode
 	}
 
 	return users, nil
+}
+
+// GetProjectAssignee отдаёт пользователя и признак членства в проекте. Кого ещё
+// нет в локальной таблице (например, владельца проекта), добирает GetUsersByIDs
+// из Symfony — как раньше при проверке исполнителя, — и запрос повторяется.
+func (r *UserRepository) GetProjectAssignee(ctx context.Context, projectID, userID int64) (*model.User, bool, error) {
+	params := dbgen.GetProjectAssigneeParams{ProjectID: projectID, UserID: userID}
+	row, err := dbgen.New(r.Db).GetProjectAssignee(ctx, params)
+	if errors.Is(err, pgx.ErrNoRows) {
+		users, fetchErr := r.GetUsersByIDs(ctx, []int64{userID})
+		if fetchErr != nil {
+			return nil, false, fetchErr
+		}
+		if len(users) == 0 {
+			return nil, false, apperr.ErrNotFound
+		}
+		row, err = dbgen.New(r.Db).GetProjectAssignee(ctx, params)
+	}
+	if err != nil {
+		return nil, false, NormalizeError(err)
+	}
+	return &model.User{
+		ID:         row.ID,
+		Login:      row.Login,
+		Lastname:   row.Lastname,
+		Firstname:  row.Firstname,
+		Patronymic: textPtr(row.Patronymic),
+		AvatarName: textPtr(row.AvatarName),
+	}, row.IsMember, nil
 }
 
 func (r *UserRepository) UpsertUsers(ctx context.Context, users []model.User) error {

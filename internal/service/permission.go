@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/middleware"
@@ -9,6 +10,7 @@ import (
 	"go_kanban_service/internal/repository"
 	"go_kanban_service/internal/repository/dbgen"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -112,6 +114,13 @@ type CardAccess struct {
 	OwnerID     int64
 	Role        Role
 	ParentID    *int64
+	IsArchived  bool
+	CardTitle   string
+	// ColumnID и Position — у подзадачи колонка родителя и собственная позиция.
+	ColumnID     int64
+	Position     float64
+	CompletedAt  *time.Time
+	DoneColumnID *int64
 }
 
 // IsOwner — текущий пользователь владелец проекта.
@@ -130,24 +139,9 @@ func (s *PermissionService) RequireCardRole(ctx context.Context, cardID int64, m
 	if err != nil {
 		return CardAccess{}, withNotFoundCode(repository.NormalizeError(err), apperr.CodeCardNotFound)
 	}
-	// Проект в мягком удалении: код тот же, что отдавал GetProject.
-	if row.ProjectDeletedAt.Valid {
-		return CardAccess{}, apperr.New(apperr.CodeProjectNotFound, string(apperr.CodeProjectNotFound))
-	}
-
-	// Членство приехало тем же запросом. NULL означает ровно то же, что раньше
-	// означал промах GetProjectMember, — членства нет, и решает это resolveRole.
-	var member *model.ProjectUser
-	if row.MemberRole.Valid {
-		member = &model.ProjectUser{Role: row.MemberRole.String}
-	}
-
-	role, err := resolveRole(user.ID, row.OwnerID, member)
+	role, err := checkContextRole(user.ID, row.OwnerID, row.MemberRole, row.ProjectDeletedAt, minRole)
 	if err != nil {
 		return CardAccess{}, err
-	}
-	if !hasRole(role, minRole) {
-		return CardAccess{}, accessDenied()
 	}
 
 	acc := CardAccess{
@@ -157,12 +151,79 @@ func (s *PermissionService) RequireCardRole(ctx context.Context, cardID int64, m
 		ColumnTitle: row.ColumnTitle,
 		OwnerID:     row.OwnerID,
 		Role:        role,
+		IsArchived:  row.IsArchived,
+		CardTitle:   row.CardTitle,
+		ColumnID:    row.ColumnID,
+		Position:    row.Position,
 	}
 	if row.ParentID.Valid {
 		id := row.ParentID.Int64
 		acc.ParentID = &id
 	}
+	if row.CompletedAt.Valid {
+		t := row.CompletedAt.Time
+		acc.CompletedAt = &t
+	}
+	if row.DoneColumnID.Valid {
+		id := row.DoneColumnID.Int64
+		acc.DoneColumnID = &id
+	}
 	return acc, nil
+}
+
+// checkContextRole — общая часть проверок по контексту карточки и колонки:
+// проект в мягком удалении, роль по владельцу и членству, требуемый уровень.
+func checkContextRole(userID, ownerID int64, memberRole pgtype.Text, projectDeletedAt pgtype.Timestamptz, minRole Role) (Role, error) {
+	// Проект в мягком удалении: код тот же, что отдавал GetProject.
+	if projectDeletedAt.Valid {
+		return "", apperr.New(apperr.CodeProjectNotFound, string(apperr.CodeProjectNotFound))
+	}
+	// Членство приехало тем же запросом. NULL означает ровно то же, что раньше
+	// означал промах GetProjectMember, — членства нет, и решает это resolveRole.
+	var member *model.ProjectUser
+	if memberRole.Valid {
+		member = &model.ProjectUser{Role: memberRole.String}
+	}
+	role, err := resolveRole(userID, ownerID, member)
+	if err != nil {
+		return "", err
+	}
+	if !hasRole(role, minRole) {
+		return "", accessDenied()
+	}
+	return role, nil
+}
+
+// ColumnAccess — разрешённый контекст колонки: всё, что нужно созданию карточки.
+type ColumnAccess struct {
+	ProjectID       int64
+	BoardID         int64
+	BoardTitle      string
+	ColumnTitle     string
+	PrependPosition float64
+}
+
+// RequireColumnRole — RequireCardRole от колонки: контекст одним запросом и
+// сразу проверка прав.
+func (s *PermissionService) RequireColumnRole(ctx context.Context, columnID int64, minRole Role) (ColumnAccess, error) {
+	user, ok := middleware.GetUser(ctx)
+	if !ok {
+		return ColumnAccess{}, apperr.ErrUnauthorized
+	}
+	row, err := dbgen.New(s.db).GetColumnContext(ctx, dbgen.GetColumnContextParams{ID: columnID, UserID: user.ID})
+	if err != nil {
+		return ColumnAccess{}, withNotFoundCode(repository.NormalizeError(err), apperr.CodeColumnNotFound)
+	}
+	if _, err := checkContextRole(user.ID, row.OwnerID, row.MemberRole, row.ProjectDeletedAt, minRole); err != nil {
+		return ColumnAccess{}, err
+	}
+	return ColumnAccess{
+		ProjectID:       row.KanbanProjectID,
+		BoardID:         row.BoardID,
+		BoardTitle:      row.BoardTitle,
+		ColumnTitle:     row.ColumnTitle,
+		PrependPosition: row.PrependPosition,
+	}, nil
 }
 
 // RequireRootCardRole — то же, что RequireCardRole, но для операций, которые
@@ -186,15 +247,6 @@ func (s *PermissionService) GetProjectIDByBoard(ctx context.Context, boardID int
 		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeBoardNotFound)
 	}
 	return b.KanbanProjectID, nil
-}
-
-func (s *PermissionService) GetProjectIDByColumn(ctx context.Context, columnID int64) (int64, error) {
-	queries := dbgen.New(s.db)
-	projectID, err := queries.GetProjectIDByColumn(ctx, columnID)
-	if err != nil {
-		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeColumnNotFound)
-	}
-	return projectID, nil
 }
 
 func (s *PermissionService) GetProjectIDByCard(ctx context.Context, cardID int64) (int64, error) {

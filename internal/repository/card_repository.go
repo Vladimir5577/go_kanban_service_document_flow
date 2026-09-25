@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/model"
 	"go_kanban_service/internal/repository/dbgen"
 )
@@ -15,7 +16,6 @@ import (
 type CardRepositoryInterface interface {
 	CreateCard(ctx context.Context, columnID int64, c *model.Card) (*model.Card, error)
 	GetCard(ctx context.Context, id int64) (*model.Card, error)
-	GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error)
 	GetCardsByBoard(ctx context.Context, boardID int64) ([]model.Card, error)
 	ListTasks(ctx context.Context, f TaskListParams) ([]AssignedCardRow, int64, error)
 	ListTaskCollaborants(ctx context.Context, f TaskCollaborantsParams) ([]model.User, int64, error)
@@ -26,9 +26,21 @@ type CardRepositoryInterface interface {
 	CountActiveCardsByBoard(ctx context.Context, boardID int64) (int, error)
 	GetAssigneesByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
 	GetLabelIDsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64][]int64, error)
-	UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error)
+	// GetCardRow — только строка карточки, без исполнителей и меток.
+	GetCardRow(ctx context.Context, id int64) (*model.Card, error)
+	// UpdateCardFields пишет только редактируемые поля и отдаёт строку после записи.
+	UpdateCardFields(ctx context.Context, c *model.Card) (*model.Card, error)
+	// SetCardArchived пишет только поля архива и отдаёт заголовок карточки.
+	SetCardArchived(ctx context.Context, id int64, archived bool, at *time.Time, byID *int64) (string, error)
 	DeleteCard(ctx context.Context, id int64) error
-	UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error
+	// SetCardCompleted пишет только поля выполнения и отдаёт новый updated_at.
+	SetCardCompleted(ctx context.Context, id int64, at *time.Time, byID *int64) (time.Time, error)
+	// ColumnPrependTarget — колонка, куда карточка встаёт наверх, и позиция для неё.
+	ColumnPrependTarget(ctx context.Context, columnID int64) (*PrependTarget, error)
+	// DuplicateCard копирует карточку с подзадачами одним запросом, отдаёт копию и её подзадачи.
+	DuplicateCard(ctx context.Context, sourceID, columnID int64, position float64, createdByID *int64) (*model.Card, []model.Card, error)
+	// ReplaceCardAssignees меняет исполнителей одним атомарным запросом и отдаёт прежних.
+	ReplaceCardAssignees(ctx context.Context, cardID int64, userIDs []int64) ([]int64, error)
 	// MoveCard читает и пишет только поля, которые участвуют в перемещении.
 	// Если оно вызвало ребалансировку, в CardMove.Rebalanced лягут новые позиции
 	// всей колонки, иначе там nil.
@@ -448,43 +460,6 @@ func (r *CardRepository) CountActiveCardsByBoard(ctx context.Context, boardID in
 	return count, nil
 }
 
-func (r *CardRepository) GetCardsByColumn(ctx context.Context, columnID int64) ([]model.Card, error) {
-	queries := dbgen.New(r.Db)
-	dbCards, err := queries.GetCardsByColumn(ctx, int8Arg(columnID))
-	if err != nil {
-		return nil, err
-	}
-
-	if len(dbCards) == 0 {
-		return []model.Card{}, nil
-	}
-
-	// Собрать card IDs для bulk-запросов
-	cardIDs := make([]int64, len(dbCards))
-	for i, c := range dbCards {
-		cardIDs[i] = c.ID
-	}
-
-	// Bulk-запросы assignees и labels для всех карточек
-	assigneesByCard, err := r.GetAssigneesByCardIDs(ctx, cardIDs)
-	if err != nil {
-		return nil, err
-	}
-	labelsByCard, err := r.GetLabelIDsByCardIDs(ctx, cardIDs)
-	if err != nil {
-		return nil, err
-	}
-
-	var cards []model.Card
-	for _, c := range dbCards {
-		card := mapDBCard(c)
-		card.AssigneeIDs = assigneesByCard[card.ID]
-		card.LabelIDs = labelsByCard[card.ID]
-		cards = append(cards, card)
-	}
-	return cards, nil
-}
-
 func (r *CardRepository) GetChildCards(ctx context.Context, parentID int64) ([]model.Card, error) {
 	queries := dbgen.New(r.Db)
 	dbCards, err := queries.GetChildCards(ctx, int8Arg(parentID))
@@ -671,17 +646,19 @@ func (r *CardRepository) GetCard(ctx context.Context, id int64) (*model.Card, er
 	return cardPtr, nil
 }
 
-func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.Card, error) {
-	queries := dbgen.New(r.Db)
-
-	params := dbgen.UpdateCardParams{
-		Title:      c.Title,
-		Position:   c.Position,
-		IsArchived: c.IsArchived,
-		ColumnID:   columnIDArg(c),
-		ParentID:   parentIDArg(c),
-		ID:         c.ID,
+// GetCardRow — строка карточки без исполнителей и меток: GetCard ради них
+// делает ещё два запроса, а правке нужны только собственные поля.
+func (r *CardRepository) GetCardRow(ctx context.Context, id int64) (*model.Card, error) {
+	c, err := dbgen.New(r.Db).GetCard(ctx, id)
+	if err != nil {
+		return nil, NormalizeError(err)
 	}
+	card := mapDBCard(c)
+	return &card, nil
+}
+
+func (r *CardRepository) UpdateCardFields(ctx context.Context, c *model.Card) (*model.Card, error) {
+	params := dbgen.UpdateCardFieldsParams{ID: c.ID, Title: c.Title}
 	if c.Description != nil {
 		params.Description = pgtype.Text{String: *c.Description, Valid: true}
 	}
@@ -694,53 +671,105 @@ func (r *CardRepository) UpdateCard(ctx context.Context, c *model.Card) (*model.
 	if c.BorderColor != nil {
 		params.BorderColor = pgtype.Text{String: *c.BorderColor, Valid: true}
 	}
-	if c.ArchivedAt != nil {
-		params.ArchivedAt = pgtype.Timestamptz{Time: *c.ArchivedAt, Valid: true}
-	}
-	if c.ArchivedByID != nil {
-		params.ArchivedByID = pgtype.Int8{Int64: *c.ArchivedByID, Valid: true}
-	}
-	if c.CompletedAt != nil {
-		params.CompletedAt = pgtype.Timestamptz{Time: *c.CompletedAt, Valid: true}
-	}
-	if c.CompletedByID != nil {
-		params.CompletedByID = pgtype.Int8{Int64: *c.CompletedByID, Valid: true}
-	}
-
-	res, err := queries.UpdateCard(ctx, params)
+	res, err := dbgen.New(r.Db).UpdateCardFields(ctx, params)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
+	card := mapDBCard(res)
+	return &card, nil
+}
 
-	c.UpdatedAt = res.UpdatedAt.Time
-	return c, nil
+func (r *CardRepository) SetCardArchived(ctx context.Context, id int64, archived bool, at *time.Time, byID *int64) (string, error) {
+	params := dbgen.SetCardArchivedParams{ID: id, IsArchived: archived}
+	if at != nil {
+		params.ArchivedAt = pgtype.Timestamptz{Time: *at, Valid: true}
+	}
+	if byID != nil {
+		params.ArchivedByID = pgtype.Int8{Int64: *byID, Valid: true}
+	}
+	title, err := dbgen.New(r.Db).SetCardArchived(ctx, params)
+	if err != nil {
+		return "", NormalizeError(err)
+	}
+	return title, nil
 }
 
 func (r *CardRepository) DeleteCard(ctx context.Context, id int64) error {
-	queries := dbgen.New(r.Db)
-	return queries.DeleteCard(ctx, id)
-}
-
-func (r *CardRepository) UpdateCardAssignees(ctx context.Context, cardID int64, userIDs []int64) error {
-	queries := dbgen.New(r.Db)
-
-	if err := queries.ClearCardAssignees(ctx, cardID); err != nil {
+	n, err := dbgen.New(r.Db).DeleteCard(ctx, id)
+	if err != nil {
 		return err
 	}
-
-	for _, uid := range userIDs {
-		if err := queries.AddCardAssignee(ctx, dbgen.AddCardAssigneeParams{
-			CardID: cardID,
-			UserID: uid,
-		}); err != nil {
-			return err
-		}
+	if n == 0 {
+		return apperr.ErrNotFound
 	}
 	return nil
 }
 
-// columnCardPositions — порядок колонки и ничего лишнего: GetCardsByColumn ради
-// тех же двух полей делает ещё два запроса, за исполнителями и метками.
+func (r *CardRepository) SetCardCompleted(ctx context.Context, id int64, at *time.Time, byID *int64) (time.Time, error) {
+	params := dbgen.SetCardCompletedParams{ID: id}
+	if at != nil {
+		params.CompletedAt = pgtype.Timestamptz{Time: *at, Valid: true}
+	}
+	if byID != nil {
+		params.CompletedByID = pgtype.Int8{Int64: *byID, Valid: true}
+	}
+	updatedAt, err := dbgen.New(r.Db).SetCardCompleted(ctx, params)
+	if err != nil {
+		return time.Time{}, NormalizeError(err)
+	}
+	return updatedAt.Time, nil
+}
+
+// PrependTarget — колонка, куда карточка встаёт наверх, и позиция для неё.
+type PrependTarget struct {
+	Title     string
+	BoardID   int64
+	ProjectID int64
+	Position  float64
+}
+
+func (r *CardRepository) ColumnPrependTarget(ctx context.Context, columnID int64) (*PrependTarget, error) {
+	row, err := dbgen.New(r.Db).GetColumnPrependTarget(ctx, columnID)
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	return &PrependTarget{
+		Title:     row.Title,
+		BoardID:   row.BoardID,
+		ProjectID: row.KanbanProjectID,
+		Position:  row.TargetPosition,
+	}, nil
+}
+
+func (r *CardRepository) DuplicateCard(ctx context.Context, sourceID, columnID int64, position float64, createdByID *int64) (*model.Card, []model.Card, error) {
+	params := dbgen.DuplicateCardParams{SourceID: sourceID, ColumnID: columnID, Position: position}
+	if createdByID != nil {
+		params.CreatedByID = pgtype.Int8{Int64: *createdByID, Valid: true}
+	}
+	rows, err := dbgen.New(r.Db).DuplicateCard(ctx, params)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Источник удалён или не найден — копировать нечего.
+	if len(rows) == 0 {
+		return nil, nil, apperr.ErrNotFound
+	}
+	created := mapDBCard(dbgen.KanbanCard(rows[0]))
+	children := make([]model.Card, 0, len(rows)-1)
+	for _, row := range rows[1:] {
+		children = append(children, mapDBCard(dbgen.KanbanCard(row)))
+	}
+	return &created, children, nil
+}
+
+func (r *CardRepository) ReplaceCardAssignees(ctx context.Context, cardID int64, userIDs []int64) ([]int64, error) {
+	if userIDs == nil {
+		userIDs = []int64{} // NULL-массив сломал бы <> ALL: снятие исполнителя не удалило бы никого
+	}
+	return dbgen.New(r.Db).ReplaceCardAssignees(ctx, dbgen.ReplaceCardAssigneesParams{CardID: cardID, UserIds: userIDs})
+}
+
+// columnCardPositions — порядок колонки и ничего лишнего: без исполнителей и меток.
 func (r *CardRepository) columnCardPositions(ctx context.Context, columnID int64) ([]model.CardPosition, error) {
 	rows, err := r.Db.Query(ctx, `
 		SELECT id, position, updated_at

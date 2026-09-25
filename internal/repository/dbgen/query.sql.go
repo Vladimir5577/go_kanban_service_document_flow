@@ -461,15 +461,19 @@ func (q *Queries) DeleteBoard(ctx context.Context, id int64) error {
 	return err
 }
 
-const deleteCard = `-- name: DeleteCard :exec
+const deleteCard = `-- name: DeleteCard :execrows
 UPDATE kanban_card
 SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1)
 `
 
-func (q *Queries) DeleteCard(ctx context.Context, id int64) error {
-	_, err := q.db.Exec(ctx, deleteCard, id)
-	return err
+// Ноль строк — карточки нет или она уже удалена: вызывающий отвечает 404.
+func (q *Queries) DeleteCard(ctx context.Context, id int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCard, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteColumn = `-- name: DeleteColumn :exec
@@ -549,6 +553,104 @@ type DeleteProjectMembersExceptParams struct {
 func (q *Queries) DeleteProjectMembersExcept(ctx context.Context, arg DeleteProjectMembersExceptParams) error {
 	_, err := q.db.Exec(ctx, deleteProjectMembersExcept, arg.KanbanProjectID, arg.KeepUserIds)
 	return err
+}
+
+const duplicateCard = `-- name: DuplicateCard :many
+WITH copy AS (
+    INSERT INTO kanban_card (title, description, position, due_date, priority, column_id, created_by_id, border_color)
+    SELECT title, description, $1::float8, due_date, priority,
+           $2::bigint, $3::bigint, border_color
+    FROM kanban_card
+    WHERE id = $4::bigint AND deleted_at IS NULL
+    RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id
+), children AS (
+    INSERT INTO kanban_card (title, position, parent_id, created_by_id)
+    SELECT src.title, src.position, copy.id, $3::bigint
+    FROM kanban_card src CROSS JOIN copy
+    WHERE src.parent_id = $4::bigint AND src.deleted_at IS NULL
+    RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id
+)
+SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id FROM copy
+UNION ALL
+SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id FROM children
+ORDER BY parent_id NULLS FIRST, position
+`
+
+type DuplicateCardParams struct {
+	Position    float64     `json:"position"`
+	ColumnID    int64       `json:"column_id"`
+	CreatedByID pgtype.Int8 `json:"created_by_id"`
+	SourceID    int64       `json:"source_id"`
+}
+
+type DuplicateCardRow struct {
+	ID            int64              `json:"id"`
+	Title         string             `json:"title"`
+	Description   pgtype.Text        `json:"description"`
+	Position      float64            `json:"position"`
+	DueDate       pgtype.Timestamptz `json:"due_date"`
+	Priority      pgtype.Text        `json:"priority"`
+	IsArchived    bool               `json:"is_archived"`
+	ArchivedAt    pgtype.Timestamptz `json:"archived_at"`
+	ArchivedByID  pgtype.Int8        `json:"archived_by_id"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	CompletedByID pgtype.Int8        `json:"completed_by_id"`
+	ColumnID      pgtype.Int8        `json:"column_id"`
+	CreatedByID   pgtype.Int8        `json:"created_by_id"`
+	BorderColor   pgtype.Text        `json:"border_color"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt     pgtype.Timestamptz `json:"deleted_at"`
+	ParentID      pgtype.Int8        `json:"parent_id"`
+}
+
+// Копия карточки с подзадачами одним оператором — он атомарен сам по себе.
+// Переносятся заголовок, описание, срок, приоритет и цвет, у подзадач —
+// заголовок и порядок. Метки, исполнители, выполнение, комментарии и вложения
+// остаются у оригинала; автор копии и её подзадач — тот, кто копирует.
+// Первая строка — сама копия, дальше её подзадачи по порядку.
+func (q *Queries) DuplicateCard(ctx context.Context, arg DuplicateCardParams) ([]DuplicateCardRow, error) {
+	rows, err := q.db.Query(ctx, duplicateCard,
+		arg.Position,
+		arg.ColumnID,
+		arg.CreatedByID,
+		arg.SourceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DuplicateCardRow{}
+	for rows.Next() {
+		var i DuplicateCardRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.Description,
+			&i.Position,
+			&i.DueDate,
+			&i.Priority,
+			&i.IsArchived,
+			&i.ArchivedAt,
+			&i.ArchivedByID,
+			&i.CompletedAt,
+			&i.CompletedByID,
+			&i.ColumnID,
+			&i.CreatedByID,
+			&i.BorderColor,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.DeletedAt,
+			&i.ParentID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getAllProjects = `-- name: GetAllProjects :many
@@ -815,7 +917,13 @@ SELECT
     p.owner_id,
     p.deleted_at AS project_deleted_at,
     pu.role AS member_role,
-    card.parent_id AS parent_id
+    card.parent_id AS parent_id,
+    card.is_archived,
+    card.title AS card_title,
+    col.id AS column_id,
+    card.position,
+    card.completed_at,
+    b.done_column_id
 FROM kanban_card card
 LEFT JOIN kanban_card parent ON parent.id = card.parent_id
 JOIN kanban_column col ON col.id = COALESCE(card.column_id, parent.column_id)
@@ -840,6 +948,12 @@ type GetCardContextRow struct {
 	ProjectDeletedAt pgtype.Timestamptz `json:"project_deleted_at"`
 	MemberRole       pgtype.Text        `json:"member_role"`
 	ParentID         pgtype.Int8        `json:"parent_id"`
+	IsArchived       bool               `json:"is_archived"`
+	CardTitle        string             `json:"card_title"`
+	ColumnID         int64              `json:"column_id"`
+	Position         float64            `json:"position"`
+	CompletedAt      pgtype.Timestamptz `json:"completed_at"`
+	DoneColumnID     pgtype.Int8        `json:"done_column_id"`
 }
 
 // Всё, что нужно для проверки прав и для шапки карточки, одним запросом:
@@ -864,6 +978,12 @@ func (q *Queries) GetCardContext(ctx context.Context, arg GetCardContextParams) 
 		&i.ProjectDeletedAt,
 		&i.MemberRole,
 		&i.ParentID,
+		&i.IsArchived,
+		&i.CardTitle,
+		&i.ColumnID,
+		&i.Position,
+		&i.CompletedAt,
+		&i.DoneColumnID,
 	)
 	return i, err
 }
@@ -977,51 +1097,6 @@ ORDER BY col.position ASC, c.position ASC
 
 func (q *Queries) GetCardsByBoard(ctx context.Context, boardID int64) ([]KanbanCard, error) {
 	rows, err := q.db.Query(ctx, getCardsByBoard, boardID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []KanbanCard{}
-	for rows.Next() {
-		var i KanbanCard
-		if err := rows.Scan(
-			&i.ID,
-			&i.Title,
-			&i.Description,
-			&i.Position,
-			&i.DueDate,
-			&i.Priority,
-			&i.IsArchived,
-			&i.ArchivedAt,
-			&i.ArchivedByID,
-			&i.CompletedAt,
-			&i.CompletedByID,
-			&i.ColumnID,
-			&i.CreatedByID,
-			&i.BorderColor,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.DeletedAt,
-			&i.ParentID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const getCardsByColumn = `-- name: GetCardsByColumn :many
-SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id FROM kanban_card
-WHERE column_id = $1 AND parent_id IS NULL AND is_archived = FALSE AND deleted_at IS NULL
-ORDER BY position ASC
-`
-
-func (q *Queries) GetCardsByColumn(ctx context.Context, columnID pgtype.Int8) ([]KanbanCard, error) {
-	rows, err := q.db.Query(ctx, getCardsByColumn, columnID)
 	if err != nil {
 		return nil, err
 	}
@@ -1211,6 +1286,101 @@ func (q *Queries) GetColumn(ctx context.Context, id int64) (KanbanColumn, error)
 		&i.Position,
 		&i.BoardID,
 		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getColumnContext = `-- name: GetColumnContext :one
+SELECT
+    b.kanban_project_id,
+    b.id AS board_id,
+    b.title AS board_title,
+    col.title AS column_title,
+    p.owner_id,
+    p.deleted_at AS project_deleted_at,
+    pu.role AS member_role,
+    COALESCE((
+        SELECT MIN(c.position) / 2 FROM kanban_card c
+        WHERE c.column_id = col.id AND c.parent_id IS NULL
+          AND c.is_archived = FALSE AND c.deleted_at IS NULL
+    ), 65536)::float8 AS prepend_position
+FROM kanban_column col
+JOIN kanban_board b ON b.id = col.board_id
+JOIN kanban_project p ON p.id = b.kanban_project_id
+LEFT JOIN kanban_project_user pu
+       ON pu.kanban_project_id = p.id AND pu.user_id = $2
+WHERE col.id = $1 AND col.deleted_at IS NULL
+`
+
+type GetColumnContextParams struct {
+	ID     int64 `json:"id"`
+	UserID int64 `json:"user_id"`
+}
+
+type GetColumnContextRow struct {
+	KanbanProjectID  int64              `json:"kanban_project_id"`
+	BoardID          int64              `json:"board_id"`
+	BoardTitle       string             `json:"board_title"`
+	ColumnTitle      string             `json:"column_title"`
+	OwnerID          int64              `json:"owner_id"`
+	ProjectDeletedAt pgtype.Timestamptz `json:"project_deleted_at"`
+	MemberRole       pgtype.Text        `json:"member_role"`
+	PrependPosition  float64            `json:"prepend_position"`
+}
+
+// То же, что GetCardContext, но от колонки — всё, что нужно созданию карточки,
+// одним запросом: права, доска с названием, заголовок колонки и позиция над
+// верхней карточкой (FIRST/2; пустая колонка — 65536). Удалённая колонка —
+// «не найдена», удалённый проект возвращается, а не фильтруется, по той же
+// причине, что в GetCardContext.
+func (q *Queries) GetColumnContext(ctx context.Context, arg GetColumnContextParams) (GetColumnContextRow, error) {
+	row := q.db.QueryRow(ctx, getColumnContext, arg.ID, arg.UserID)
+	var i GetColumnContextRow
+	err := row.Scan(
+		&i.KanbanProjectID,
+		&i.BoardID,
+		&i.BoardTitle,
+		&i.ColumnTitle,
+		&i.OwnerID,
+		&i.ProjectDeletedAt,
+		&i.MemberRole,
+		&i.PrependPosition,
+	)
+	return i, err
+}
+
+const getColumnPrependTarget = `-- name: GetColumnPrependTarget :one
+SELECT col.title, col.board_id, b.kanban_project_id,
+       COALESCE((
+           SELECT MIN(c.position) / 2 FROM kanban_card c
+           WHERE c.column_id = col.id AND c.parent_id IS NULL
+             AND c.is_archived = FALSE AND c.deleted_at IS NULL
+       ), 65536)::float8 AS target_position
+FROM kanban_column col
+JOIN kanban_board b ON b.id = col.board_id
+WHERE col.id = $1 AND col.deleted_at IS NULL
+`
+
+type GetColumnPrependTargetRow struct {
+	Title           string  `json:"title"`
+	BoardID         int64   `json:"board_id"`
+	KanbanProjectID int64   `json:"kanban_project_id"`
+	TargetPosition  float64 `json:"target_position"`
+}
+
+// Колонка, в которую карточка встаёт наверх: автоперенос в «Готово» и копия.
+// Позиция — над верхней карточкой (FIRST/2, как при создании; пустая колонка —
+// 65536): раньше ради одного MIN читалась вся колонка с исполнителями и метками.
+// Проект — чтобы копия не ушла в чужой; удалённая колонка — «не найдена»
+// (удаление колонки не сбрасывает done_column_id доски).
+func (q *Queries) GetColumnPrependTarget(ctx context.Context, id int64) (GetColumnPrependTargetRow, error) {
+	row := q.db.QueryRow(ctx, getColumnPrependTarget, id)
+	var i GetColumnPrependTargetRow
+	err := row.Scan(
+		&i.Title,
+		&i.BoardID,
+		&i.KanbanProjectID,
+		&i.TargetPosition,
 	)
 	return i, err
 }
@@ -1482,6 +1652,48 @@ func (q *Queries) GetProject(ctx context.Context, id int64) (KanbanProject, erro
 	return i, err
 }
 
+const getProjectAssignee = `-- name: GetProjectAssignee :one
+SELECT u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name,
+       (pu.user_id IS NOT NULL)::bool AS is_member
+FROM users u
+LEFT JOIN kanban_project_user pu
+       ON pu.kanban_project_id = $1 AND pu.user_id = u.id
+WHERE u.id = $2
+`
+
+type GetProjectAssigneeParams struct {
+	ProjectID int64 `json:"project_id"`
+	UserID    int64 `json:"user_id"`
+}
+
+type GetProjectAssigneeRow struct {
+	ID         int64       `json:"id"`
+	Login      string      `json:"login"`
+	Lastname   string      `json:"lastname"`
+	Firstname  string      `json:"firstname"`
+	Patronymic pgtype.Text `json:"patronymic"`
+	AvatarName pgtype.Text `json:"avatar_name"`
+	IsMember   bool        `json:"is_member"`
+}
+
+// Кандидат в исполнители вместе с членством в проекте — одним запросом вместо
+// GetUsersByIDs + GetProject + GetProjectMember. Владельца в kanban_project_user
+// может не быть: его отличает вызывающий по owner_id из контекста карточки.
+func (q *Queries) GetProjectAssignee(ctx context.Context, arg GetProjectAssigneeParams) (GetProjectAssigneeRow, error) {
+	row := q.db.QueryRow(ctx, getProjectAssignee, arg.ProjectID, arg.UserID)
+	var i GetProjectAssigneeRow
+	err := row.Scan(
+		&i.ID,
+		&i.Login,
+		&i.Lastname,
+		&i.Firstname,
+		&i.Patronymic,
+		&i.AvatarName,
+		&i.IsMember,
+	)
+	return i, err
+}
+
 const getProjectFolders = `-- name: GetProjectFolders :many
 
 SELECT id, name, user_id, position, created_at, updated_at FROM kanban_project_user_folder
@@ -1552,19 +1764,6 @@ WHERE card.id = $1
 
 func (q *Queries) GetProjectIDByCard(ctx context.Context, id int64) (int64, error) {
 	row := q.db.QueryRow(ctx, getProjectIDByCard, id)
-	var kanban_project_id int64
-	err := row.Scan(&kanban_project_id)
-	return kanban_project_id, err
-}
-
-const getProjectIDByColumn = `-- name: GetProjectIDByColumn :one
-SELECT b.kanban_project_id FROM kanban_column c
-JOIN kanban_board b ON c.board_id = b.id
-WHERE c.id = $1
-`
-
-func (q *Queries) GetProjectIDByColumn(ctx context.Context, id int64) (int64, error) {
-	row := q.db.QueryRow(ctx, getProjectIDByColumn, id)
 	var kanban_project_id int64
 	err := row.Scan(&kanban_project_id)
 	return kanban_project_id, err
@@ -1987,6 +2186,48 @@ func (q *Queries) RemoveProjectMember(ctx context.Context, arg RemoveProjectMemb
 	return err
 }
 
+const replaceCardAssignees = `-- name: ReplaceCardAssignees :many
+WITH old AS (
+    SELECT user_id FROM kanban_card_assignee WHERE card_id = $1::bigint
+), removed AS (
+    DELETE FROM kanban_card_assignee
+    WHERE card_id = $1::bigint AND user_id <> ALL($2::bigint[])
+), added AS (
+    INSERT INTO kanban_card_assignee (card_id, user_id)
+    SELECT $1::bigint, unnest($2::bigint[])
+    ON CONFLICT DO NOTHING
+)
+SELECT user_id FROM old
+`
+
+type ReplaceCardAssigneesParams struct {
+	CardID  int64   `json:"card_id"`
+	UserIds []int64 `json:"user_ids"`
+}
+
+// Замена исполнителей одним оператором — он атомарен сам по себе, транзакция
+// не нужна. Все части видят состояние до оператора: old — прежний состав для
+// истории, DELETE не трогает остающихся, INSERT добавляет новых.
+func (q *Queries) ReplaceCardAssignees(ctx context.Context, arg ReplaceCardAssigneesParams) ([]int64, error) {
+	rows, err := q.db.Query(ctx, replaceCardAssignees, arg.CardID, arg.UserIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []int64{}
+	for rows.Next() {
+		var user_id int64
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const restoreAttachment = `-- name: RestoreAttachment :exec
 UPDATE kanban_attachment
 SET deleted_at = NULL
@@ -2068,6 +2309,57 @@ WHERE id = $1
 func (q *Queries) RestoreProject(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, restoreProject, id)
 	return err
+}
+
+const setCardArchived = `-- name: SetCardArchived :one
+UPDATE kanban_card
+SET is_archived = $2, archived_at = $3, archived_by_id = $4, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING title
+`
+
+type SetCardArchivedParams struct {
+	ID           int64              `json:"id"`
+	IsArchived   bool               `json:"is_archived"`
+	ArchivedAt   pgtype.Timestamptz `json:"archived_at"`
+	ArchivedByID pgtype.Int8        `json:"archived_by_id"`
+}
+
+// Только поля архива, а не вся строка, как в UpdateCard: иначе архивация
+// затрёт заголовок или описание, которые в этот момент правит кто-то другой.
+// Заголовок нужен истории — отдельное чтение карточки ради него не требуется.
+func (q *Queries) SetCardArchived(ctx context.Context, arg SetCardArchivedParams) (string, error) {
+	row := q.db.QueryRow(ctx, setCardArchived,
+		arg.ID,
+		arg.IsArchived,
+		arg.ArchivedAt,
+		arg.ArchivedByID,
+	)
+	var title string
+	err := row.Scan(&title)
+	return title, err
+}
+
+const setCardCompleted = `-- name: SetCardCompleted :one
+UPDATE kanban_card
+SET completed_at = $2, completed_by_id = $3, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING updated_at
+`
+
+type SetCardCompletedParams struct {
+	ID            int64              `json:"id"`
+	CompletedAt   pgtype.Timestamptz `json:"completed_at"`
+	CompletedByID pgtype.Int8        `json:"completed_by_id"`
+}
+
+// Только поля выполнения — по той же причине, что SetCardArchived: перезапись
+// всей строки откатывала перемещение, случившееся между чтением и записью.
+func (q *Queries) SetCardCompleted(ctx context.Context, arg SetCardCompletedParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, setCardCompleted, arg.ID, arg.CompletedAt, arg.CompletedByID)
+	var updated_at pgtype.Timestamptz
+	err := row.Scan(&updated_at)
+	return updated_at, err
 }
 
 const setDoneColumnID = `-- name: SetDoneColumnID :exec
@@ -2156,6 +2448,58 @@ func (q *Queries) UpdateCard(ctx context.Context, arg UpdateCardParams) (KanbanC
 		arg.ParentID,
 		arg.BorderColor,
 		arg.ID,
+	)
+	var i KanbanCard
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Description,
+		&i.Position,
+		&i.DueDate,
+		&i.Priority,
+		&i.IsArchived,
+		&i.ArchivedAt,
+		&i.ArchivedByID,
+		&i.CompletedAt,
+		&i.CompletedByID,
+		&i.ColumnID,
+		&i.CreatedByID,
+		&i.BorderColor,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.ParentID,
+	)
+	return i, err
+}
+
+const updateCardFields = `-- name: UpdateCardFields :one
+UPDATE kanban_card
+SET title = $2, description = $3, due_date = $4, priority = $5, border_color = $6, updated_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
+RETURNING id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id
+`
+
+type UpdateCardFieldsParams struct {
+	ID          int64              `json:"id"`
+	Title       string             `json:"title"`
+	Description pgtype.Text        `json:"description"`
+	DueDate     pgtype.Timestamptz `json:"due_date"`
+	Priority    pgtype.Text        `json:"priority"`
+	BorderColor pgtype.Text        `json:"border_color"`
+}
+
+// Только то, что редактируется в карточке. Выполнение, архив, колонку и позицию
+// правка не пишет: иначе откатит завершение или перенос, случившиеся между
+// чтением карточки и записью. Строка целиком нужна ответу и realtime.
+func (q *Queries) UpdateCardFields(ctx context.Context, arg UpdateCardFieldsParams) (KanbanCard, error) {
+	row := q.db.QueryRow(ctx, updateCardFields,
+		arg.ID,
+		arg.Title,
+		arg.Description,
+		arg.DueDate,
+		arg.Priority,
+		arg.BorderColor,
 	)
 	var i KanbanCard
 	err := row.Scan(

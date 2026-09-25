@@ -126,9 +126,12 @@ func projectTaskLink(projectID, boardID, cardID int64) string {
 }
 
 // NotifyCardCreated notifies project admins about a new card (except the actor).
+// boardTitle — если вызывающий уже знает его из проверки прав; пустой — сходим в GetBoard.
 func (s *KanbanNotificationService) NotifyCardCreated(
 	ctx context.Context,
-	projectID, boardID, cardID int64,
+	projectID, boardID int64,
+	boardTitle string,
+	cardID int64,
 	actorID int64,
 	title string,
 ) {
@@ -148,7 +151,9 @@ func (s *KanbanNotificationService) NotifyCardCreated(
 		return
 	}
 
-	boardTitle := s.getBoardTitle(ctx, boardID)
+	if boardTitle == "" {
+		boardTitle = s.getBoardTitle(ctx, boardID)
+	}
 
 	link := projectTaskLink(projectID, boardID, cardID)
 	evt := events.KanbanNotificationEvent{
@@ -171,9 +176,12 @@ func (s *KanbanNotificationService) NotifyCardCreated(
 }
 
 // NotifyTaskAssigned notifies a user that a task (or subtask) was assigned to them.
+// boardTitle — если вызывающий уже знает его из проверки прав; пустой — сходим в GetBoard.
 func (s *KanbanNotificationService) NotifyTaskAssigned(
 	ctx context.Context,
-	projectID, boardID, cardID int64,
+	projectID, boardID int64,
+	boardTitle string,
+	cardID int64,
 	actorID, assigneeID int64,
 	title string,
 	isSubtask bool,
@@ -183,7 +191,9 @@ func (s *KanbanNotificationService) NotifyTaskAssigned(
 	}
 
 	resolvedBoardID := s.resolveBoardID(ctx, boardID, cardID)
-	boardTitle := s.getBoardTitle(ctx, resolvedBoardID)
+	if boardTitle == "" {
+		boardTitle = s.getBoardTitle(ctx, resolvedBoardID)
+	}
 
 	link := projectTaskLink(projectID, resolvedBoardID, cardID)
 	evt := events.KanbanNotificationEvent{
@@ -274,11 +284,14 @@ func (s *KanbanNotificationService) NotifyTaskMoved(
 }
 
 // NotifyCommentAdded notifies relevant users about a new comment.
+// Заголовок задачи, доску и имя автора вызывающий уже знает.
 func (s *KanbanNotificationService) NotifyCommentAdded(
 	ctx context.Context,
-	projectID, boardID, cardID int64,
+	projectID, boardID int64,
+	boardTitle string,
+	cardID int64,
 	actorID int64,
-	taskTitle string,
+	taskTitle, authorName string,
 ) {
 	if s.publisher == nil {
 		return
@@ -293,24 +306,17 @@ func (s *KanbanNotificationService) NotifyCommentAdded(
 		return
 	}
 
-	authorName := s.getAuthorName(ctx, actorID)
-
-	if taskTitle == "" {
-		if card, err := s.cardRepo.GetCard(ctx, cardID); err == nil && card != nil {
-			taskTitle = card.Title
-		}
+	if authorName == "" {
+		authorName = s.getAuthorName(ctx, actorID) // пустое ФИО — getAuthorName подставит логин
 	}
 
-	effectiveBoardID := s.resolveBoardID(ctx, boardID, cardID)
-	boardTitle := s.getBoardTitle(ctx, effectiveBoardID)
-
-	link := projectTaskLink(projectID, effectiveBoardID, cardID)
+	link := projectTaskLink(projectID, boardID, cardID)
 
 	evt := events.KanbanNotificationEvent{
 		Type:       "comment_added",
 		ActorID:    actorID,
 		ProjectID:  projectID,
-		BoardID:    int64Ptr(effectiveBoardID),
+		BoardID:    int64Ptr(boardID),
 		CardID:     &cardID,
 		Recipients: recipients,
 		Data: map[string]any{

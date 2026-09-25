@@ -108,7 +108,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, realtimePublisher, userRepo)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
-	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, commentRepo, commentReadRepo, attachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
+	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, commentRepo, commentReadRepo, attachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
@@ -117,7 +117,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	commentSvc := service.NewCommentService(commentRepo, commentReadRepo, permSvc, userRepo, realtimePublisher, kanbanNotificationSvc)
 	commentHandler := handler.NewCommentHandler(commentSvc)
 
-	labelSvc := service.NewLabelService(labelRepo, permSvc, boardRepo, cardRepo, columnRepo, realtimePublisher)
+	labelSvc := service.NewLabelService(labelRepo, permSvc, boardRepo, realtimePublisher)
 	labelHandler := handler.NewLabelHandler(labelSvc)
 
 	historyRepo := repository.NewHistoryRepository(db)

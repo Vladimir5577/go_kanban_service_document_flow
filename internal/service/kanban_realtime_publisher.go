@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -155,6 +156,32 @@ func (p *KanbanRealtimePublisher) BuildCreatedCard(card *model.Card, column *mod
 	return created
 }
 
+// BuildRestoredCard собирает карточку, вернувшуюся из архива. В отличие от
+// новой она не пустая: метки, исполнители и счётчики дозаполняются сборщиками.
+// Карточка читается один раз и раздаётся им, доску знает вызывающий — поэтому
+// ни GetCard в каждом сборщике, ни GetColumn.
+func (p *KanbanRealtimePublisher) BuildRestoredCard(ctx context.Context, cardID, boardID int64) (map[string]any, error) {
+	card, err := p.cardRepo.GetCard(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	created := p.BuildCreatedCard(card, &model.Column{ID: card.ColumnID, BoardID: boardID})
+	created["updatedAt"] = formatRealtimeTimeValue(card.UpdatedAt)
+	for _, build := range []func() (map[string]any, error){
+		func() (map[string]any, error) { return p.buildCardLabels(ctx, card.LabelIDs, boardID) },
+		func() (map[string]any, error) { return p.buildCardAssignees(ctx, card) },
+		func() (map[string]any, error) { return p.BuildChecklistCounters(ctx, cardID) },
+		func() (map[string]any, error) { return p.BuildCommentsCount(ctx, cardID) },
+	} {
+		patch, err := build()
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(created, patch)
+	}
+	return created, nil
+}
+
 func (p *KanbanRealtimePublisher) BuildChecklistCounters(ctx context.Context, cardID int64) (map[string]any, error) {
 	counts, err := p.cardRepo.GetChildCountsByParentIDs(ctx, []int64{cardID})
 	if err != nil {
@@ -168,30 +195,23 @@ func (p *KanbanRealtimePublisher) BuildChecklistCounters(ctx context.Context, ca
 }
 
 func (p *KanbanRealtimePublisher) BuildCommentsCount(ctx context.Context, cardID int64) (map[string]any, error) {
-	comments, err := p.commentRepo.GetComments(ctx, cardID)
+	comments, err := p.commentRepo.GetCountsByCardIDs(ctx, []int64{cardID})
 	if err != nil {
 		return nil, err
 	}
-	chatAttachments, err := p.attachmentRepo.GetAttachmentsByCard(ctx, cardID, "chat")
+	chat, err := p.attachmentRepo.GetChatCountsByCardIDs(ctx, []int64{cardID})
 	if err != nil {
 		return nil, err
 	}
 
 	return map[string]any{
-		"commentsCount": len(comments) + len(chatAttachments),
+		"commentsCount": comments[cardID] + chat[cardID],
 	}, nil
 }
 
-func (p *KanbanRealtimePublisher) BuildLabels(ctx context.Context, cardID int64) (map[string]any, error) {
-	card, err := p.cardRepo.GetCard(ctx, cardID)
-	if err != nil {
-		return nil, err
-	}
-	column, err := p.columnRepo.GetColumn(ctx, card.ColumnID)
-	if err != nil {
-		return nil, err
-	}
-	labels, err := p.labelRepo.GetLabels(ctx, column.BoardID)
+// buildCardLabels — метки карточки для события по их id и известной доске.
+func (p *KanbanRealtimePublisher) buildCardLabels(ctx context.Context, labelIDs []int64, boardID int64) (map[string]any, error) {
+	labels, err := p.labelRepo.GetLabels(ctx, boardID)
 	if err != nil {
 		return nil, err
 	}
@@ -201,8 +221,8 @@ func (p *KanbanRealtimePublisher) BuildLabels(ctx context.Context, cardID int64)
 		labelByID[label.ID] = label
 	}
 
-	result := make([]map[string]any, 0, len(card.LabelIDs))
-	for _, labelID := range card.LabelIDs {
+	result := make([]map[string]any, 0, len(labelIDs))
+	for _, labelID := range labelIDs {
 		if label, ok := labelByID[labelID]; ok {
 			result = append(result, map[string]any{
 				"id":    label.ID,
@@ -217,11 +237,8 @@ func (p *KanbanRealtimePublisher) BuildLabels(ctx context.Context, cardID int64)
 	}, nil
 }
 
-func (p *KanbanRealtimePublisher) BuildAssignees(ctx context.Context, cardID int64) (map[string]any, error) {
-	card, err := p.cardRepo.GetCard(ctx, cardID)
-	if err != nil {
-		return nil, err
-	}
+// buildCardAssignees — исполнители уже прочитанной карточки для события.
+func (p *KanbanRealtimePublisher) buildCardAssignees(ctx context.Context, card *model.Card) (map[string]any, error) {
 	users, err := p.userRepo.GetUsersByIDs(ctx, card.AssigneeIDs)
 	if err != nil {
 		return nil, err

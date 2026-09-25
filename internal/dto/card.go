@@ -20,8 +20,6 @@ type CreateCardRequest struct {
 	DueDate     *time.Time `json:"dueDate,omitempty"`
 	Priority    *string    `json:"priority,omitempty"`
 	BorderColor *string    `json:"borderColor,omitempty"`
-	AssigneeIDs []int64    `json:"assignee_ids,omitempty"`
-	LabelIDs    []int64    `json:"label_ids,omitempty"`
 }
 
 type UpdateCardRequest struct {
@@ -140,6 +138,45 @@ type CardResponse struct {
 	CommentsCount  int                     `json:"commentsCount"`
 	// LastReadCommentID — докуда текущий пользователь дочитал комментарии.
 	LastReadCommentID int64 `json:"lastReadCommentId"`
+}
+
+// CardCompletionResponse — ответ PATCH /complete: только то, что меняет
+// завершение, и то, что фронт из ответа читает. Полная карточка ради этого
+// стоила 12 запросов, а пустые поля в ней выдавали бы себя за настоящие.
+type CardCompletionResponse struct {
+	ID            int64                   `json:"id"`
+	Title         string                  `json:"title"`
+	Position      float64                 `json:"position"`
+	ColumnID      *int64                  `json:"columnId"`
+	ColumnTitle   string                  `json:"columnTitle,omitempty"`
+	BoardID       int64                   `json:"boardId"`
+	ParentID      *int64                  `json:"parentId,omitempty"`
+	CompletedAt   *time.Time              `json:"completedAt"`
+	CompletedByID *int64                  `json:"completedById"`
+	CompletedBy   *CardUserResponse       `json:"completedBy,omitempty"`
+	UpdatedAt     time.Time               `json:"updatedAt"`
+	AssigneeIDs   []int64                 `json:"assigneeIds,omitempty"`
+	Assignees     []*CardAssigneeResponse `json:"assignees,omitempty"`
+}
+
+// CardUpdateResponse — ответ PATCH /cards/{id}: собственные поля карточки из
+// строки после записи и исполнитель подзадачи. Метки, комментарии и вложения
+// правка не меняет, и фронт их из ответа не читает.
+type CardUpdateResponse struct {
+	ID          int64                   `json:"id"`
+	Title       string                  `json:"title"`
+	Description *string                 `json:"description"`
+	Position    float64                 `json:"position"`
+	DueDate     *time.Time              `json:"dueDate"`
+	Priority    *string                 `json:"priority"`
+	BorderColor *string                 `json:"borderColor"`
+	ColumnID    *int64                  `json:"columnId"`
+	ParentID    *int64                  `json:"parentId,omitempty"`
+	BoardID     int64                   `json:"boardId"`
+	CompletedAt *time.Time              `json:"completedAt"`
+	UpdatedAt   time.Time               `json:"updatedAt"`
+	AssigneeIDs []int64                 `json:"assigneeIds,omitempty"`
+	Assignees   []*CardAssigneeResponse `json:"assignees,omitempty"`
 }
 
 // CardPositionResponse — новая позиция карточки после ребалансировки колонки.

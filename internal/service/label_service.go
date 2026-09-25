@@ -45,8 +45,6 @@ type LabelService struct {
 	repo              repository.LabelRepositoryInterface
 	permSvc           *PermissionService
 	boardRepo         repository.BoardRepositoryInterface
-	cardRepo          repository.CardRepositoryInterface
-	columnRepo        repository.ColumnRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
 	History           HistoryLogger
 }
@@ -55,16 +53,12 @@ func NewLabelService(
 	repo repository.LabelRepositoryInterface,
 	permSvc *PermissionService,
 	boardRepo repository.BoardRepositoryInterface,
-	cardRepo repository.CardRepositoryInterface,
-	columnRepo repository.ColumnRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
 ) *LabelService {
 	return &LabelService{
 		repo:              repo,
 		permSvc:           permSvc,
 		boardRepo:         boardRepo,
-		cardRepo:          cardRepo,
-		columnRepo:        columnRepo,
 		realtimePublisher: realtimePublisher,
 	}
 }
@@ -140,14 +134,14 @@ func (s *LabelService) DeleteLabel(ctx context.Context, projectID int64, boardID
 }
 
 func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID int64, cardID int64, labelID int64) (string, error) {
-	if _, err := s.resolveBoard(ctx, projectID, boardID); err != nil {
+	// Права, проект, доска и «не подзадача» — одним уже готовым запросом
+	// контекста карточки, без отдельных чтений доски, карточки и колонки.
+	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleEditor)
+	if err != nil {
 		return "", err
 	}
-	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
-		return "", err
-	}
-	if _, err := s.ensureCardInBoard(ctx, boardID, cardID); err != nil {
-		return "", err
+	if acc.ProjectID != projectID || acc.BoardID != boardID {
+		return "", apperr.New(apperr.CodeCardNotFound, "card not found")
 	}
 
 	label, err := s.getLabelInBoard(ctx, boardID, labelID)
@@ -155,7 +149,7 @@ func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID
 		return "", err
 	}
 
-	added, err := s.repo.ToggleLabel(ctx, cardID, labelID)
+	added, labelIDs, err := s.repo.ToggleLabel(ctx, cardID, labelID)
 	if err != nil {
 		return "", err
 	}
@@ -173,24 +167,26 @@ func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID
 		EntityLink:  historyTaskPath(projectID, boardID, cardID),
 	})
 
+	s.publishLabelsPatch(ctx, boardID, cardID, labelIDs)
 	if added {
-		s.publishLabelsPatch(ctx, cardID)
 		return "attached", nil
 	}
-	s.publishLabelsPatch(ctx, cardID)
 	return "detached", nil
 }
 
-func (s *LabelService) publishLabelsPatch(ctx context.Context, cardID int64) {
+// publishLabelsPatch шлёт новый набор меток карточки. Доска и набор уже
+// известны, поэтому из базы нужны только метки доски — ради имён и цветов.
+func (s *LabelService) publishLabelsPatch(ctx context.Context, boardID, cardID int64, labelIDs []int64) {
 	if s.realtimePublisher == nil {
 		return
 	}
 	s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-		patch, err := s.realtimePublisher.BuildLabels(ctx, cardID)
+		patch, err := s.realtimePublisher.buildCardLabels(ctx, labelIDs, boardID)
 		if err != nil {
 			return err
 		}
-		return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
+		patch["id"] = cardID
+		return s.realtimePublisher.PublishCardUpdated(ctx, boardID, patch, realtimeSenderID(ctx))
 	})
 }
 
@@ -214,24 +210,6 @@ func (s *LabelService) getLabelInBoard(ctx context.Context, boardID int64, label
 		return nil, apperr.New(apperr.CodeLabelNotFound, "label not found")
 	}
 	return label, nil
-}
-
-func (s *LabelService) ensureCardInBoard(ctx context.Context, boardID int64, cardID int64) (*model.Card, error) {
-	card, err := s.cardRepo.GetCard(ctx, cardID)
-	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeCardNotFound)
-	}
-	if err := errIfChildCard(card); err != nil {
-		return nil, err
-	}
-	column, err := s.columnRepo.GetColumn(ctx, card.ColumnID)
-	if err != nil {
-		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
-	}
-	if column.BoardID != boardID {
-		return nil, apperr.New(apperr.CodeCardNotFound, "card not found")
-	}
-	return card, nil
 }
 
 func normalizeLabelName(name string) (string, error) {
