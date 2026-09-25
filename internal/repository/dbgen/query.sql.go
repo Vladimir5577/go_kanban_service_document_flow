@@ -1872,23 +1872,76 @@ func (q *Queries) HasColumnsByBoard(ctx context.Context, boardID int64) (bool, e
 
 const hasForeignNewerHistoryOverlap = `-- name: HasForeignNewerHistoryOverlap :one
 SELECT EXISTS(
-    SELECT 1 FROM kanban_project_history
-    WHERE project_id = $1
-      AND id > $2
-      AND user_id IS DISTINCT FROM $3
-      AND entity_type = $4
-      AND entity_id = $5
+    SELECT 1 FROM kanban_project_history h
+    WHERE h.project_id = $1
+      AND h.id > $2
+      AND h.user_id IS DISTINCT FROM $3
+      AND (
+        (h.entity_type = $4 AND h.entity_id = $5)
+        OR (
+          $6::bool
+          AND CASE $4
+            WHEN 'card' THEN
+              h.card_id = $5
+              OR h.card_id IN (SELECT id FROM kanban_card WHERE parent_id = $5)
+              OR (h.entity_type = 'card' AND h.entity_id IN (SELECT id FROM kanban_card WHERE parent_id = $5))
+            WHEN 'column' THEN
+              h.card_id IN (
+                SELECT id FROM kanban_card
+                WHERE column_id = $5
+                   OR parent_id IN (SELECT id FROM kanban_card WHERE column_id = $5)
+              )
+              OR (
+                h.entity_type = 'card'
+                AND h.entity_id IN (
+                  SELECT id FROM kanban_card
+                  WHERE column_id = $5
+                     OR parent_id IN (SELECT id FROM kanban_card WHERE column_id = $5)
+                )
+              )
+            WHEN 'board' THEN
+              (h.entity_type = 'column' AND h.entity_id IN (SELECT id FROM kanban_column WHERE board_id = $5))
+              OR (h.entity_type = 'label' AND h.entity_id IN (SELECT id FROM kanban_label WHERE board_id = $5))
+              OR h.card_id IN (
+                SELECT c.id FROM kanban_card c
+                WHERE c.column_id IN (SELECT id FROM kanban_column WHERE board_id = $5)
+                   OR c.parent_id IN (
+                     SELECT p.id FROM kanban_card p
+                     WHERE p.column_id IN (SELECT id FROM kanban_column WHERE board_id = $5)
+                   )
+              )
+              OR (
+                h.entity_type = 'card'
+                AND h.entity_id IN (
+                  SELECT c.id FROM kanban_card c
+                  WHERE c.column_id IN (SELECT id FROM kanban_column WHERE board_id = $5)
+                     OR c.parent_id IN (
+                       SELECT p.id FROM kanban_card p
+                       WHERE p.column_id IN (SELECT id FROM kanban_column WHERE board_id = $5)
+                     )
+                )
+              )
+            WHEN 'project' THEN TRUE
+            ELSE FALSE
+          END
+        )
+      )
 )
 `
 
 type HasForeignNewerHistoryOverlapParams struct {
-	ProjectID  int64       `json:"project_id"`
-	AfterID    int64       `json:"after_id"`
-	UserID     pgtype.Int8 `json:"user_id"`
-	EntityType string      `json:"entity_type"`
-	EntityID   int64       `json:"entity_id"`
+	ProjectID     int64       `json:"project_id"`
+	AfterID       int64       `json:"after_id"`
+	UserID        pgtype.Int8 `json:"user_id"`
+	EntityType    string      `json:"entity_type"`
+	EntityID      int64       `json:"entity_id"`
+	IncludeNested bool        `json:"include_nested"`
 }
 
+// include_nested: откат *.created. Чужая история внутри контейнера тоже пересечение.
+// Карточка: card_id этой карточки или её детей, и сами дети (parent_id).
+// Колонка / доска: чужие записи карточек, колонок и меток внутри.
+// Проект: любая чужая запись проекта.
 func (q *Queries) HasForeignNewerHistoryOverlap(ctx context.Context, arg HasForeignNewerHistoryOverlapParams) (bool, error) {
 	row := q.db.QueryRow(ctx, hasForeignNewerHistoryOverlap,
 		arg.ProjectID,
@@ -1896,6 +1949,7 @@ func (q *Queries) HasForeignNewerHistoryOverlap(ctx context.Context, arg HasFore
 		arg.UserID,
 		arg.EntityType,
 		arg.EntityID,
+		arg.IncludeNested,
 	)
 	var exists bool
 	err := row.Scan(&exists)

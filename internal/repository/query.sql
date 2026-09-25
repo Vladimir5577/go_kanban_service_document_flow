@@ -724,13 +724,65 @@ ORDER BY id DESC
 LIMIT 1;
 
 -- name: HasForeignNewerHistoryOverlap :one
+-- include_nested: откат *.created. Чужая история внутри контейнера тоже пересечение.
+-- Карточка: card_id этой карточки или её детей, и сами дети (parent_id).
+-- Колонка / доска: чужие записи карточек, колонок и меток внутри.
+-- Проект: любая чужая запись проекта.
 SELECT EXISTS(
-    SELECT 1 FROM kanban_project_history
-    WHERE project_id = sqlc.arg(project_id)
-      AND id > sqlc.arg(after_id)
-      AND user_id IS DISTINCT FROM sqlc.arg(user_id)
-      AND entity_type = sqlc.arg(entity_type)
-      AND entity_id = sqlc.arg(entity_id)
+    SELECT 1 FROM kanban_project_history h
+    WHERE h.project_id = sqlc.arg(project_id)
+      AND h.id > sqlc.arg(after_id)
+      AND h.user_id IS DISTINCT FROM sqlc.arg(user_id)
+      AND (
+        (h.entity_type = sqlc.arg(entity_type) AND h.entity_id = sqlc.arg(entity_id))
+        OR (
+          sqlc.arg(include_nested)::bool
+          AND CASE sqlc.arg(entity_type)
+            WHEN 'card' THEN
+              h.card_id = sqlc.arg(entity_id)
+              OR h.card_id IN (SELECT id FROM kanban_card WHERE parent_id = sqlc.arg(entity_id))
+              OR (h.entity_type = 'card' AND h.entity_id IN (SELECT id FROM kanban_card WHERE parent_id = sqlc.arg(entity_id)))
+            WHEN 'column' THEN
+              h.card_id IN (
+                SELECT id FROM kanban_card
+                WHERE column_id = sqlc.arg(entity_id)
+                   OR parent_id IN (SELECT id FROM kanban_card WHERE column_id = sqlc.arg(entity_id))
+              )
+              OR (
+                h.entity_type = 'card'
+                AND h.entity_id IN (
+                  SELECT id FROM kanban_card
+                  WHERE column_id = sqlc.arg(entity_id)
+                     OR parent_id IN (SELECT id FROM kanban_card WHERE column_id = sqlc.arg(entity_id))
+                )
+              )
+            WHEN 'board' THEN
+              (h.entity_type = 'column' AND h.entity_id IN (SELECT id FROM kanban_column WHERE board_id = sqlc.arg(entity_id)))
+              OR (h.entity_type = 'label' AND h.entity_id IN (SELECT id FROM kanban_label WHERE board_id = sqlc.arg(entity_id)))
+              OR h.card_id IN (
+                SELECT c.id FROM kanban_card c
+                WHERE c.column_id IN (SELECT id FROM kanban_column WHERE board_id = sqlc.arg(entity_id))
+                   OR c.parent_id IN (
+                     SELECT p.id FROM kanban_card p
+                     WHERE p.column_id IN (SELECT id FROM kanban_column WHERE board_id = sqlc.arg(entity_id))
+                   )
+              )
+              OR (
+                h.entity_type = 'card'
+                AND h.entity_id IN (
+                  SELECT c.id FROM kanban_card c
+                  WHERE c.column_id IN (SELECT id FROM kanban_column WHERE board_id = sqlc.arg(entity_id))
+                     OR c.parent_id IN (
+                       SELECT p.id FROM kanban_card p
+                       WHERE p.column_id IN (SELECT id FROM kanban_column WHERE board_id = sqlc.arg(entity_id))
+                     )
+                )
+              )
+            WHEN 'project' THEN TRUE
+            ELSE FALSE
+          END
+        )
+      )
 );
 
 -- name: DeleteProjectHistoryEntry :exec

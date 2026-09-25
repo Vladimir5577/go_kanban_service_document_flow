@@ -143,12 +143,21 @@ func (s *HistoryService) Undo(ctx context.Context, projectID int64) (string, str
 		return "", "", false, apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
 	}
 
-	overlap, err := s.repo.HasForeignOverlap(ctx, projectID, entry.ID, user.ID, entry.EntityType, entry.EntityID)
+	overlap, err := s.repo.HasForeignOverlap(ctx, projectID, entry.ID, user.ID, entry.EntityType, entry.EntityID, undoNested(entry.Action))
 	if err != nil {
 		return "", "", false, err
 	}
 	if overlap {
 		return "", "", false, apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
+	}
+	if entry.Action == "column.created" && s.columnRepo != nil {
+		hasCards, err := s.columnRepo.HasCardsByColumn(ctx, entry.EntityID)
+		if err != nil {
+			return "", "", false, err
+		}
+		if hasCards {
+			return "", "", false, apperr.New(apperr.CodeUndoImpossible, "Отмена невозможна")
+		}
 	}
 
 	if isMembersHistoryAction(entry.Action) {
@@ -170,6 +179,17 @@ func (s *HistoryService) Undo(ctx context.Context, projectID int64) (string, str
 
 func isMembersHistoryAction(action string) bool {
 	return action == "members.replaced" || action == "member.role" || action == "member.removed"
+}
+
+// undoNested — откат создания сносит контейнер вместе с вложенным.
+// Чужая история детей, комментариев, вложений и карточек внутри тоже запрещает откат.
+func undoNested(action string) bool {
+	switch action {
+	case "card.created", "card.duplicated", "column.created", "board.created", "project.created":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *HistoryService) applyMembersUndo(ctx context.Context, entry *model.HistoryUndoEntry) error {

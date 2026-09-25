@@ -16,7 +16,7 @@ type HistoryRepositoryInterface interface {
 	Append(ctx context.Context, userID *int64, e model.HistoryWrite) error
 	List(ctx context.Context, projectID, cardID, userID, cursor int64, title string, limit int32) ([]model.HistoryListItem, error)
 	LastByUser(ctx context.Context, projectID, userID int64) (*model.HistoryUndoEntry, error)
-	HasForeignOverlap(ctx context.Context, projectID, afterID, userID int64, entityType string, entityID int64) (bool, error)
+	HasForeignOverlap(ctx context.Context, projectID, afterID, userID int64, entityType string, entityID int64, includeNested bool) (bool, error)
 	ApplyUndo(ctx context.Context, entry model.HistoryUndoEntry) error
 	DeleteEntry(ctx context.Context, id int64) error
 }
@@ -123,13 +123,14 @@ func (r *HistoryRepository) LastByUser(ctx context.Context, projectID, userID in
 	return &entry, nil
 }
 
-func (r *HistoryRepository) HasForeignOverlap(ctx context.Context, projectID, afterID, userID int64, entityType string, entityID int64) (bool, error) {
+func (r *HistoryRepository) HasForeignOverlap(ctx context.Context, projectID, afterID, userID int64, entityType string, entityID int64, includeNested bool) (bool, error) {
 	return dbgen.New(r.Db).HasForeignNewerHistoryOverlap(ctx, dbgen.HasForeignNewerHistoryOverlapParams{
-		ProjectID:  projectID,
-		AfterID:    afterID,
-		UserID:     pgtype.Int8{Int64: userID, Valid: true},
-		EntityType: entityType,
-		EntityID:   entityID,
+		ProjectID:     projectID,
+		AfterID:       afterID,
+		UserID:        pgtype.Int8{Int64: userID, Valid: true},
+		EntityType:    entityType,
+		EntityID:      entityID,
+		IncludeNested: includeNested,
 	})
 }
 
