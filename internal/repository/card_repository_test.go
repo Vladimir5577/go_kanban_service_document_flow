@@ -29,25 +29,31 @@ func TestTaskListQueryOmitsInactiveFilters(t *testing.T) {
 			t.Errorf("пустой фильтр просочился в SQL: %q\n%s", unwanted, sqlStr)
 		}
 	}
-	// Только два плейсхолдера видимости.
+	// Без исполнителя вход — от проектов смотрящего: участник UNION владелец.
+	if !strings.Contains(sqlStr, "FROM (SELECT kanban_project_id AS id FROM kanban_project_user WHERE user_id = $1 UNION SELECT id FROM kanban_project WHERE owner_id = $2) AS my") {
+		t.Errorf("вход не от проектов смотрящего:\n%s", sqlStr)
+	}
 	if len(args) != 2 || args[0] != int64(7) || args[1] != int64(7) {
 		t.Errorf("args = %v, want [7 7]", args)
 	}
 }
 
-// Главный выигрыш правки: assignee_id становится JOIN и может зайти
-// с idx_kanban_card_assignee_user_id вместо EXISTS поверх скана карточек.
-func TestTaskListQueryAssigneeBecomesJoin(t *testing.T) {
+// С исполнителем вход — от его назначений по idx_kanban_card_assignee_user_id,
+// а не от всех карточек системы.
+func TestTaskListQueryAssigneeStartsFromAssignments(t *testing.T) {
 	sqlStr, args := taskListSQL(t, TaskListParams{ViewerID: 7, AssigneeID: 42})
 
-	if !strings.Contains(sqlStr, "JOIN kanban_card_assignee ca ON ca.card_id = c.id") {
-		t.Fatalf("нет JOIN по исполнителю:\n%s", sqlStr)
+	if !strings.Contains(sqlStr, "FROM kanban_card_assignee ca") {
+		t.Fatalf("вход не от назначений:\n%s", sqlStr)
 	}
 	if strings.Contains(sqlStr, "EXISTS (SELECT 1 FROM kanban_card_assignee") {
-		t.Errorf("остался EXISTS вместо JOIN:\n%s", sqlStr)
+		t.Errorf("остался EXISTS по исполнителю:\n%s", sqlStr)
 	}
-	if len(args) != 3 || args[2] != int64(42) {
-		t.Errorf("args = %v, want последним 42", args)
+	if !strings.Contains(sqlStr, "p.owner_id = $1 OR EXISTS") {
+		t.Errorf("владелец не видит задачи своего проекта:\n%s", sqlStr)
+	}
+	if len(args) != 3 || args[0] != int64(7) || args[1] != int64(7) || args[2] != int64(42) {
+		t.Errorf("args = %v, want [7 7 42]", args)
 	}
 }
 

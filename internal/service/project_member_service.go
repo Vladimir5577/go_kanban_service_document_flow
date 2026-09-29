@@ -47,10 +47,10 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 		return withNotFoundCode(err, apperr.CodeProjectNotFound)
 	}
 
-	// For notifications: remember who was already a member
-	existingMembers, _ := s.repo.GetMembers(ctx, projectID)
+	// Прежний состав: для сравнения, истории и уведомлений новым участникам.
+	before, _ := s.repo.GetMembers(ctx, projectID)
 	existingUserIDs := map[int64]bool{}
-	for _, m := range existingMembers {
+	for _, m := range before {
 		existingUserIDs[m.UserID] = true
 	}
 
@@ -91,7 +91,9 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 		return err
 	}
 
-	before, _ := s.repo.GetMembers(ctx, projectID)
+	if sameMembers(before, members) {
+		return nil // сохранять нечего — и пустой записи в истории не будет
+	}
 	if err := s.repo.ReplaceMembers(ctx, projectID, members); err != nil {
 		return err
 	}
@@ -118,6 +120,24 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 	}
 
 	return nil
+}
+
+// sameMembers — те же люди с теми же ролями. Папку не сравниваем: у уже
+// состоящих в проекте ReplaceMembers её не меняет.
+func sameMembers(before, after []model.ProjectUser) bool {
+	if len(before) != len(after) {
+		return false
+	}
+	roles := make(map[int64]string, len(before))
+	for _, m := range before {
+		roles[m.UserID] = m.Role
+	}
+	for _, m := range after {
+		if role, ok := roles[m.UserID]; !ok || role != m.Role {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *ProjectMemberService) UpdateMemberRole(ctx context.Context, projectID int64, userID int64, req dto.UpdateProjectMemberRequest) error {

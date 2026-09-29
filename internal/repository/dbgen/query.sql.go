@@ -74,6 +74,44 @@ func (q *Queries) AddProjectMember(ctx context.Context, arg AddProjectMemberPara
 	return err
 }
 
+const addProjectMembers = `-- name: AddProjectMembers :exec
+INSERT INTO kanban_project_user (kanban_project_id, user_id, role, folder_id, position)
+SELECT $1, u.user_id, u.role, u.folder_id, COALESCE((
+    SELECT MAX(p.position) FROM kanban_project_user p
+    WHERE p.user_id = u.user_id AND p.folder_id IS NOT DISTINCT FROM u.folder_id
+), 0) + 1
+FROM (
+    -- sqlc не знает unnest от нескольких массивов, поэтому по номеру строки.
+    SELECT ids.user_id,
+           ($2::text[])[ids.n] AS role,
+           NULLIF(($3::bigint[])[ids.n], 0) AS folder_id
+    FROM unnest($4::bigint[]) WITH ORDINALITY AS ids(user_id, n)
+) u
+ON CONFLICT (kanban_project_id, user_id) DO UPDATE
+SET role = EXCLUDED.role
+WHERE kanban_project_user.role IS DISTINCT FROM EXCLUDED.role
+`
+
+type AddProjectMembersParams struct {
+	ProjectID int64    `json:"project_id"`
+	Roles     []string `json:"roles"`
+	FolderIds []int64  `json:"folder_ids"`
+	UserIds   []int64  `json:"user_ids"`
+}
+
+// Весь состав одним запросом. Строку пишем, только если участник новый или
+// у него сменилась роль: DO UPDATE с тем же значением всё равно плодит версию
+// строки. folder_id = 0 — «без папки» (NULL в bigint[] из Go не передать).
+func (q *Queries) AddProjectMembers(ctx context.Context, arg AddProjectMembersParams) error {
+	_, err := q.db.Exec(ctx, addProjectMembers,
+		arg.ProjectID,
+		arg.Roles,
+		arg.FolderIds,
+		arg.UserIds,
+	)
+	return err
+}
+
 const clearCardAssignees = `-- name: ClearCardAssignees :exec
 DELETE FROM kanban_card_assignee
 WHERE card_id = $1
@@ -552,6 +590,34 @@ type DeleteProjectMembersExceptParams struct {
 
 func (q *Queries) DeleteProjectMembersExcept(ctx context.Context, arg DeleteProjectMembersExceptParams) error {
 	_, err := q.db.Exec(ctx, deleteProjectMembersExcept, arg.KanbanProjectID, arg.KeepUserIds)
+	return err
+}
+
+const deleteRemovedMembersAssignees = `-- name: DeleteRemovedMembersAssignees :exec
+DELETE FROM kanban_card_assignee ca
+USING kanban_card c
+LEFT JOIN kanban_card parent ON parent.id = c.parent_id
+JOIN kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)
+JOIN kanban_board b ON b.id = col.board_id
+WHERE ca.card_id = c.id
+  AND b.kanban_project_id = $1
+  AND ca.user_id IN (
+      SELECT pu.user_id FROM kanban_project_user pu
+      WHERE pu.kanban_project_id = $1
+        AND NOT (pu.user_id = ANY($2::bigint[]))
+  )
+`
+
+type DeleteRemovedMembersAssigneesParams struct {
+	ProjectID   int64   `json:"project_id"`
+	KeepUserIds []int64 `json:"keep_user_ids"`
+}
+
+// Исполнитель всегда участник: кого убирают из состава, снимаем и с карточек
+// проекта — как RemoveMember. Вызывать до DeleteProjectMembersExcept, пока
+// убираемые ещё в kanban_project_user.
+func (q *Queries) DeleteRemovedMembersAssignees(ctx context.Context, arg DeleteRemovedMembersAssigneesParams) error {
+	_, err := q.db.Exec(ctx, deleteRemovedMembersAssignees, arg.ProjectID, arg.KeepUserIds)
 	return err
 }
 
@@ -2050,16 +2116,12 @@ const listTaskCollaborants = `-- name: ListTaskCollaborants :many
 
 WITH visible AS (
     SELECT p.id, p.owner_id
-    FROM kanban_project p
-    WHERE p.deleted_at IS NULL
-      AND (
-          p.owner_id = $1
-          OR EXISTS (
-              SELECT 1 FROM kanban_project_user pu
-              WHERE pu.kanban_project_id = p.id
-                AND pu.user_id = $1
-          )
-      )
+    FROM (
+        SELECT kanban_project_id AS id FROM kanban_project_user WHERE user_id = $1
+        UNION
+        SELECT id FROM kanban_project WHERE owner_id = $1
+    ) my
+    JOIN kanban_project p ON p.id = my.id AND p.deleted_at IS NULL
 ),
 ids AS (
     SELECT visible.owner_id AS user_id FROM visible
@@ -2109,6 +2171,8 @@ type ListTaskCollaborantsRow struct {
 // ==============================
 // TASK COLLABORANTS
 // ==============================
+// Проекты смотрящего — UNION, а не OR: с OR планировщик считает доступной
+// половину проектов и читает весь kanban_project_user вместо участников своих.
 func (q *Queries) ListTaskCollaborants(ctx context.Context, arg ListTaskCollaborantsParams) ([]ListTaskCollaborantsRow, error) {
 	rows, err := q.db.Query(ctx, listTaskCollaborants,
 		arg.ViewerID,

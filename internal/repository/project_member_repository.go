@@ -86,32 +86,33 @@ func (r *ProjectMemberRepository) AddMember(ctx context.Context, projectID int64
 
 func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID int64, members []model.ProjectUser) error {
 	return ExecTx(ctx, r.Db, func(q *dbgen.Queries) error {
-		keepUserIDs := make([]int64, 0, len(members))
-		for _, m := range members {
-			keepUserIDs = append(keepUserIDs, m.UserID)
+		userIDs := make([]int64, len(members))
+		roles := make([]string, len(members))
+		folderIDs := make([]int64, len(members)) // 0 — без папки
+		for i, m := range members {
+			userIDs[i], roles[i] = m.UserID, m.Role
+			if m.FolderID != nil {
+				folderIDs[i] = *m.FolderID
+			}
 		}
-		if err := q.DeleteProjectMembersExcept(ctx, dbgen.DeleteProjectMembersExceptParams{
-			KanbanProjectID: projectID,
-			KeepUserIds:     keepUserIDs,
+		if err := q.DeleteRemovedMembersAssignees(ctx, dbgen.DeleteRemovedMembersAssigneesParams{
+			ProjectID:   projectID,
+			KeepUserIds: userIDs,
 		}); err != nil {
 			return err
 		}
-
-		for _, m := range members {
-			params := dbgen.AddProjectMemberParams{
-				KanbanProjectID: projectID,
-				UserID:          m.UserID,
-				Role:            m.Role,
-			}
-			if m.FolderID != nil {
-				params.FolderID = pgtype.Int8{Int64: *m.FolderID, Valid: true}
-			}
-
-			if err := q.AddProjectMember(ctx, params); err != nil {
-				return err
-			}
+		if err := q.DeleteProjectMembersExcept(ctx, dbgen.DeleteProjectMembersExceptParams{
+			KanbanProjectID: projectID,
+			KeepUserIds:     userIDs,
+		}); err != nil {
+			return err
 		}
-		return nil
+		return q.AddProjectMembers(ctx, dbgen.AddProjectMembersParams{
+			ProjectID: projectID,
+			UserIds:   userIDs,
+			Roles:     roles,
+			FolderIds: folderIDs,
+		})
 	})
 }
 

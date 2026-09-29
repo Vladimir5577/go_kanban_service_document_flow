@@ -133,28 +133,54 @@ var taskListColumns = []string{
 	"(" + taskArchivedExpr + ")::bool",
 }
 
-// taskListQuery собирает запрос только из активных фильтров. Прежний вариант
-// прошивал каждый как «параметр пуст ИЛИ предикат»: планировщик строил один
-// generic plan на все комбинации и всегда выбирал полный скан. Здесь он видит
-// настоящие предикаты. Для assignee_id это вдобавок смена точки входа — JOIN
-// по idx_kanban_card_assignee_user_id вместо EXISTS поверх скана всех карточек.
+// taskListQuery собирает запрос только из активных фильтров: планировщик видит
+// настоящие предикаты, а не «параметр пуст ИЛИ предикат» на все комбинации.
+//
+// Запрос всегда начинается от пользователя, а не от всех карточек системы:
+// с исполнителем — от его назначений, без — от проектов смотрящего. Цена —
+// карточки проектов смотрящего, а не вся таблица.
+//
+// Владельца в kanban_project_user может не быть (см. GetProjectAssignee),
+// поэтому доступ — «участник или владелец».
 func taskListQuery(f TaskListParams) sq.SelectBuilder {
-	q := sq.Select(taskListColumns...).
-		PlaceholderFormat(sq.Dollar).
-		From("kanban_card c").
-		LeftJoin("kanban_card parent ON parent.id = c.parent_id").
-		Join("kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id)").
-		Join("kanban_board b ON b.id = col.board_id").
-		Join("kanban_project p ON p.id = b.kanban_project_id").
-		Where("c.deleted_at IS NULL").
-		Where("(parent.id IS NULL OR parent.deleted_at IS NULL)").
-		Where("col.deleted_at IS NULL").
-		Where("b.deleted_at IS NULL").
-		Where("p.deleted_at IS NULL").
-		Where(`(p.owner_id = ? OR EXISTS (
-			SELECT 1 FROM kanban_project_user pu
-			WHERE pu.kanban_project_id = p.id AND pu.user_id = ?
-		))`, f.ViewerID, f.ViewerID)
+	q := sq.Select(taskListColumns...).PlaceholderFormat(sq.Dollar)
+
+	if f.AssigneeID > 0 {
+		// Назначений у человека десятки: COALESCE и OR по ним ничего не стоят.
+		q = q.From("kanban_card_assignee ca").
+			Join("kanban_card c ON c.id = ca.card_id AND c.deleted_at IS NULL").
+			LeftJoin("kanban_card parent ON parent.id = c.parent_id").
+			Join("kanban_column col ON col.id = COALESCE(c.column_id, parent.column_id) AND col.deleted_at IS NULL").
+			Join("kanban_board b ON b.id = col.board_id AND b.deleted_at IS NULL").
+			Join("kanban_project p ON p.id = b.kanban_project_id AND p.deleted_at IS NULL").
+			Where(`(p.owner_id = ? OR EXISTS (
+				SELECT 1 FROM kanban_project_user pu
+				WHERE pu.kanban_project_id = p.id AND pu.user_id = ?
+			))`, f.ViewerID, f.ViewerID).
+			Where(sq.Eq{"ca.user_id": f.AssigneeID}).
+			Where("(parent.id IS NULL OR parent.deleted_at IS NULL)")
+	} else {
+		// Проекты смотрящего — UNION, а не OR: с OR планировщик считает
+		// доступной половину проектов и уходит в полный скан карточек.
+		my := sq.Select("kanban_project_id AS id").
+			From("kanban_project_user").
+			Where(sq.Eq{"user_id": f.ViewerID}).
+			Suffix("UNION SELECT id FROM kanban_project WHERE owner_id = ?", f.ViewerID)
+		// COALESCE(c.column_id, parent.column_id) закрыл бы индекс по column_id,
+		// поэтому задачи берём от колонок, а подзадачи — от их задачи.
+		q = q.FromSelect(my, "my").
+			Join("kanban_project p ON p.id = my.id AND p.deleted_at IS NULL").
+			Join("kanban_board b ON b.kanban_project_id = p.id AND b.deleted_at IS NULL").
+			Join("kanban_column col ON col.board_id = b.id AND col.deleted_at IS NULL").
+			Join("kanban_card top ON top.column_id = col.id AND top.deleted_at IS NULL").
+			CrossJoin(`LATERAL (
+				SELECT top.id
+				UNION ALL
+				SELECT s.id FROM kanban_card s WHERE s.parent_id = top.id AND s.deleted_at IS NULL
+			) x(id)`).
+			Join("kanban_card c ON c.id = x.id").
+			LeftJoin("kanban_card parent ON parent.id = c.parent_id")
+	}
 
 	if f.TitleQuery != "" {
 		// Спецсимволы LIKE экранированы ещё в обработчике, отсюда ESCAPE.
@@ -175,13 +201,8 @@ func taskListQuery(f TaskListParams) sq.SelectBuilder {
 	case f.AuthorID > 0:
 		q = q.Where(sq.Eq{"c.created_by_id": f.AuthorID})
 	}
-	switch {
-	case f.AssigneeID < 0:
+	if f.AssigneeID < 0 {
 		q = q.Where("NOT EXISTS (SELECT 1 FROM kanban_card_assignee ca WHERE ca.card_id = c.id)")
-	case f.AssigneeID > 0:
-		// PK (card_id, user_id) гарантирует не больше одной строки — дублей не будет.
-		q = q.Join("kanban_card_assignee ca ON ca.card_id = c.id").
-			Where(sq.Eq{"ca.user_id": f.AssigneeID})
 	}
 	switch f.Completed {
 	case "true":
