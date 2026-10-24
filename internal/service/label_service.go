@@ -74,6 +74,19 @@ func (s *LabelService) GetLabels(ctx context.Context, projectID int64, boardID i
 }
 
 func (s *LabelService) CreateLabel(ctx context.Context, projectID int64, boardID int64, req dto.CreateLabelRequest) (*model.Label, error) {
+	var out0 *model.Label
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateCreateLabel(ctx, projectID, boardID, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *LabelService) mutateCreateLabel(ctx context.Context, projectID int64, boardID int64, req dto.CreateLabelRequest) (*model.Label, error) {
 	if _, err := s.resolveBoard(ctx, projectID, boardID); err != nil {
 		return nil, err
 	}
@@ -105,6 +118,16 @@ func (s *LabelService) CreateLabel(ctx context.Context, projectID int64, boardID
 }
 
 func (s *LabelService) DeleteLabel(ctx context.Context, projectID int64, boardID int64, labelID int64) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		return s.mutateDeleteLabel(ctx, projectID, boardID, labelID)
+	})
+	return err
+}
+
+func (s *LabelService) mutateDeleteLabel(ctx context.Context, projectID int64, boardID int64, labelID int64) error {
 	if _, err := s.resolveBoard(ctx, projectID, boardID); err != nil {
 		return err
 	}
@@ -134,6 +157,19 @@ func (s *LabelService) DeleteLabel(ctx context.Context, projectID int64, boardID
 }
 
 func (s *LabelService) ToggleLabel(ctx context.Context, projectID int64, boardID int64, cardID int64, labelID int64) (string, error) {
+	var out0 string
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateToggleLabel(ctx, projectID, boardID, cardID, labelID)
+		return err
+	})
+	return out0, err
+}
+
+func (s *LabelService) mutateToggleLabel(ctx context.Context, projectID int64, boardID int64, cardID int64, labelID int64) (string, error) {
 	// Права, проект, доска и «не подзадача» — одним уже готовым запросом
 	// контекста карточки, без отдельных чтений доски, карточки и колонки.
 	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleEditor)
@@ -234,4 +270,3 @@ func mapNoRowsToNotFound(err error) error {
 	}
 	return err
 }
-

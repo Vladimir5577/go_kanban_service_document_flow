@@ -31,7 +31,7 @@ func NewLabelRepository(db *pgxpool.Pool) *LabelRepository {
 }
 
 func (r *LabelRepository) GetLabels(ctx context.Context, boardID int64) ([]model.Label, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	dbLabels, err := queries.GetLabelsByBoard(ctx, boardID)
 	if err != nil {
 		return nil, err
@@ -50,7 +50,7 @@ func (r *LabelRepository) GetLabels(ctx context.Context, boardID int64) ([]model
 }
 
 func (r *LabelRepository) GetLabel(ctx context.Context, labelID int64) (*model.Label, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	l, err := queries.GetLabel(ctx, labelID)
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -65,7 +65,7 @@ func (r *LabelRepository) GetLabel(ctx context.Context, labelID int64) (*model.L
 }
 
 func (r *LabelRepository) CreateLabel(ctx context.Context, boardID int64, l *model.Label) (*model.Label, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	res, err := queries.CreateLabel(ctx, dbgen.CreateLabelParams{
 		Name:    l.Name,
 		Color:   l.Color,
@@ -81,16 +81,16 @@ func (r *LabelRepository) CreateLabel(ctx context.Context, boardID int64, l *mod
 }
 
 func (r *LabelRepository) DeleteLabel(ctx context.Context, labelID int64) error {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	return queries.DeleteLabel(ctx, labelID)
 }
 
 func (r *LabelRepository) GetCardIDsByLabel(ctx context.Context, labelID int64) ([]int64, error) {
-	return dbgen.New(r.Db).GetCardIDsByLabel(ctx, labelID)
+	return Queries(ctx, r.Db).GetCardIDsByLabel(ctx, labelID)
 }
 
 func (r *LabelRepository) ToggleLabel(ctx context.Context, cardID int64, labelID int64) (bool, []int64, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	cardLabels, err := queries.GetCardLabels(ctx, cardID)
 	if err != nil {
 		return false, nil, err

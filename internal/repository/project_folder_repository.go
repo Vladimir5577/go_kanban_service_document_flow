@@ -34,7 +34,7 @@ func (r *ProjectFolderRepository) GetProjectFolder(ctx context.Context, id int64
 		WHERE id = $1`
 
 	var folder model.ProjectUserFolder
-	err := r.Db.QueryRow(ctx, query, id).Scan(
+	err := Connection(ctx, r.Db).QueryRow(ctx, query, id).Scan(
 		&folder.ID,
 		&folder.Name,
 		&folder.UserID,

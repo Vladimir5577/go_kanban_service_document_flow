@@ -93,6 +93,9 @@ func (s *PermissionService) GetMemberRole(ctx context.Context, projectID int64) 
 
 // RequireRole проверяет, есть ли у пользователя требуемый уровень прав
 func (s *PermissionService) RequireRole(ctx context.Context, projectID int64, minRole Role) error {
+	if err := s.lockProject(ctx, projectID); err != nil {
+		return err
+	}
 	userRole, err := s.GetMemberRole(ctx, projectID)
 	if err != nil {
 		return err
@@ -101,6 +104,15 @@ func (s *PermissionService) RequireRole(ctx context.Context, projectID int64, mi
 		return accessDenied()
 	}
 	return nil
+}
+
+// All mutations of a project, including undo, lock before reading mutable state.
+func (s *PermissionService) lockProject(ctx context.Context, projectID int64) error {
+	if !repository.InMutation(ctx) {
+		return nil
+	}
+	_, err := repository.Queries(ctx, s.db).LockProject(ctx, projectID)
+	return withNotFoundCode(repository.NormalizeError(err), apperr.CodeProjectNotFound)
 }
 
 // CardAccess — разрешённый контекст карточки: проект, доска с названием,
@@ -135,7 +147,15 @@ func (s *PermissionService) RequireCardRole(ctx context.Context, cardID int64, m
 		return CardAccess{}, apperr.ErrUnauthorized
 	}
 
-	row, err := dbgen.New(s.db).GetCardContext(ctx, dbgen.GetCardContextParams{ID: cardID, UserID: user.ID})
+	q := repository.Queries(ctx, s.db)
+	params := dbgen.GetCardContextParams{ID: cardID, UserID: user.ID}
+	row, err := q.GetCardContext(ctx, params)
+	if err == nil && repository.InMutation(ctx) {
+		if err := s.lockProject(ctx, row.KanbanProjectID); err != nil {
+			return CardAccess{}, err
+		}
+		row, err = q.GetCardContext(ctx, params)
+	}
 	if err != nil {
 		return CardAccess{}, withNotFoundCode(repository.NormalizeError(err), apperr.CodeCardNotFound)
 	}
@@ -210,7 +230,15 @@ func (s *PermissionService) RequireColumnRole(ctx context.Context, columnID int6
 	if !ok {
 		return ColumnAccess{}, apperr.ErrUnauthorized
 	}
-	row, err := dbgen.New(s.db).GetColumnContext(ctx, dbgen.GetColumnContextParams{ID: columnID, UserID: user.ID})
+	q := repository.Queries(ctx, s.db)
+	params := dbgen.GetColumnContextParams{ID: columnID, UserID: user.ID}
+	row, err := q.GetColumnContext(ctx, params)
+	if err == nil && repository.InMutation(ctx) {
+		if err := s.lockProject(ctx, row.KanbanProjectID); err != nil {
+			return ColumnAccess{}, err
+		}
+		row, err = q.GetColumnContext(ctx, params)
+	}
 	if err != nil {
 		return ColumnAccess{}, withNotFoundCode(repository.NormalizeError(err), apperr.CodeColumnNotFound)
 	}
@@ -241,7 +269,7 @@ func (s *PermissionService) RequireRootCardRole(ctx context.Context, cardID int6
 }
 
 func (s *PermissionService) GetProjectIDByBoard(ctx context.Context, boardID int64) (int64, error) {
-	queries := dbgen.New(s.db)
+	queries := repository.Queries(ctx, s.db)
 	b, err := queries.GetBoard(ctx, boardID)
 	if err != nil {
 		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeBoardNotFound)
@@ -250,8 +278,14 @@ func (s *PermissionService) GetProjectIDByBoard(ctx context.Context, boardID int
 }
 
 func (s *PermissionService) GetProjectIDByCard(ctx context.Context, cardID int64) (int64, error) {
-	queries := dbgen.New(s.db)
+	queries := repository.Queries(ctx, s.db)
 	projectID, err := queries.GetProjectIDByCard(ctx, cardID)
+	if err == nil && repository.InMutation(ctx) {
+		if err := s.lockProject(ctx, projectID); err != nil {
+			return 0, err
+		}
+		projectID, err = queries.GetProjectIDByCard(ctx, cardID)
+	}
 	if err != nil {
 		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeCardNotFound)
 	}
@@ -259,7 +293,7 @@ func (s *PermissionService) GetProjectIDByCard(ctx context.Context, cardID int64
 }
 
 func (s *PermissionService) GetProjectIDByLabel(ctx context.Context, labelID int64) (int64, error) {
-	queries := dbgen.New(s.db)
+	queries := repository.Queries(ctx, s.db)
 	projectID, err := queries.GetProjectIDByLabel(ctx, labelID)
 	if err != nil {
 		return 0, withNotFoundCode(repository.NormalizeError(err), apperr.CodeLabelNotFound)

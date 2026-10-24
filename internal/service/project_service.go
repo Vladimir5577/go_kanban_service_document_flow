@@ -82,6 +82,16 @@ func (s *ProjectService) ListProjects(ctx context.Context, f model.ProjectListFi
 }
 
 func (s *ProjectService) CreateProject(ctx context.Context, req dto.CreateProjectRequest) (*model.Project, error) {
+	var out0 *model.Project
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateCreateProject(ctx, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *ProjectService) mutateCreateProject(ctx context.Context, req dto.CreateProjectRequest) (*model.Project, error) {
 	user, ok := middleware.GetUser(ctx)
 	if !ok {
 		return nil, accessDenied()
@@ -231,6 +241,19 @@ func (s *ProjectService) GetProject(ctx context.Context, id int64) (*dto.Project
 }
 
 func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.UpdateProjectRequest) (*model.Project, error) {
+	var out0 *model.Project
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, id); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateUpdateProject(ctx, id, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *ProjectService) mutateUpdateProject(ctx context.Context, id int64, req dto.UpdateProjectRequest) (*model.Project, error) {
 	if err := s.permSvc.RequireRole(ctx, id, RoleEditor); err != nil {
 		return nil, err
 	}
@@ -280,6 +303,25 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id int64, req dto.Up
 }
 
 func (s *ProjectService) MoveProject(ctx context.Context, id int64, req dto.MoveProjectRequest) (*dto.MoveProjectResponse, error) {
+	var out0 *dto.MoveProjectResponse
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		// Rebalancing changes this user's placements across multiple projects.
+		if user, ok := middleware.GetUser(ctx); ok && repository.InMutation(ctx) {
+			if _, err := repository.Queries(ctx, s.permSvc.db).LockUser(ctx, user.ID); err != nil {
+				return err
+			}
+		}
+		if err := s.permSvc.lockProject(ctx, id); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateMoveProject(ctx, id, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *ProjectService) mutateMoveProject(ctx context.Context, id int64, req dto.MoveProjectRequest) (*dto.MoveProjectResponse, error) {
 	user, ok := middleware.GetUser(ctx)
 	if !ok {
 		return nil, accessDenied()
@@ -357,6 +399,16 @@ func (s *ProjectService) MoveProject(ctx context.Context, id int64, req dto.Move
 }
 
 func (s *ProjectService) DeleteProject(ctx context.Context, id int64) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, id); err != nil {
+			return err
+		}
+		return s.mutateDeleteProject(ctx, id)
+	})
+	return err
+}
+
+func (s *ProjectService) mutateDeleteProject(ctx context.Context, id int64) error {
 	if err := s.permSvc.RequireRole(ctx, id, RoleAdmin); err != nil {
 		return err
 	}

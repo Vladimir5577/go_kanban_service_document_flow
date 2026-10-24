@@ -78,6 +78,19 @@ func NewBoardService(
 }
 
 func (s *BoardService) CreateBoard(ctx context.Context, projectID int64, req dto.CreateBoardRequest) (*model.Board, error) {
+	var out0 *model.Board
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateCreateBoard(ctx, projectID, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *BoardService) mutateCreateBoard(ctx context.Context, projectID int64, req dto.CreateBoardRequest) (*model.Board, error) {
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -329,6 +342,19 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 }
 
 func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID int64, req dto.UpdateBoardRequest) (*model.Board, error) {
+	var out0 *model.Board
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateUpdateBoard(ctx, projectID, boardID, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *BoardService) mutateUpdateBoard(ctx context.Context, projectID int64, boardID int64, req dto.UpdateBoardRequest) (*model.Board, error) {
 	b, err := s.resolveBoard(ctx, projectID, boardID)
 	if err != nil {
 		return nil, err
@@ -412,6 +438,19 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 }
 
 func (s *BoardService) DeleteBoard(ctx context.Context, projectID int64, boardID int64) (*dto.DeleteBoardResponse, error) {
+	var out0 *dto.DeleteBoardResponse
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateDeleteBoard(ctx, projectID, boardID)
+		return err
+	})
+	return out0, err
+}
+
+func (s *BoardService) mutateDeleteBoard(ctx context.Context, projectID int64, boardID int64) (*dto.DeleteBoardResponse, error) {
 	b, err := s.resolveBoard(ctx, projectID, boardID)
 	if err != nil {
 		return nil, err

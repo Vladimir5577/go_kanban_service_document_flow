@@ -25,10 +25,15 @@ type UserClaims struct {
 
 type AuthMiddleware struct {
 	publicKey *rsa.PublicKey
+	users     UserStatusReader
+}
+
+type UserStatusReader interface {
+	IsUserActive(context.Context, int64) (bool, error)
 }
 
 // NewAuthMiddleware загружает публичный ключ RS256 и инициализирует middleware
-func NewAuthMiddleware(publicKeyPath string) (*AuthMiddleware, error) {
+func NewAuthMiddleware(publicKeyPath string, users UserStatusReader) (*AuthMiddleware, error) {
 	keyBytes, err := os.ReadFile(publicKeyPath)
 	if err != nil {
 		slog.Error("Ошибка чтения публичного ключа JWT", "path", publicKeyPath, "error", err)
@@ -41,7 +46,7 @@ func NewAuthMiddleware(publicKeyPath string) (*AuthMiddleware, error) {
 		return nil, err
 	}
 
-	return &AuthMiddleware{publicKey: pubKey}, nil
+	return &AuthMiddleware{publicKey: pubKey, users: users}, nil
 }
 
 // Handler проверяет JWT-токен и кладет Claims в контекст запроса
@@ -129,6 +134,13 @@ func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 		}
 
 		// Кладем данные пользователя в контекст запроса
+		active, err := m.users.IsUserActive(r.Context(), userClaims.ID)
+		if err != nil || !active {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":"unauthorized","code":"unauthorized"}`))
+			return
+		}
 		ctx := context.WithValue(r.Context(), UserContextKey, userClaims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

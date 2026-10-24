@@ -29,7 +29,7 @@ func NewCommentRepository(db *pgxpool.Pool) *CommentRepository {
 }
 
 func (r *CommentRepository) GetComments(ctx context.Context, cardID int64) ([]model.Comment, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	dbComments, err := queries.GetCommentsByCard(ctx, cardID)
 	if err != nil {
 		return nil, err
@@ -58,7 +58,7 @@ func (r *CommentRepository) GetCountsByCardIDs(ctx context.Context, cardIDs []in
 		return make(map[int64]int), nil
 	}
 
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	rows, err := queries.GetCommentCountsByCardIDs(ctx, cardIDs)
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func (r *CommentRepository) GetCountsByCardIDs(ctx context.Context, cardIDs []in
 }
 
 func (r *CommentRepository) CreateComment(ctx context.Context, cardID int64, c *model.Comment) (*model.Comment, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 
 	params := dbgen.CreateCommentParams{
 		Body:     c.Body,
@@ -96,7 +96,7 @@ func (r *CommentRepository) CreateComment(ctx context.Context, cardID int64, c *
 }
 
 func (r *CommentRepository) GetComment(ctx context.Context, id int64) (*model.Comment, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	c, err := queries.GetComment(ctx, id)
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -117,7 +117,7 @@ func (r *CommentRepository) GetComment(ctx context.Context, id int64) (*model.Co
 }
 
 func (r *CommentRepository) UpdateComment(ctx context.Context, c *model.Comment) (*model.Comment, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	res, err := queries.UpdateComment(ctx, dbgen.UpdateCommentParams{
 		Body: c.Body,
 		ID:   c.ID,
@@ -134,6 +134,6 @@ func (r *CommentRepository) UpdateComment(ctx context.Context, c *model.Comment)
 }
 
 func (r *CommentRepository) DeleteComment(ctx context.Context, id int64) error {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	return queries.DeleteComment(ctx, id)
 }

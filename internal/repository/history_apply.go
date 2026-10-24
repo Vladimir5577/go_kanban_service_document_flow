@@ -90,7 +90,7 @@ func applyHistoryUndo(ctx context.Context, q *dbgen.Queries, e model.HistoryUndo
 			p.CompletedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
 		})
 	case "card.assignee_added", "card.assignee_removed", "card.assignees":
-		return restoreCardAssignee(ctx, q, e.EntityID, e.Before)
+		return restoreCardAssignee(ctx, q, e.ProjectID, e.EntityID, e.Before)
 	case "column.created":
 		return q.DeleteColumn(ctx, e.EntityID)
 	case "column.deleted":
@@ -310,21 +310,33 @@ func parseUndoID(s string) (int64, bool) {
 	return id, err == nil && id != 0
 }
 
-func restoreCardAssignee(ctx context.Context, q *dbgen.Queries, cardID int64, before string) error {
-	if err := q.ClearCardAssignees(ctx, cardID); err != nil {
+func restoreCardAssignee(ctx context.Context, q *dbgen.Queries, projectID, cardID int64, before string) error {
+	if _, err := q.LockProject(ctx, projectID); err != nil {
 		return err
 	}
-	if before == "" {
-		return nil
+	project, err := q.GetProject(ctx, projectID)
+	if err != nil {
+		return err
 	}
 	var ids []int64
-	if err := json.Unmarshal([]byte(before), &ids); err != nil {
+	if before == "" {
+		ids = nil
+	} else if err := json.Unmarshal([]byte(before), &ids); err != nil {
+		return undoImpossible()
+	}
+	if len(ids) > 1 {
 		return undoImpossible()
 	}
 	for _, uid := range ids {
-		if uid == 0 {
-			continue
+		candidate, err := q.GetProjectAssignee(ctx, dbgen.GetProjectAssigneeParams{ProjectID: projectID, UserID: uid})
+		if err != nil || (uid != project.OwnerID && !candidate.IsMember) {
+			return undoImpossible()
 		}
+	}
+	if err := q.ClearCardAssignees(ctx, cardID); err != nil {
+		return err
+	}
+	for _, uid := range ids {
 		if err := q.AddCardAssignee(ctx, dbgen.AddCardAssigneeParams{CardID: cardID, UserID: uid}); err != nil {
 			return err
 		}

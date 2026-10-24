@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"go_kanban_service/internal/repository"
 )
 
 // Таймаут фоновой рассылки уведомлений: несколько запросов в базу плюс отправка
@@ -21,6 +23,11 @@ const notifyTimeout = 10 * time.Second
 // если упрёшься.
 func runDetached(ctx context.Context, timeout time.Duration, what string, fn func(context.Context) error) {
 	if fn == nil {
+		return
+	}
+	if repository.AfterCommit(ctx, func(clean context.Context) {
+		runDetached(clean, timeout, what, fn)
+	}) {
 		return
 	}
 	detached := context.WithoutCancel(ctx)

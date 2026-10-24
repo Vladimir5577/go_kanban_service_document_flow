@@ -534,9 +534,18 @@ func (q *Queries) DeleteBoard(ctx context.Context, id int64) error {
 }
 
 const deleteCard = `-- name: DeleteCard :execrows
-UPDATE kanban_card
-SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1)
+-- One operation ID for exactly the rows changed by this deletion.
+WITH batch AS MATERIALIZED (
+    SELECT nextval('kanban_card_deletion_batch_seq') AS id
+), removed AS (
+    UPDATE kanban_card
+    SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1)
+    RETURNING id
+)
+INSERT INTO kanban_card_deletion_batch (card_id, batch_id)
+SELECT removed.id, batch.id FROM removed CROSS JOIN batch
+ON CONFLICT (card_id) DO UPDATE SET batch_id = EXCLUDED.batch_id
 `
 
 // Ноль строк — карточки нет или она уже удалена: вызывающий отвечает 404.
@@ -1034,7 +1043,7 @@ JOIN kanban_board b ON col.board_id = b.id
 JOIN kanban_project p ON b.kanban_project_id = p.id
 LEFT JOIN kanban_project_user pu
        ON pu.kanban_project_id = p.id AND pu.user_id = $2
-WHERE card.id = $1
+WHERE card.id = $1 AND card.deleted_at IS NULL AND (card.parent_id IS NULL OR parent.deleted_at IS NULL) AND col.deleted_at IS NULL AND b.deleted_at IS NULL
 `
 
 type GetCardContextParams struct {
@@ -1414,7 +1423,7 @@ JOIN kanban_board b ON b.id = col.board_id
 JOIN kanban_project p ON p.id = b.kanban_project_id
 LEFT JOIN kanban_project_user pu
        ON pu.kanban_project_id = p.id AND pu.user_id = $2
-WHERE col.id = $1 AND col.deleted_at IS NULL
+WHERE col.id = $1 AND col.deleted_at IS NULL AND b.deleted_at IS NULL
 `
 
 type GetColumnContextParams struct {
@@ -1463,7 +1472,7 @@ SELECT col.title, col.board_id, b.kanban_project_id,
        ), 65536)::float8 AS target_position
 FROM kanban_column col
 JOIN kanban_board b ON b.id = col.board_id
-WHERE col.id = $1 AND col.deleted_at IS NULL
+WHERE col.id = $1 AND col.deleted_at IS NULL AND b.deleted_at IS NULL
 `
 
 type GetColumnPrependTargetRow struct {
@@ -1763,7 +1772,7 @@ SELECT u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name,
 FROM users u
 LEFT JOIN kanban_project_user pu
        ON pu.kanban_project_id = $1 AND pu.user_id = u.id
-WHERE u.id = $2
+WHERE u.id = $2 AND u.deleted_at IS NULL
 `
 
 type GetProjectAssigneeParams struct {
@@ -1864,7 +1873,7 @@ SELECT b.kanban_project_id FROM kanban_card card
 LEFT JOIN kanban_card parent ON parent.id = card.parent_id
 JOIN kanban_column c ON c.id = COALESCE(card.column_id, parent.column_id)
 JOIN kanban_board b ON c.board_id = b.id
-WHERE card.id = $1
+WHERE card.id = $1 AND card.deleted_at IS NULL AND (card.parent_id IS NULL OR parent.deleted_at IS NULL) AND c.deleted_at IS NULL AND b.deleted_at IS NULL
 `
 
 func (q *Queries) GetProjectIDByCard(ctx context.Context, id int64) (int64, error) {
@@ -2304,6 +2313,39 @@ func (q *Queries) MarkCommentsRead(ctx context.Context, arg MarkCommentsReadPara
 	return err
 }
 
+const lockCard = `-- name: LockCard :one
+SELECT id FROM kanban_card WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
+`
+
+func (q *Queries) LockCard(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRow(ctx, lockCard, id)
+	var id_2 int64
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const lockProject = `-- name: LockProject :one
+SELECT id FROM kanban_project WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockProject(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRow(ctx, lockProject, id)
+	var id_2 int64
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const lockUser = `-- name: LockUser :one
+SELECT id FROM users WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockUser(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRow(ctx, lockUser, id)
+	var id_2 int64
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const rebalanceColumnCards = `-- name: RebalanceColumnCards :exec
 WITH ranked AS (
   SELECT id, ROW_NUMBER() OVER(ORDER BY position ASC, id ASC) as rn
@@ -2366,46 +2408,51 @@ func (q *Queries) RemoveProjectMember(ctx context.Context, arg RemoveProjectMemb
 	return err
 }
 
-const replaceCardAssignees = `-- name: ReplaceCardAssignees :many
-WITH old AS (
-    SELECT user_id FROM kanban_card_assignee WHERE card_id = $1::bigint
-), removed AS (
-    DELETE FROM kanban_card_assignee
-    WHERE card_id = $1::bigint AND user_id <> ALL($2::bigint[])
-), added AS (
-    INSERT INTO kanban_card_assignee (card_id, user_id)
-    SELECT $1::bigint, unnest($2::bigint[])
-    ON CONFLICT DO NOTHING
+const restorationWithinLimits = `-- name: RestorationWithinLimits :one
+WITH boards_to_check AS (
+    SELECT col.board_id FROM kanban_card c
+    JOIN kanban_column col ON col.id = c.column_id
+    WHERE $1::text IN ('card.deleted', 'card.archived') AND c.id = $2::bigint
+      AND c.parent_id IS NULL AND NOT c.is_archived
+    UNION
+    SELECT board_id FROM kanban_column WHERE $1 = 'column.deleted' AND id = $2
+    UNION
+    SELECT id FROM kanban_board WHERE $1 = 'board.deleted' AND id = $2
 )
-SELECT user_id FROM old
+SELECT NOT EXISTS (
+    SELECT col.board_id FROM kanban_card c
+    JOIN kanban_column col ON col.id = c.column_id AND col.deleted_at IS NULL
+    WHERE col.board_id IN (SELECT board_id FROM boards_to_check)
+      AND c.parent_id IS NULL AND c.deleted_at IS NULL AND NOT c.is_archived
+    GROUP BY col.board_id HAVING count(*) > 300
+) AND NOT EXISTS (
+    SELECT parent_id FROM kanban_card
+    WHERE $1 = 'card.deleted' AND deleted_at IS NULL
+      AND parent_id = (SELECT COALESCE(parent_id, id) FROM kanban_card WHERE id = $2)
+    GROUP BY parent_id HAVING count(*) > 100
+) AND NOT EXISTS (
+    SELECT card_id FROM kanban_card_comment
+    WHERE $1 = 'comment.deleted' AND deleted_at IS NULL
+      AND card_id = (SELECT card_id FROM kanban_card_comment WHERE id = $2)
+    GROUP BY card_id HAVING count(*) > 300
+) AND NOT EXISTS (
+    SELECT card_id, context FROM kanban_attachment
+    WHERE $1 = 'attachment.deleted' AND deleted_at IS NULL
+      AND (card_id, context) = (SELECT card_id, context FROM kanban_attachment WHERE id = $2)
+    GROUP BY card_id, context HAVING count(*) > 16
+) AS within_limits
 `
 
-type ReplaceCardAssigneesParams struct {
-	CardID  int64   `json:"card_id"`
-	UserIds []int64 `json:"user_ids"`
+type RestorationWithinLimitsParams struct {
+	Action   string `json:"action"`
+	EntityID int64  `json:"entity_id"`
 }
 
-// Замена исполнителей одним оператором — он атомарен сам по себе, транзакция
-// не нужна. Все части видят состояние до оператора: old — прежний состав для
-// истории, DELETE не трогает остающихся, INSERT добавляет новых.
-func (q *Queries) ReplaceCardAssignees(ctx context.Context, arg ReplaceCardAssigneesParams) ([]int64, error) {
-	rows, err := q.db.Query(ctx, replaceCardAssignees, arg.CardID, arg.UserIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []int64{}
-	for rows.Next() {
-		var user_id int64
-		if err := rows.Scan(&user_id); err != nil {
-			return nil, err
-		}
-		items = append(items, user_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+func (q *Queries) RestorationWithinLimits(ctx context.Context, arg RestorationWithinLimitsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, restorationWithinLimits, arg.Action, arg.EntityID)
+	var within_limits bool
+	err := row.Scan(&within_limits)
+	return within_limits, err
 }
 
 const restoreAttachment = `-- name: RestoreAttachment :exec
@@ -2431,17 +2478,19 @@ func (q *Queries) RestoreBoard(ctx context.Context, id int64) error {
 }
 
 const restoreCard = `-- name: RestoreCard :exec
+-- Older deletions without a batch restore only the explicitly requested card.
 UPDATE kanban_card c
 SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
 FROM kanban_card p
-WHERE p.id = $1
-  AND (c.id = p.id OR (c.parent_id = p.id AND c.deleted_at = p.deleted_at))
+LEFT JOIN kanban_card_deletion_batch pb ON pb.card_id = p.id
+WHERE p.id = $1 AND p.deleted_at IS NOT NULL
+  AND (c.id = p.id OR (c.parent_id = p.id AND EXISTS (
+      SELECT 1 FROM kanban_card_deletion_batch cb
+      WHERE cb.card_id = c.id AND cb.batch_id = pb.batch_id
+  )))
 `
 
-// Возвращаем только тех детей, которых удалили вместе с родителем: DeleteCard
-// ставит им один и тот же CURRENT_TIMESTAMP (время транзакции). Дети, удалённые
-// раньше и отдельно, к этой отмене отношения не имеют и остаются удалёнными.
-// Сторона FROM видит снимок до UPDATE, то есть p.deleted_at читается старым.
+// Older deletions without a batch restore only the explicitly requested card.
 func (q *Queries) RestoreCard(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, restoreCard, id)
 	return err

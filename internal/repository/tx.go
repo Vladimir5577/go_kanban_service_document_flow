@@ -13,7 +13,7 @@ import (
 // Используйте этот хелпер для всех операций с каскадами, чтобы избежать
 // частично применённых изменений (целостность данных).
 func ExecTx(ctx context.Context, db *pgxpool.Pool, fn func(*dbgen.Queries) error) (err error) {
-	tx, err := db.Begin(ctx)
+	tx, err := Begin(ctx, db)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}

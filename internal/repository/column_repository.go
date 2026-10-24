@@ -35,7 +35,7 @@ func NewColumnRepository(db *pgxpool.Pool) *ColumnRepository {
 }
 
 func (r *ColumnRepository) GetColumnsByBoard(ctx context.Context, boardID int64) ([]model.Column, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	dbCols, err := queries.GetColumnsByBoard(ctx, boardID)
 	if err != nil {
 		return nil, err
@@ -55,7 +55,7 @@ func (r *ColumnRepository) GetColumnsByBoard(ctx context.Context, boardID int64)
 }
 
 func (r *ColumnRepository) CreateColumn(ctx context.Context, boardID int64, c *model.Column) (*model.Column, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	res, err := queries.CreateColumn(ctx, dbgen.CreateColumnParams{
 		Title:       c.Title,
 		HeaderColor: c.HeaderColor,
@@ -75,7 +75,7 @@ func (r *ColumnRepository) CreateColumn(ctx context.Context, boardID int64, c *m
 }
 
 func (r *ColumnRepository) GetColumn(ctx context.Context, id int64) (*model.Column, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	c, err := queries.GetColumn(ctx, id)
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -91,7 +91,7 @@ func (r *ColumnRepository) GetColumn(ctx context.Context, id int64) (*model.Colu
 }
 
 func (r *ColumnRepository) UpdateColumn(ctx context.Context, c *model.Column) (*model.Column, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	res, err := queries.UpdateColumn(ctx, dbgen.UpdateColumnParams{
 		Title:       c.Title,
 		HeaderColor: c.HeaderColor,
@@ -111,12 +111,12 @@ func (r *ColumnRepository) UpdateColumn(ctx context.Context, c *model.Column) (*
 }
 
 func (r *ColumnRepository) DeleteColumn(ctx context.Context, id int64) error {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	return queries.DeleteColumn(ctx, id)
 }
 
 func (r *ColumnRepository) RebalanceBoardColumns(ctx context.Context, boardID int64) (bool, error) {
-	rows, err := r.Db.Query(ctx, `
+	rows, err := Connection(ctx, r.Db).Query(ctx, `
 		SELECT position
 		FROM kanban_column
 		WHERE board_id = $1
@@ -156,7 +156,7 @@ func (r *ColumnRepository) RebalanceBoardColumns(ctx context.Context, boardID in
 	// ponytail: отдельная транзакция не нужна — UPDATE сам пересчитывает ранги,
 	// а устаревший результат проверки выше в худшем случае даст лишнюю
 	// перенумерацию либо пропуск, который добьёт следующее перемещение.
-	if _, err := r.Db.Exec(ctx, `
+	if _, err := Connection(ctx, r.Db).Exec(ctx, `
 		WITH ranked AS (
 			SELECT id, ROW_NUMBER() OVER (ORDER BY position ASC, id ASC) AS rn
 			FROM kanban_column
@@ -172,7 +172,7 @@ func (r *ColumnRepository) RebalanceBoardColumns(ctx context.Context, boardID in
 }
 
 func (r *ColumnRepository) HasCardsByColumn(ctx context.Context, columnID int64) (bool, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	res, err := queries.HasCardsByColumn(ctx, pgtype.Int8{Int64: columnID, Valid: true})
 	if err != nil {
 		return false, err

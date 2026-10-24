@@ -39,6 +39,13 @@ func (r *UserRepository) LoginCheck(ctx context.Context) (*model.User, error) {
 	return &model.User{}, nil
 }
 
+// Проверяем реплику usersync без догрузки: отсутствие пользователя не даёт доступ.
+func (r *UserRepository) IsUserActive(ctx context.Context, userID int64) (bool, error) {
+	var active bool
+	err := Connection(ctx, r.Db).QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`, userID).Scan(&active)
+	return active, err
+}
+
 // missingUserIDs — кого из запрошенных не оказалось в выдаче. Считает по
 // множествам, а не по длинам: ids приходит с повторами (по автору на каждый
 // комментарий), и прежнее len(users) < len(ids) было истинным почти всегда,
@@ -65,7 +72,7 @@ func (r *UserRepository) GetUsersByIDs(ctx context.Context, ids []int64) ([]mode
 	}
 
 	query := `SELECT id, login, lastname, firstname, patronymic, avatar_name FROM users WHERE id = ANY($1)`
-	rows, err := r.Db.Query(ctx, query, ids)
+	rows, err := Connection(ctx, r.Db).Query(ctx, query, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +117,7 @@ func (r *UserRepository) GetUsersByIDs(ctx context.Context, ids []int64) ([]mode
 // из Symfony — как раньше при проверке исполнителя, — и запрос повторяется.
 func (r *UserRepository) GetProjectAssignee(ctx context.Context, projectID, userID int64) (*model.User, bool, error) {
 	params := dbgen.GetProjectAssigneeParams{ProjectID: projectID, UserID: userID}
-	row, err := dbgen.New(r.Db).GetProjectAssignee(ctx, params)
+	row, err := Queries(ctx, r.Db).GetProjectAssignee(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		users, fetchErr := r.GetUsersByIDs(ctx, []int64{userID})
 		if fetchErr != nil {
@@ -119,7 +126,7 @@ func (r *UserRepository) GetProjectAssignee(ctx context.Context, projectID, user
 		if len(users) == 0 {
 			return nil, false, apperr.ErrNotFound
 		}
-		row, err = dbgen.New(r.Db).GetProjectAssignee(ctx, params)
+		row, err = Queries(ctx, r.Db).GetProjectAssignee(ctx, params)
 	}
 	if err != nil {
 		return nil, false, NormalizeError(err)
@@ -140,7 +147,7 @@ func (r *UserRepository) UpsertUsers(ctx context.Context, users []model.User) er
 	}
 
 	// Используем транзакцию для создания temp таблицы и bulk upsert
-	tx, err := r.Db.Begin(ctx)
+	tx, err := Begin(ctx, r.Db)
 	if err != nil {
 		return err
 	}
@@ -209,7 +216,7 @@ func (r *UserRepository) UpsertUsers(ctx context.Context, users []model.User) er
 }
 
 func (r *UserRepository) MarkUserDeleted(ctx context.Context, userID int64, deletedAt time.Time) error {
-	_, err := r.Db.Exec(ctx, `
+	_, err := Connection(ctx, r.Db).Exec(ctx, `
 		UPDATE users
 		SET deleted_at = $2,
 			synced_at = NOW()

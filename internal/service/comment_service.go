@@ -87,6 +87,16 @@ func (s *CommentService) GetComment(ctx context.Context, commentID int64) (*mode
 }
 
 func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dto.CreateCommentRequest) (*model.Comment, error) {
+	var out0 *model.Comment
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateCreateComment(ctx, cardID, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *CommentService) mutateCreateComment(ctx context.Context, cardID int64, req dto.CreateCommentRequest) (*model.Comment, error) {
 	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
 	if err != nil {
 		return nil, err
@@ -124,8 +134,13 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 	s.populateAuthorName(ctx, created)
 	// Свой комментарий не должен висеть у автора непрочитанным — иначе он сам
 	// себе создаёт бейдж. Не повод валить создание комментария, если не легло.
-	if err := s.readRepo.MarkRead(ctx, cardID, user.ID, created.ID); err != nil {
-		slog.Warn("failed to mark own comment read", "card_id", cardID, "comment_id", created.ID, "error", err)
+	markRead := func(ctx context.Context) {
+		if err := s.readRepo.MarkRead(ctx, cardID, user.ID, created.ID); err != nil {
+			slog.Warn("failed to mark own comment read", "card_id", cardID, "comment_id", created.ID, "error", err)
+		}
+	}
+	if !repository.AfterCommit(ctx, markRead) {
+		markRead(ctx)
 	}
 	// Ссылка собирается из acc — иначе historyEntityLink пойдёт добывать проект
 	// и доску заново, а это GetCard (карточка + assignees + labels) и GetColumn.
@@ -153,6 +168,16 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 }
 
 func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error) {
+	var out0 *model.Comment
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateUpdateComment(ctx, cardID, commentID, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *CommentService) mutateUpdateComment(ctx context.Context, cardID int64, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error) {
 	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
 	if err != nil {
 		return nil, err
@@ -203,6 +228,13 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 }
 
 func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commentID int64) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		return s.mutateDeleteComment(ctx, cardID, commentID)
+	})
+	return err
+}
+
+func (s *CommentService) mutateDeleteComment(ctx context.Context, cardID int64, commentID int64) error {
 	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
 	if err != nil {
 		return err
@@ -258,6 +290,13 @@ func (s *CommentService) publishCommentsCount(ctx context.Context, boardID, card
 // MarkRead двигает знак прочтения карточки. Что именно считать прочитанным,
 // решает фронт — сюда приходит одно число, и оно может только расти.
 func (s *CommentService) MarkRead(ctx context.Context, cardID int64, lastCommentID int64) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		return s.mutateMarkRead(ctx, cardID, lastCommentID)
+	})
+	return err
+}
+
+func (s *CommentService) mutateMarkRead(ctx context.Context, cardID int64, lastCommentID int64) error {
 	if _, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer); err != nil {
 		return err
 	}
