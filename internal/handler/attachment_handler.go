@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log/slog"
@@ -119,11 +120,31 @@ func (h *AttachmentHandler) DownloadAttachment() http.HandlerFunc {
 			return
 		}
 		defer obj.Close()
+		reader, err := firstByteReader(obj)
+		if err != nil {
+			helper.WriteError(w, apperr.New(apperr.CodeFileNotFoundOnDisk, "file not found on disk"))
+			return
+		}
 
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", att.Filename))
 		w.Header().Set("Content-Type", att.ContentType)
-		io.Copy(w, obj)
+		if _, err := io.Copy(w, reader); err != nil {
+			slog.WarnContext(r.Context(), "failed to stream attachment download", "error", err)
+			// A normal return would finish a truncated chunked response successfully.
+			panic(http.ErrAbortHandler)
+		}
 	}
+}
+
+// firstByteReader читает первый байт до заголовков: GetObject ленивый, и
+// NoSuchKey приходит только на первом Read. Без этого вместо 404 клиент
+// получил бы оборванный ответ.
+func firstByteReader(obj io.Reader) (*bufio.Reader, error) {
+	reader := bufio.NewReader(obj)
+	if _, err := reader.Peek(1); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return reader, nil
 }
 
 func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
@@ -151,10 +172,18 @@ func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
 			return
 		}
 		defer obj.Close()
+		reader, err := firstByteReader(obj)
+		if err != nil {
+			helper.WriteError(w, apperr.New(apperr.CodeFileNotFoundOnDisk, "file not found on disk"))
+			return
+		}
 
 		w.Header().Set("Content-Disposition", "inline")
 		w.Header().Set("Content-Type", att.ContentType)
-		io.Copy(w, obj)
+		if _, err := io.Copy(w, reader); err != nil {
+			slog.WarnContext(r.Context(), "failed to stream attachment preview", "error", err)
+			panic(http.ErrAbortHandler)
+		}
 	}
 }
 
