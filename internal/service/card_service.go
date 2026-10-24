@@ -107,6 +107,16 @@ func NewCardService(
 }
 
 func (s *CardService) CreateCard(ctx context.Context, req dto.CreateCardRequest) (*dto.CardResponse, error) {
+	var out0 *dto.CardResponse
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateCreateCard(ctx, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *CardService) mutateCreateCard(ctx context.Context, req dto.CreateCardRequest) (*dto.CardResponse, error) {
 	if (req.ColumnID == nil) == (req.ParentID == nil) {
 		return nil, apperr.New(apperr.CodeValidation, "exactly one of column_id or parent_id is required")
 	}
@@ -290,7 +300,6 @@ func (s *CardService) cardDetail(ctx context.Context, id int64, acc CardAccess) 
 		}
 	}
 
-	// Fetch Comments
 	comments, err := s.commentRepo.GetComments(ctx, id)
 	if err != nil {
 		return nil, nil, err
@@ -638,6 +647,16 @@ func (s *CardService) ListTaskCollaborants(ctx context.Context, f repository.Tas
 // строка карточки ради старых значений, узкий UPDATE, история. Доску для
 // ссылки истории и realtime приносит контекст, ответ собирается из строки.
 func (s *CardService) UpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*dto.CardUpdateResponse, error) {
+	var out0 *dto.CardUpdateResponse
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateUpdateCard(ctx, id, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *CardService) mutateUpdateCard(ctx context.Context, id int64, req dto.UpdateCardRequest) (*dto.CardUpdateResponse, error) {
 	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
 	if err != nil {
 		return nil, err
@@ -818,6 +837,13 @@ func (s *CardService) cardUpdateResponse(ctx context.Context, c *model.Card, boa
 // Карточку удаляет админ, подзадачу — редактор. Запросы: контекст с правами,
 // удаление, история; доску для realtime приносит контекст.
 func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		return s.mutateDeleteCard(ctx, id)
+	})
+	return err
+}
+
+func (s *CardService) mutateDeleteCard(ctx context.Context, id int64) error {
 	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
 	if err != nil {
 		return err
@@ -868,6 +894,16 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 // контекстом, исполнитель — с проверкой, поэтому ни ответу, ни realtime, ни
 // уведомлению перечитывать карточку не нужно.
 func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []int64) ([]*dto.CardAssigneeResponse, error) {
+	var out0 []*dto.CardAssigneeResponse
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateUpdateAssignees(ctx, id, userIDs)
+		return err
+	})
+	return out0, err
+}
+
+func (s *CardService) mutateUpdateAssignees(ctx context.Context, id int64, userIDs []int64) ([]*dto.CardAssigneeResponse, error) {
 	if len(userIDs) > 1 {
 		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
 	}
@@ -951,6 +987,16 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 }
 
 func (s *CardService) MoveCard(ctx context.Context, id int64, columnID *int64, position float64) (*model.CardMove, error) {
+	var out0 *model.CardMove
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateMoveCard(ctx, id, columnID, position)
+		return err
+	})
+	return out0, err
+}
+
+func (s *CardService) mutateMoveCard(ctx context.Context, id int64, columnID *int64, position float64) (*model.CardMove, error) {
 	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
 	if err != nil {
 		return nil, err
@@ -1033,7 +1079,6 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID *int64, p
 		})
 	}
 
-	// Notify on column change (moved)
 	if columnChanged && s.notificationSvc != nil {
 		actorID := derefInt64(currentUserID(ctx))
 		runDetached(ctx, notifyTimeout, "failed to notify kanban task moved", func(ctx context.Context) error {
@@ -1051,12 +1096,31 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID *int64, p
 // запись в историю. Доска приезжает с контекстом, поэтому ни ссылке истории,
 // ни событию realtime не нужно перечитывать карточку и колонку.
 func (s *CardService) ArchiveCard(ctx context.Context, id int64) (bool, error) {
+	var out0 bool
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateArchiveCard(ctx, id)
+		return err
+	})
+	return out0, err
+}
+
+func (s *CardService) mutateArchiveCard(ctx context.Context, id int64) (bool, error) {
 	acc, err := s.permSvc.RequireRootCardRole(ctx, id, RoleAdmin)
 	if err != nil {
 		return false, err
 	}
 
 	archived := !acc.IsArchived
+	if !archived {
+		count, err := s.repo.CountActiveCardsByBoard(ctx, acc.BoardID)
+		if err != nil {
+			return false, err
+		}
+		if count >= maxActiveCardsPerBoard {
+			return false, apperr.New(apperr.CodeBoardCardLimitReached, "maximum number of cards (300) on board reached")
+		}
+	}
 	action := "card.restored"
 	link := historyTaskPath(acc.ProjectID, acc.BoardID, id)
 	var archivedAt *time.Time
@@ -1106,6 +1170,16 @@ func (s *CardService) ArchiveCard(ctx context.Context, id int64) (bool, error) {
 // флаг выполнения и колонку «Готово» приносит контекст с правами, поэтому
 // карточку, колонку и доску отдельно не читаем, а ссылки истории собираем сами.
 func (s *CardService) CompleteCard(ctx context.Context, id int64) (*dto.CardCompletionResponse, error) {
+	var out0 *dto.CardCompletionResponse
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateCompleteCard(ctx, id)
+		return err
+	})
+	return out0, err
+}
+
+func (s *CardService) mutateCompleteCard(ctx context.Context, id int64) (*dto.CardCompletionResponse, error) {
 	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
 	if err != nil {
 		return nil, err
@@ -1285,6 +1359,16 @@ func (s *CardService) fillCompletionUsers(ctx context.Context, resp *dto.CardCom
 // с позицией, лимит доски, копия одним оператором, история. Ответ и realtime
 // собираются из того, что вернула вставка.
 func (s *CardService) DuplicateCard(ctx context.Context, id int64, columnID int64) (*dto.CardResponse, error) {
+	var out0 *dto.CardResponse
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateDuplicateCard(ctx, id, columnID)
+		return err
+	})
+	return out0, err
+}
+
+func (s *CardService) mutateDuplicateCard(ctx context.Context, id int64, columnID int64) (*dto.CardResponse, error) {
 	acc, err := s.permSvc.RequireRootCardRole(ctx, id, RoleEditor)
 	if err != nil {
 		return nil, err
@@ -1351,7 +1435,6 @@ func currentUserID(ctx context.Context) *int64 {
 	return &id
 }
 
-// filterOutActor removes the actor from the list of user IDs.
 func filterOutActor(ids []int64, actor *int64) []int64 {
 	if actor == nil {
 		return ids

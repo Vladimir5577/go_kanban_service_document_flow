@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"strconv"
 	"strings"
 
 	"go_kanban_service/internal/model"
+	"go_kanban_service/internal/repository"
 )
 
 type HistoryLogger interface {
@@ -18,7 +20,10 @@ func appendHistory(j HistoryLogger, ctx context.Context, e model.HistoryWrite) {
 		return
 	}
 	e.EntityTitle = strings.TrimSpace(e.EntityTitle)
-	_ = j.Append(ctx, e)
+	if err := j.Append(ctx, e); err != nil {
+		repository.FailMutation(ctx, err)
+		slog.WarnContext(ctx, "failed to append kanban history", "error", err)
+	}
 }
 
 func historyProjectPath(projectID int64) string {

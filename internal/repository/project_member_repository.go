@@ -36,7 +36,7 @@ func NewProjectMemberRepository(db *pgxpool.Pool) *ProjectMemberRepository {
 }
 
 func (r *ProjectMemberRepository) GetMembers(ctx context.Context, projectID int64) ([]model.ProjectUser, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	dbMembers, err := queries.GetProjectMembers(ctx, projectID)
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -59,7 +59,7 @@ func (r *ProjectMemberRepository) GetMembers(ctx context.Context, projectID int6
 }
 
 func (r *ProjectMemberRepository) GetProjectMember(ctx context.Context, projectID, userID int64) (*model.ProjectUser, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	dbMember, err := queries.GetProjectMember(ctx, dbgen.GetProjectMemberParams{
 		KanbanProjectID: projectID,
 		UserID:          userID,
@@ -72,7 +72,7 @@ func (r *ProjectMemberRepository) GetProjectMember(ctx context.Context, projectI
 }
 
 func (r *ProjectMemberRepository) AddMember(ctx context.Context, projectID int64, member model.ProjectUser) error {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	params := dbgen.AddProjectMemberParams{
 		KanbanProjectID: projectID,
 		UserID:          member.UserID,
@@ -117,7 +117,7 @@ func (r *ProjectMemberRepository) ReplaceMembers(ctx context.Context, projectID 
 }
 
 func (r *ProjectMemberRepository) UpdateMemberRole(ctx context.Context, projectID int64, userID int64, role string) error {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	return queries.UpdateProjectMemberRole(ctx, dbgen.UpdateProjectMemberRoleParams{
 		KanbanProjectID: projectID,
 		UserID:          userID,
@@ -145,7 +145,7 @@ func (r *ProjectMemberRepository) UpdateProjectPlacement(ctx context.Context, pr
 		dbFolderID      pgtype.Int8
 		dbPosition      float64
 	)
-	err := r.Db.QueryRow(ctx, query, folderParam, position, projectID, userID).Scan(
+	err := Connection(ctx, r.Db).QueryRow(ctx, query, folderParam, position, projectID, userID).Scan(
 		&id,
 		&kanbanProjectID,
 		&memberUserID,
@@ -161,7 +161,7 @@ func (r *ProjectMemberRepository) UpdateProjectPlacement(ctx context.Context, pr
 }
 
 func (r *ProjectMemberRepository) RebalanceProjectPositions(ctx context.Context, userID int64, folderID *int64) (bool, error) {
-	tx, err := r.Db.Begin(ctx)
+	tx, err := Begin(ctx, r.Db)
 	if err != nil {
 		return false, err
 	}
@@ -243,7 +243,7 @@ func (r *ProjectMemberRepository) RebalanceProjectPositions(ctx context.Context,
 }
 
 func (r *ProjectMemberRepository) RemoveMember(ctx context.Context, projectID int64, userID int64) error {
-	tx, err := r.Db.Begin(ctx)
+	tx, err := Begin(ctx, r.Db)
 	if err != nil {
 		return err
 	}
@@ -286,7 +286,7 @@ func (r *ProjectMemberRepository) RemoveMember(ctx context.Context, projectID in
 // GetAdminUserIDs returns the owner of the project plus all members with KANBAN_ADMIN role.
 func (r *ProjectMemberRepository) GetAdminUserIDs(ctx context.Context, projectID int64) ([]int64, error) {
 	var ownerID int64
-	err := r.Db.QueryRow(ctx, `SELECT owner_id FROM kanban_project WHERE id = $1 AND deleted_at IS NULL`, projectID).Scan(&ownerID)
+	err := Connection(ctx, r.Db).QueryRow(ctx, `SELECT owner_id FROM kanban_project WHERE id = $1 AND deleted_at IS NULL`, projectID).Scan(&ownerID)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
@@ -296,7 +296,7 @@ func (r *ProjectMemberRepository) GetAdminUserIDs(ctx context.Context, projectID
 		admins[ownerID] = true
 	}
 
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	members, err := queries.GetProjectMembers(ctx, projectID)
 	if err != nil {
 		return nil, err

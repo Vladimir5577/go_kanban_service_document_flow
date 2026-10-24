@@ -40,7 +40,7 @@ func NewBoardRepository(db *pgxpool.Pool) *BoardRepository {
 }
 
 func (r *BoardRepository) GetBoardsByProject(ctx context.Context, projectID int64) ([]model.Board, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	dbBoards, err := queries.GetBoardsByProject(ctx, projectID)
 	if err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func (r *BoardRepository) GetBoardsByProject(ctx context.Context, projectID int6
 }
 
 func (r *BoardRepository) CreateBoard(ctx context.Context, projectID int64, b *model.Board) (*model.Board, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	res, err := queries.CreateBoard(ctx, dbgen.CreateBoardParams{
 		Title:           b.Title,
 		Position:        b.Position,
@@ -83,7 +83,7 @@ func (r *BoardRepository) CreateBoard(ctx context.Context, projectID int64, b *m
 }
 
 func (r *BoardRepository) CreateBoardWithColumns(ctx context.Context, projectID int64, b *model.Board, columns []model.Column) (*model.Board, error) {
-	tx, err := r.Db.Begin(ctx)
+	tx, err := Begin(ctx, r.Db)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,7 @@ func (r *BoardRepository) CreateBoardWithColumns(ctx context.Context, projectID 
 }
 
 func (r *BoardRepository) GetBoard(ctx context.Context, id int64) (*model.Board, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	b, err := queries.GetBoard(ctx, id)
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -153,7 +153,7 @@ func (r *BoardRepository) GetBoard(ctx context.Context, id int64) (*model.Board,
 }
 
 func (r *BoardRepository) UpdateBoard(ctx context.Context, b *model.Board) (*model.Board, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	res, err := queries.UpdateBoard(ctx, dbgen.UpdateBoardParams{
 		Title:    b.Title,
 		Position: b.Position,
@@ -168,14 +168,14 @@ func (r *BoardRepository) UpdateBoard(ctx context.Context, b *model.Board) (*mod
 }
 
 func (r *BoardRepository) SetDoneColumnID(ctx context.Context, boardID int64, columnID *int64) error {
-	_, err := r.Db.Exec(ctx,
+	_, err := Connection(ctx, r.Db).Exec(ctx,
 		`UPDATE kanban_board SET done_column_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND deleted_at IS NULL`,
 		columnID, boardID)
 	return err
 }
 
 func (r *BoardRepository) DeleteBoard(ctx context.Context, id int64) error {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	return queries.DeleteBoard(ctx, id)
 }
 
@@ -197,7 +197,7 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 		return nil, err
 	}
 	var total int64
-	if err := r.Db.QueryRow(ctx, totalSQL, totalArgs...).Scan(&total); err != nil {
+	if err := Connection(ctx, r.Db).QueryRow(ctx, totalSQL, totalArgs...).Scan(&total); err != nil {
 		return nil, err
 	}
 
@@ -214,7 +214,7 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 		return nil, err
 	}
 	var archivedCount int64
-	if err := r.Db.QueryRow(ctx, archivedCountSQL, archivedCountArgs...).Scan(&archivedCount); err != nil {
+	if err := Connection(ctx, r.Db).QueryRow(ctx, archivedCountSQL, archivedCountArgs...).Scan(&archivedCount); err != nil {
 		return nil, err
 	}
 
@@ -245,7 +245,7 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 		return nil, err
 	}
 
-	rows, err := r.Db.Query(ctx, archiveSQL, archiveArgs...)
+	rows, err := Connection(ctx, r.Db).Query(ctx, archiveSQL, archiveArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -344,10 +344,10 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 
 func archiveOrderBy(filters model.BoardArchiveFilters) []string {
 	orderBySQL, ok := map[string]string{
-		"title":       "c.title",
-		"column":      "col.title",
-		"archived_at": "c.archived_at",
-		"created_at":  "c.created_at",
+		"title":        "c.title",
+		"column":       "col.title",
+		"archived_at":  "c.archived_at",
+		"created_at":   "c.created_at",
 		"completed_at": "c.completed_at",
 	}[filters.OrderBy]
 	if !ok {
@@ -406,7 +406,7 @@ func parseArchiveDate(value string, endOfDay bool) (time.Time, bool) {
 }
 
 func (r *BoardRepository) HasColumnsByBoard(ctx context.Context, boardID int64) (bool, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	res, err := queries.HasColumnsByBoard(ctx, boardID)
 	if err != nil {
 		return false, err
@@ -426,7 +426,7 @@ func (r *BoardRepository) HasActiveCardsByBoard(ctx context.Context, boardID int
 				AND col.deleted_at IS NULL
 		)`
 	var exists bool
-	if err := r.Db.QueryRow(ctx, query, boardID).Scan(&exists); err != nil {
+	if err := Connection(ctx, r.Db).QueryRow(ctx, query, boardID).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil
@@ -442,7 +442,7 @@ func (r *BoardRepository) NextBoardID(ctx context.Context, projectID int64, excl
 		ORDER BY position ASC, id ASC
 		LIMIT 1`
 	var id int64
-	if err := r.Db.QueryRow(ctx, query, projectID, excludeBoardID).Scan(&id); err != nil {
+	if err := Connection(ctx, r.Db).QueryRow(ctx, query, projectID, excludeBoardID).Scan(&id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}

@@ -290,6 +290,7 @@ func (p *KanbanRealtimePublisher) publish(ctx context.Context, boardID int64, ev
 
 	form := url.Values{}
 	form.Set("topic", "/kanban/board/"+strconv.FormatInt(boardID, 10))
+	form.Set("private", "on")
 	form.Set("data", string(data))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.hubURL, strings.NewReader(form.Encode()))

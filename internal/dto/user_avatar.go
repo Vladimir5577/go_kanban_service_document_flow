@@ -22,13 +22,9 @@ func UserAvatarURL(cfg *config.Config, storageKey *string, size string) *string 
 		width, height = 50, 50
 	}
 
-	url := fmt.Sprintf(
-		"%s/unsafe/rs:fill:%d:%d/plain/s3://%s/%s",
-		strings.TrimRight(cfg.ImgproxyBaseUrl, "/"),
-		width,
-		height,
-		cfg.MinioUserBucket,
-		*storageKey,
+	url := imgproxyURL(cfg,
+		fmt.Sprintf("rs:fill:%d:%d", width, height),
+		fmt.Sprintf("s3://%s/%s", cfg.MinioUserBucket, *storageKey),
 	)
 
 	return &url

@@ -71,7 +71,7 @@ func (r *ProjectRepository) ListProjects(ctx context.Context, f model.ProjectLis
 
 	countQuery := `SELECT COUNT(*) FROM kanban_project p WHERE ` + where
 	var total int64
-	if err := r.Db.QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := Connection(ctx, r.Db).QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, NormalizeError(err)
 	}
 
@@ -123,7 +123,7 @@ func (r *ProjectRepository) ListProjects(ctx context.Context, f model.ProjectLis
 		ORDER BY %s %s, p.id DESC
 		LIMIT $%d OFFSET $%d`, where, orderBySQL, orderSQL, argN, argN+1)
 
-	rows, err := r.Db.Query(ctx, listQuery, listArgs...)
+	rows, err := Connection(ctx, r.Db).Query(ctx, listQuery, listArgs...)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
@@ -172,7 +172,7 @@ func (r *ProjectRepository) CreateProject(ctx context.Context, p *model.Project)
 		VALUES ($1, $2, $3, $4)
 		RETURNING id, name, description, owner_id, created_by_id, created_at, updated_at, deleted_at`
 
-	err := r.Db.QueryRow(ctx, query,
+	err := Connection(ctx, r.Db).QueryRow(ctx, query,
 		p.Name, p.Description, p.OwnerID, p.CreatedByID,
 	).Scan(
 		&p.ID, &p.Name, &p.Description, &p.OwnerID, &p.CreatedByID,
@@ -192,7 +192,7 @@ func (r *ProjectRepository) GetProject(ctx context.Context, id int64) (*model.Pr
 		WHERE id = $1 AND deleted_at IS NULL`
 
 	var p model.Project
-	err := r.Db.QueryRow(ctx, query, id).Scan(
+	err := Connection(ctx, r.Db).QueryRow(ctx, query, id).Scan(
 		&p.ID, &p.Name, &p.Description, &p.OwnerID, &p.CreatedByID,
 		&p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 	)
@@ -210,7 +210,7 @@ func (r *ProjectRepository) UpdateProject(ctx context.Context, p *model.Project)
 		WHERE id = $3 AND deleted_at IS NULL
 		RETURNING id, name, description, owner_id, created_by_id, created_at, updated_at, deleted_at`
 
-	err := r.Db.QueryRow(ctx, query, p.Name, p.Description, p.ID).Scan(
+	err := Connection(ctx, r.Db).QueryRow(ctx, query, p.Name, p.Description, p.ID).Scan(
 		&p.ID, &p.Name, &p.Description, &p.OwnerID, &p.CreatedByID,
 		&p.CreatedAt, &p.UpdatedAt, &p.DeletedAt,
 	)
@@ -227,7 +227,7 @@ func (r *ProjectRepository) DeleteProject(ctx context.Context, id int64) error {
 		SET deleted_at = CURRENT_TIMESTAMP
 		WHERE id = $1`
 
-	_, err := r.Db.Exec(ctx, query, id)
+	_, err := Connection(ctx, r.Db).Exec(ctx, query, id)
 	return err
 }
 
@@ -253,7 +253,7 @@ func (r *ProjectRepository) GetNavProjectsForUser(ctx context.Context, userID in
 		WHERE pu.user_id = $1 AND p.deleted_at IS NULL
 		ORDER BY pu.position ASC`
 
-	rows, err := r.Db.Query(ctx, query, userID)
+	rows, err := Connection(ctx, r.Db).Query(ctx, query, userID)
 	if err != nil {
 		return nil, err
 	}

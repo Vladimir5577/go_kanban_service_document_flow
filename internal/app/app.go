@@ -47,7 +47,9 @@ type Handlers struct {
 }
 
 func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
-	authMw, err := middleware.NewAuthMiddleware(cfg.JWTPublicKeyPath)
+	symfonyClient := client.NewSymfonyClient(cfg)
+	userRepo := repository.NewUserRepository(db, symfonyClient, cfg.Clock)
+	authMw, err := middleware.NewAuthMiddleware(cfg.JWTPublicKeyPath, userRepo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init auth middleware: %w", err)
 	}
@@ -68,9 +70,6 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 
 	permSvc := service.NewPermissionService(db, projectRepo, projectMemberRepo)
 
-	symfonyClient := client.NewSymfonyClient(cfg)
-
-	userRepo := repository.NewUserRepository(db, symfonyClient, cfg.Clock)
 	userSvc := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userSvc)
 
@@ -110,7 +109,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
 	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, commentRepo, commentReadRepo, attachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
-	cardHandler := handler.NewCardHandler(cardSvc)
+	cardHandler := handler.NewCardHandler(cardSvc, cfg.AppTimezone)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
 	columnHandler := handler.NewColumnHandler(columnSvc)
@@ -198,7 +197,6 @@ func (a *App) Run() error {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Запускаем сервер в горутине
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("Ошибка старта HTTP-сервера", "error", err)

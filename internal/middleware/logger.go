@@ -19,7 +19,7 @@ func RequestLogger() func(next http.Handler) http.Handler {
 
 			next.ServeHTTP(ww, r)
 
-			// Игнорируем спам от healthz чеков, если они очень частые (по желанию, сейчас оставляем)
+			// Логируем каждый запрос, включая /healthz.
 			slog.Info("http request",
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),

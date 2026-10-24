@@ -32,7 +32,7 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 	var attachments []model.Attachment
 
 	if contextStr == "" {
-		rows, err := r.Db.Query(ctx, "SELECT id, filename, storage_key, content_type, size_bytes, context, card_id, author_id, created_at FROM kanban_attachment WHERE card_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC", cardID)
+		rows, err := Connection(ctx, r.Db).Query(ctx, "SELECT id, filename, storage_key, content_type, size_bytes, context, card_id, author_id, created_at FROM kanban_attachment WHERE card_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC", cardID)
 		if err != nil {
 			return nil, err
 		}
@@ -56,7 +56,7 @@ func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID 
 		return attachments, nil
 	}
 
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	dbAtt, err := queries.GetAttachmentsByCard(ctx, dbgen.GetAttachmentsByCardParams{
 		CardID:  cardID,
 		Context: contextStr,
@@ -90,7 +90,7 @@ func (r *AttachmentRepository) GetChatCountsByCardIDs(ctx context.Context, cardI
 		return make(map[int64]int), nil
 	}
 
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	rows, err := queries.GetChatAttachmentCountsByCardIDs(ctx, cardIDs)
 	if err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func (r *AttachmentRepository) GetChatCountsByCardIDs(ctx context.Context, cardI
 }
 
 func (r *AttachmentRepository) GetAttachment(ctx context.Context, id int64) (*model.Attachment, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	a, err := queries.GetAttachment(ctx, id)
 	if err != nil {
 		return nil, NormalizeError(err)
@@ -129,7 +129,7 @@ func (r *AttachmentRepository) GetAttachment(ctx context.Context, id int64) (*mo
 }
 
 func (r *AttachmentRepository) CreateAttachment(ctx context.Context, cardID int64, a *model.Attachment) (*model.Attachment, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 
 	params := dbgen.CreateAttachmentParams{
 		Filename:    a.Filename,
@@ -154,6 +154,6 @@ func (r *AttachmentRepository) CreateAttachment(ctx context.Context, cardID int6
 }
 
 func (r *AttachmentRepository) DeleteAttachment(ctx context.Context, id int64) error {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	return queries.DeleteAttachment(ctx, id)
 }

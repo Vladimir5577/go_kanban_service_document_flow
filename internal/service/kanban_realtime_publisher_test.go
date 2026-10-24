@@ -60,6 +60,9 @@ func TestKanbanRealtimePublisherPublishesMercureUpdate(t *testing.T) {
 		if got := r.Form.Get("topic"); got != "/kanban/board/42" {
 			t.Fatalf("topic = %s, want /kanban/board/42", got)
 		}
+		if got := r.Form.Get("private"); got != "on" {
+			t.Fatalf("private = %q, want on", got)
+		}
 
 		var event map[string]any
 		if err := json.Unmarshal([]byte(r.Form.Get("data")), &event); err != nil {

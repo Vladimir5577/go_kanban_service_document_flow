@@ -6,7 +6,6 @@ import (
 
 var Validate *validator.Validate
 
-// Init инициализирует глобальный валидатор
 func Init() {
 	Validate = validator.New(validator.WithRequiredStructEnabled())
 }

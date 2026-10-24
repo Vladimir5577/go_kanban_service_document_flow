@@ -52,12 +52,12 @@ func (r *HistoryRepository) Append(ctx context.Context, userID *int64, e model.H
 	if e.CardID != 0 {
 		params.CardID = pgtype.Int8{Int64: e.CardID, Valid: true}
 	}
-	_, err = dbgen.New(r.Db).CreateProjectHistoryEntry(ctx, params)
+	_, err = Queries(ctx, r.Db).CreateProjectHistoryEntry(ctx, params)
 	return err
 }
 
 func (r *HistoryRepository) List(ctx context.Context, projectID, cardID, userID, cursor int64, title string, limit int32) ([]model.HistoryListItem, error) {
-	rows, err := dbgen.New(r.Db).ListProjectHistory(ctx, dbgen.ListProjectHistoryParams{
+	rows, err := Queries(ctx, r.Db).ListProjectHistory(ctx, dbgen.ListProjectHistoryParams{
 		ProjectID:  projectID,
 		CardID:     cardID,
 		UserID:     userID,
@@ -95,7 +95,7 @@ func (r *HistoryRepository) List(ctx context.Context, projectID, cardID, userID,
 }
 
 func (r *HistoryRepository) LastByUser(ctx context.Context, projectID, userID int64) (*model.HistoryUndoEntry, error) {
-	row, err := dbgen.New(r.Db).GetLastProjectHistoryByUser(ctx, dbgen.GetLastProjectHistoryByUserParams{
+	row, err := Queries(ctx, r.Db).GetLastProjectHistoryByUser(ctx, dbgen.GetLastProjectHistoryByUserParams{
 		ProjectID: projectID,
 		UserID:    pgtype.Int8{Int64: userID, Valid: true},
 	})
@@ -125,7 +125,7 @@ func (r *HistoryRepository) LastByUser(ctx context.Context, projectID, userID in
 }
 
 func (r *HistoryRepository) HasForeignOverlap(ctx context.Context, projectID, afterID, userID int64, entityType string, entityID int64, includeNested bool) (bool, error) {
-	return dbgen.New(r.Db).HasForeignNewerHistoryOverlap(ctx, dbgen.HasForeignNewerHistoryOverlapParams{
+	return Queries(ctx, r.Db).HasForeignNewerHistoryOverlap(ctx, dbgen.HasForeignNewerHistoryOverlapParams{
 		ProjectID:     projectID,
 		AfterID:       afterID,
 		UserID:        pgtype.Int8{Int64: userID, Valid: true},
@@ -137,15 +137,25 @@ func (r *HistoryRepository) HasForeignOverlap(ctx context.Context, projectID, af
 
 func (r *HistoryRepository) ApplyUndo(ctx context.Context, entry model.HistoryUndoEntry) error {
 	return ExecTx(ctx, r.Db, func(q *dbgen.Queries) error {
+		if _, err := q.LockProject(ctx, entry.ProjectID); err != nil {
+			return err
+		}
 		if err := applyHistoryUndo(ctx, q, entry); err != nil {
 			return err
+		}
+		withinLimits, err := q.RestorationWithinLimits(ctx, dbgen.RestorationWithinLimitsParams{Action: entry.Action, EntityID: entry.EntityID})
+		if err != nil {
+			return err
+		}
+		if !withinLimits {
+			return undoImpossible()
 		}
 		return q.DeleteProjectHistoryEntry(ctx, entry.ID)
 	})
 }
 
 func (r *HistoryRepository) DeleteEntry(ctx context.Context, id int64) error {
-	return dbgen.New(r.Db).DeleteProjectHistoryEntry(ctx, id)
+	return Queries(ctx, r.Db).DeleteProjectHistoryEntry(ctx, id)
 }
 
 func emptyToNil(s string) *string {

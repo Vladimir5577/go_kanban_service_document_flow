@@ -70,6 +70,11 @@ type KanbanCardComment struct {
 	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
 }
 
+type KanbanCardDeletionBatch struct {
+	CardID  int64 `json:"card_id"`
+	BatchID int64 `json:"batch_id"`
+}
+
 type KanbanCardLabel struct {
 	KanbanCardID  int64 `json:"kanban_card_id"`
 	KanbanLabelID int64 `json:"kanban_label_id"`

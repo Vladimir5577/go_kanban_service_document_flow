@@ -28,7 +28,7 @@ func NewCommentReadRepository(db *pgxpool.Pool) *CommentReadRepository {
 // MarkRead двигает знак пользователя. Чужой, удалённый или меньший id молча
 // ничего не меняет — вся проверка в самом запросе.
 func (r *CommentReadRepository) MarkRead(ctx context.Context, cardID, userID, upToCommentID int64) error {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	return queries.MarkCommentsRead(ctx, dbgen.MarkCommentsReadParams{
 		CardID:        cardID,
 		UserID:        userID,
@@ -37,7 +37,7 @@ func (r *CommentReadRepository) MarkRead(ctx context.Context, cardID, userID, up
 }
 
 func (r *CommentReadRepository) GetReaders(ctx context.Context, cardID, commentID int64) ([]model.CommentRead, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	rows, err := queries.GetCommentReaders(ctx, dbgen.GetCommentReadersParams{
 		CardID:        cardID,
 		UpToCommentID: commentID,
@@ -58,7 +58,7 @@ func (r *CommentReadRepository) GetReaders(ctx context.Context, cardID, commentI
 
 // GetMark — докуда пользователь дочитал карточку. Ноль означает «ни разу».
 func (r *CommentReadRepository) GetMark(ctx context.Context, cardID, userID int64) (int64, error) {
-	queries := dbgen.New(r.Db)
+	queries := Queries(ctx, r.Db)
 	return queries.GetCardReadMark(ctx, dbgen.GetCardReadMarkParams{
 		CardID: cardID,
 		UserID: userID,

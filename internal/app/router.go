@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"go_kanban_service/internal/middleware"
@@ -16,14 +17,13 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 	r.Use(middleware.RequestLogger())
 	r.Use(chiMiddleware.Recoverer)
 	r.Use(chiMiddleware.Timeout(15 * time.Second))
+	r.Use(limitJSONBody(1 << 20))
 
-	// public API group
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status": "ok", "service": "kanban"}`))
 	})
 
-	// protected API group
 	r.Group(func(r chi.Router) {
 		r.Use(authMw.Handler)
 
@@ -31,7 +31,6 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 		r.Get("/spa/api/kanban/tasks/collaborants", h.Card.ListTaskCollaborants())
 		r.Get("/spa/api/kanban/tasks", h.Card.ListTasks())
 
-		// PROJECTS (ProjectController)
 		r.Route("/spa/api/kanban/projects", func(r chi.Router) {
 			r.Get("/", h.Project.ListProjects())
 			r.Get("/me", h.Project.GetMyProjects())
@@ -43,14 +42,12 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 			r.Get("/{id}/history", h.History.List())
 			r.Post("/{id}/undo", h.History.Undo())
 
-			// PROJECT MEMBERS
 			r.Route("/{id}/members", func(r chi.Router) {
 				r.Put("/", h.ProjectMember.ReplaceMembers())
 				r.Patch("/{userId}", h.ProjectMember.UpdateMemberRole())
 				r.Delete("/{userId}", h.ProjectMember.RemoveMember())
 			})
 
-			// BOARDS
 			r.Route("/{id}/boards", func(r chi.Router) {
 				r.Post("/", h.Board.CreateBoard())
 				r.Get("/{boardId}", h.Board.GetBoard())
@@ -58,14 +55,12 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 				r.Delete("/{boardId}", h.Board.DeleteBoard())
 				r.Get("/{boardId}/archive", h.Board.GetBoardArchive())
 
-				// COLUMNS
 				r.Route("/{boardId}/columns", func(r chi.Router) {
 					r.Post("/", h.Column.CreateColumn())
 					r.Patch("/{columnId}", h.Column.UpdateColumn())
 					r.Delete("/{columnId}", h.Column.DeleteColumn())
 				})
 
-				// LABELS
 				r.Route("/{boardId}/labels", func(r chi.Router) {
 					r.Get("/", h.Label.GetLabels())
 					r.Post("/", h.Label.CreateLabel())
@@ -75,12 +70,10 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 			})
 		})
 
-		// PROJECT FOLDERS
 		r.Route("/spa/api/kanban/project-folders", func(r chi.Router) {
 			r.Get("/", h.ProjectFolder.GetProjectFolders())
 		})
 
-		// CARDS
 		r.Route("/spa/api/kanban/cards", func(r chi.Router) {
 			r.Post("/", h.Card.CreateCard())
 			r.Post("/{id}/duplicate", h.Card.DuplicateCard())
@@ -100,7 +93,6 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 				r.Delete("/{entryId}", h.Time.DeleteEntry())
 			})
 
-			// COMMENTS
 			r.Route("/{cardId}/comments", func(r chi.Router) {
 				r.Get("/", h.Comment.GetComments())
 				r.Post("/", h.Comment.CreateComment())
@@ -110,7 +102,6 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 				r.Get("/{commentId}/readers", h.Comment.GetCommentReaders())
 			})
 
-			// ATTACHMENTS
 			r.Route("/{cardId}/attachments", func(r chi.Router) {
 				r.Post("/", h.Attachment.UploadAttachment())
 				r.Get("/{id}/download", h.Attachment.DownloadAttachment())
@@ -123,4 +114,18 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 	})
 
 	return r
+}
+
+// limitJSONBody ограничивает тело запроса 1 МБ для всех маршрутов, кроме загрузки
+// вложений: там свой предел 50 МБ (ParseMultipartForm в attachment_handler.go).
+// Без этого JSON-обработчики читают тело любого размера (KSEC-01).
+func limitJSONBody(max int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Body != nil && !strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/attachments") {
+				r.Body = http.MaxBytesReader(w, r.Body, max)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }

@@ -8,13 +8,11 @@ import (
 	"go_kanban_service/internal/model"
 )
 
-// CreateProjectRequest DTO для создания проекта
 type CreateProjectRequest struct {
 	Name        string  `json:"name" validate:"required,min=3,max=70"`
 	Description *string `json:"description,omitempty" validate:"omitempty,max=1000"`
 }
 
-// UpdateProjectRequest DTO для обновления проекта
 type UpdateProjectRequest struct {
 	Name        *string `json:"name,omitempty" validate:"omitempty,min=3,max=70"`
 	Description *string `json:"description,omitempty" validate:"omitempty,max=1000"`
@@ -51,7 +49,6 @@ type MoveProjectResponse struct {
 	RebalancedProjects []*NavProjectResponse `json:"rebalancedProjects"`
 }
 
-// MemberResponse DTO для участника проекта
 type MemberResponse struct {
 	UserID     int64   `json:"userId"`
 	Login      string  `json:"login"`
@@ -193,8 +190,6 @@ func MapNavProjectResponse(p model.NavProject, currentUserID int64) *NavProjectR
 	isOwner := p.OwnerID == currentUserID
 	isProjectAdmin := isOwner || p.Role == "KANBAN_ADMIN"
 
-	// Create entry href: /kanban/projects/{id}
-	// (updated to include 'kanban' suffix to match current application URLs after extraction)
 	return &NavProjectResponse{
 		ID:             p.ID,
 		Name:           p.Name,
@@ -208,7 +203,6 @@ func MapNavProjectResponse(p model.NavProject, currentUserID int64) *NavProjectR
 	}
 }
 
-// Helper func
 func formatID(id int64) string {
 	return fmt.Sprintf("%d", id)
 }

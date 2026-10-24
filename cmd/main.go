@@ -11,7 +11,11 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("Can't load configuration", "error", err)
+		os.Exit(1)
+	}
 
 	logger.Setup(cfg.Env)
 	validator.Init()

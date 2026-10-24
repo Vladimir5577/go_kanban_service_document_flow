@@ -38,6 +38,16 @@ func NewProjectMemberService(repo repository.ProjectMemberRepositoryInterface, u
 }
 
 func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int64, reqs []dto.AddProjectMemberRequest) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		return s.mutateReplaceMembers(ctx, projectID, reqs)
+	})
+	return err
+}
+
+func (s *ProjectMemberService) mutateReplaceMembers(ctx context.Context, projectID int64, reqs []dto.AddProjectMemberRequest) error {
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return err
 	}
@@ -73,7 +83,6 @@ func (s *ProjectMemberService) ReplaceMembers(ctx context.Context, projectID int
 			KanbanProjectID: projectID,
 			UserID:          req.UserID,
 			Role:            string(role),
-			FolderID:        req.FolderID,
 		}
 	}
 
@@ -141,6 +150,16 @@ func sameMembers(before, after []model.ProjectUser) bool {
 }
 
 func (s *ProjectMemberService) UpdateMemberRole(ctx context.Context, projectID int64, userID int64, req dto.UpdateProjectMemberRequest) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		return s.mutateUpdateMemberRole(ctx, projectID, userID, req)
+	})
+	return err
+}
+
+func (s *ProjectMemberService) mutateUpdateMemberRole(ctx context.Context, projectID int64, userID int64, req dto.UpdateProjectMemberRequest) error {
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return err
 	}
@@ -180,6 +199,16 @@ func (s *ProjectMemberService) UpdateMemberRole(ctx context.Context, projectID i
 }
 
 func (s *ProjectMemberService) RemoveMember(ctx context.Context, projectID int64, userID int64) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		return s.mutateRemoveMember(ctx, projectID, userID)
+	})
+	return err
+}
+
+func (s *ProjectMemberService) mutateRemoveMember(ctx context.Context, projectID int64, userID int64) error {
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return err
 	}

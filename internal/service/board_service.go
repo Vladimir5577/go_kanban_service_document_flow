@@ -78,6 +78,19 @@ func NewBoardService(
 }
 
 func (s *BoardService) CreateBoard(ctx context.Context, projectID int64, req dto.CreateBoardRequest) (*model.Board, error) {
+	var out0 *model.Board
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateCreateBoard(ctx, projectID, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *BoardService) mutateCreateBoard(ctx context.Context, projectID int64, req dto.CreateBoardRequest) (*model.Board, error) {
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleAdmin); err != nil {
 		return nil, err
 	}
@@ -175,13 +188,11 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 		return boardResp, nil
 	}
 
-	// Собрать ID всех карточек
 	cardIDs := make([]int64, len(cards))
 	for i, card := range cards {
 		cardIDs[i] = card.ID
 	}
 
-	// Bulk-запросы по всем card IDs
 	assigneesByCard, err := s.cardRepo.GetAssigneesByCardIDs(ctx, cardIDs)
 	if err != nil {
 		return nil, err
@@ -222,7 +233,6 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 		card := &cards[i]
 		cardResp := dto.MapCardResponse(card)
 
-		// Проставить labels из labelMap
 		for _, lID := range card.LabelIDs {
 			if l, ok := labelMap[lID]; ok {
 				cardResp.Labels = append(cardResp.Labels, l)
@@ -234,7 +244,6 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 			cardResp.ColumnTitle = title
 		}
 
-		// Проставить checklist counts
 		if checklist, ok := checklistsByCard[card.ID]; ok {
 			cardResp.ChecklistTotal = checklist.Total
 			cardResp.ChecklistDone = checklist.Done
@@ -259,7 +268,7 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 		allCards = append(allCards, cardResp)
 	}
 
-	// Bulk-загрузка пользователей assignees
+	// Загружаем исполнителей, авторов и пользователей, завершивших карточки.
 	if len(allUserIDs) > 0 {
 		users, err := s.userRepo.GetUsersByIDs(ctx, allUserIDs)
 		if err != nil {
@@ -329,6 +338,19 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 }
 
 func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID int64, req dto.UpdateBoardRequest) (*model.Board, error) {
+	var out0 *model.Board
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateUpdateBoard(ctx, projectID, boardID, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *BoardService) mutateUpdateBoard(ctx context.Context, projectID int64, boardID int64, req dto.UpdateBoardRequest) (*model.Board, error) {
 	b, err := s.resolveBoard(ctx, projectID, boardID)
 	if err != nil {
 		return nil, err
@@ -412,6 +434,19 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 }
 
 func (s *BoardService) DeleteBoard(ctx context.Context, projectID int64, boardID int64) (*dto.DeleteBoardResponse, error) {
+	var out0 *dto.DeleteBoardResponse
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateDeleteBoard(ctx, projectID, boardID)
+		return err
+	})
+	return out0, err
+}
+
+func (s *BoardService) mutateDeleteBoard(ctx context.Context, projectID int64, boardID int64) (*dto.DeleteBoardResponse, error) {
 	b, err := s.resolveBoard(ctx, projectID, boardID)
 	if err != nil {
 		return nil, err

@@ -186,7 +186,7 @@ SELECT col.title, col.board_id, b.kanban_project_id,
        ), 65536)::float8 AS target_position
 FROM kanban_column col
 JOIN kanban_board b ON b.id = col.board_id
-WHERE col.id = $1 AND col.deleted_at IS NULL;
+WHERE col.id = $1 AND col.deleted_at IS NULL AND b.deleted_at IS NULL;
 
 -- name: DuplicateCard :many
 -- Копия карточки с подзадачами одним оператором — он атомарен сам по себе.
@@ -225,21 +225,30 @@ WHERE c.id = $1 AND old.id = c.id AND c.deleted_at IS NULL
 RETURNING c.id, c.title, c.position, c.updated_at, old.position AS old_position;
 
 -- name: DeleteCard :execrows
--- Ноль строк — карточки нет или она уже удалена: вызывающий отвечает 404.
-UPDATE kanban_card
-SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1);
+-- One operation ID for exactly the rows changed by this deletion.
+WITH batch AS MATERIALIZED (
+    SELECT nextval('kanban_card_deletion_batch_seq') AS id
+), removed AS (
+    UPDATE kanban_card
+    SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+    WHERE deleted_at IS NULL AND (id = $1 OR parent_id = $1)
+    RETURNING id
+)
+INSERT INTO kanban_card_deletion_batch (card_id, batch_id)
+SELECT removed.id, batch.id FROM removed CROSS JOIN batch
+ON CONFLICT (card_id) DO UPDATE SET batch_id = EXCLUDED.batch_id;
 
 -- name: RestoreCard :exec
--- Возвращаем только тех детей, которых удалили вместе с родителем: DeleteCard
--- ставит им один и тот же CURRENT_TIMESTAMP (время транзакции). Дети, удалённые
--- раньше и отдельно, к этой отмене отношения не имеют и остаются удалёнными.
--- Сторона FROM видит снимок до UPDATE, то есть p.deleted_at читается старым.
+-- Older deletions without a batch restore only the explicitly requested card.
 UPDATE kanban_card c
 SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
 FROM kanban_card p
-WHERE p.id = $1
-  AND (c.id = p.id OR (c.parent_id = p.id AND c.deleted_at = p.deleted_at));
+LEFT JOIN kanban_card_deletion_batch pb ON pb.card_id = p.id
+WHERE p.id = $1 AND p.deleted_at IS NOT NULL
+  AND (c.id = p.id OR (c.parent_id = p.id AND EXISTS (
+      SELECT 1 FROM kanban_card_deletion_batch cb
+      WHERE cb.card_id = c.id AND cb.batch_id = pb.batch_id
+  )));
 
 -- name: HasColumnsByBoard :one
 SELECT EXISTS(
@@ -294,23 +303,6 @@ WHERE card_id = $1 AND user_id = $2;
 -- name: ClearCardAssignees :exec
 DELETE FROM kanban_card_assignee
 WHERE card_id = $1;
-
--- name: ReplaceCardAssignees :many
--- Замена исполнителей одним оператором — он атомарен сам по себе, транзакция
--- не нужна. Все части видят состояние до оператора: old — прежний состав для
--- истории, DELETE не трогает остающихся, INSERT добавляет новых.
-WITH old AS (
-    SELECT user_id FROM kanban_card_assignee WHERE card_id = sqlc.arg(card_id)::bigint
-), removed AS (
-    DELETE FROM kanban_card_assignee
-    WHERE card_id = sqlc.arg(card_id)::bigint AND user_id <> ALL(sqlc.arg(user_ids)::bigint[])
-), added AS (
-    INSERT INTO kanban_card_assignee (card_id, user_id)
-    SELECT sqlc.arg(card_id)::bigint, unnest(sqlc.arg(user_ids)::bigint[])
-    ON CONFLICT DO NOTHING
-)
-SELECT user_id FROM old;
-
 
 -- ==============================
 -- LABELS
@@ -589,7 +581,7 @@ SELECT b.kanban_project_id FROM kanban_card card
 LEFT JOIN kanban_card parent ON parent.id = card.parent_id
 JOIN kanban_column c ON c.id = COALESCE(card.column_id, parent.column_id)
 JOIN kanban_board b ON c.board_id = b.id
-WHERE card.id = $1;
+WHERE card.id = $1 AND card.deleted_at IS NULL AND (card.parent_id IS NULL OR parent.deleted_at IS NULL) AND c.deleted_at IS NULL AND b.deleted_at IS NULL;
 
 -- name: GetProjectAssignee :one
 -- Кандидат в исполнители вместе с членством в проекте — одним запросом вместо
@@ -600,7 +592,7 @@ SELECT u.id, u.login, u.lastname, u.firstname, u.patronymic, u.avatar_name,
 FROM users u
 LEFT JOIN kanban_project_user pu
        ON pu.kanban_project_id = sqlc.arg(project_id) AND pu.user_id = u.id
-WHERE u.id = sqlc.arg(user_id);
+WHERE u.id = sqlc.arg(user_id) AND u.deleted_at IS NULL;
 
 -- name: GetColumnContext :one
 -- То же, что GetCardContext, но от колонки — всё, что нужно созданию карточки,
@@ -626,7 +618,7 @@ JOIN kanban_board b ON b.id = col.board_id
 JOIN kanban_project p ON p.id = b.kanban_project_id
 LEFT JOIN kanban_project_user pu
        ON pu.kanban_project_id = p.id AND pu.user_id = $2
-WHERE col.id = $1 AND col.deleted_at IS NULL;
+WHERE col.id = $1 AND col.deleted_at IS NULL AND b.deleted_at IS NULL;
 
 -- name: GetCardContext :one
 -- Всё, что нужно для проверки прав и для шапки карточки, одним запросом:
@@ -661,7 +653,7 @@ JOIN kanban_board b ON col.board_id = b.id
 JOIN kanban_project p ON b.kanban_project_id = p.id
 LEFT JOIN kanban_project_user pu
        ON pu.kanban_project_id = p.id AND pu.user_id = $2
-WHERE card.id = $1;
+WHERE card.id = $1 AND card.deleted_at IS NULL AND (card.parent_id IS NULL OR parent.deleted_at IS NULL) AND col.deleted_at IS NULL AND b.deleted_at IS NULL;
 
 -- name: RemoveProjectMember :exec
 DELETE FROM kanban_project_user
@@ -865,3 +857,46 @@ WHERE id = $1;
 UPDATE kanban_board
 SET deleted_at = NULL, updated_at = CURRENT_TIMESTAMP
 WHERE id = $1;
+
+-- name: LockProject :one
+SELECT id FROM kanban_project WHERE id = $1 FOR UPDATE;
+
+-- name: LockCard :one
+SELECT id FROM kanban_card WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+
+-- name: RestorationWithinLimits :one
+WITH boards_to_check AS (
+    SELECT col.board_id FROM kanban_card c
+    JOIN kanban_column col ON col.id = c.column_id
+    WHERE sqlc.arg(action)::text IN ('card.deleted', 'card.archived') AND c.id = sqlc.arg(entity_id)::bigint
+      AND c.parent_id IS NULL AND NOT c.is_archived
+    UNION
+    SELECT board_id FROM kanban_column WHERE sqlc.arg(action) = 'column.deleted' AND id = sqlc.arg(entity_id)
+    UNION
+    SELECT id FROM kanban_board WHERE sqlc.arg(action) = 'board.deleted' AND id = sqlc.arg(entity_id)
+)
+SELECT NOT EXISTS (
+    SELECT col.board_id FROM kanban_card c
+    JOIN kanban_column col ON col.id = c.column_id AND col.deleted_at IS NULL
+    WHERE col.board_id IN (SELECT board_id FROM boards_to_check)
+      AND c.parent_id IS NULL AND c.deleted_at IS NULL AND NOT c.is_archived
+    GROUP BY col.board_id HAVING count(*) > 300
+) AND NOT EXISTS (
+    SELECT parent_id FROM kanban_card
+    WHERE sqlc.arg(action) = 'card.deleted' AND deleted_at IS NULL
+      AND parent_id = (SELECT COALESCE(parent_id, id) FROM kanban_card WHERE id = sqlc.arg(entity_id))
+    GROUP BY parent_id HAVING count(*) > 100
+) AND NOT EXISTS (
+    SELECT card_id FROM kanban_card_comment
+    WHERE sqlc.arg(action) = 'comment.deleted' AND deleted_at IS NULL
+      AND card_id = (SELECT card_id FROM kanban_card_comment WHERE id = sqlc.arg(entity_id))
+    GROUP BY card_id HAVING count(*) > 300
+) AND NOT EXISTS (
+    SELECT card_id, context FROM kanban_attachment
+    WHERE sqlc.arg(action) = 'attachment.deleted' AND deleted_at IS NULL
+      AND (card_id, context) = (SELECT card_id, context FROM kanban_attachment WHERE id = sqlc.arg(entity_id))
+    GROUP BY card_id, context HAVING count(*) > 16
+) AS within_limits;
+
+-- name: LockUser :one
+SELECT id FROM users WHERE id = $1 FOR UPDATE;

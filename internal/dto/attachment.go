@@ -34,11 +34,9 @@ type AttachmentResponse struct {
 func MapAttachmentResponse(cfg *config.Config, a model.Attachment) *AttachmentResponse {
 	var previewUrl string
 	if strings.HasPrefix(a.ContentType, "image/") && cfg.ImgproxyBaseUrl != "" {
-		// e.g. http://localhost:8082/unsafe/rs:fit:400:400/plain/s3://kanban/cards/...
-		previewUrl = fmt.Sprintf("%s/unsafe/rs:fit:400:400/plain/s3://%s/%s",
-			strings.TrimRight(cfg.ImgproxyBaseUrl, "/"),
+		previewUrl = imgproxyURL(cfg, "rs:fit:400:400", fmt.Sprintf("s3://%s/%s",
 			cfg.MinioBucket,
-			a.StorageKey)
+			a.StorageKey))
 	} else {
 		previewUrl = fmt.Sprintf("/spa/api/kanban/cards/%d/attachments/%d/preview", a.CardID, a.ID)
 	}

@@ -59,6 +59,19 @@ func NewColumnService(repo repository.ColumnRepositoryInterface, permSvc *Permis
 }
 
 func (s *ColumnService) CreateColumn(ctx context.Context, projectID int64, boardID int64, req dto.CreateColumnRequest) (*model.Column, error) {
+	var out0 *model.Column
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, err = s.mutateCreateColumn(ctx, projectID, boardID, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *ColumnService) mutateCreateColumn(ctx context.Context, projectID int64, boardID int64, req dto.CreateColumnRequest) (*model.Column, error) {
 	if _, err := s.resolveBoard(ctx, projectID, boardID); err != nil {
 		return nil, err
 	}
@@ -99,6 +112,20 @@ func (s *ColumnService) CreateColumn(ctx context.Context, projectID int64, board
 }
 
 func (s *ColumnService) UpdateColumn(ctx context.Context, projectID int64, boardID int64, columnID int64, req dto.UpdateColumnRequest) (*model.Column, []model.Column, error) {
+	var out0 *model.Column
+	var out1 []model.Column
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, out1, err = s.mutateUpdateColumn(ctx, projectID, boardID, columnID, req)
+		return err
+	})
+	return out0, out1, err
+}
+
+func (s *ColumnService) mutateUpdateColumn(ctx context.Context, projectID int64, boardID int64, columnID int64, req dto.UpdateColumnRequest) (*model.Column, []model.Column, error) {
 	if _, err := s.resolveBoard(ctx, projectID, boardID); err != nil {
 		return nil, nil, err
 	}
@@ -193,6 +220,16 @@ func (s *ColumnService) UpdateColumn(ctx context.Context, projectID int64, board
 }
 
 func (s *ColumnService) DeleteColumn(ctx context.Context, projectID int64, boardID int64, columnID int64) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		return s.mutateDeleteColumn(ctx, projectID, boardID, columnID)
+	})
+	return err
+}
+
+func (s *ColumnService) mutateDeleteColumn(ctx context.Context, projectID int64, boardID int64, columnID int64) error {
 	if _, err := s.resolveBoard(ctx, projectID, boardID); err != nil {
 		return err
 	}

@@ -17,11 +17,12 @@ import (
 )
 
 type CardHandler struct {
-	service service.CardServiceInterface
+	service  service.CardServiceInterface
+	location *time.Location
 }
 
-func NewCardHandler(s service.CardServiceInterface) *CardHandler {
-	return &CardHandler{service: s}
+func NewCardHandler(s service.CardServiceInterface, location *time.Location) *CardHandler {
+	return &CardHandler{service: s, location: location}
 }
 
 func (h *CardHandler) CreateCard() http.HandlerFunc {
@@ -106,7 +107,7 @@ func (h *CardHandler) GetCardStandalone() http.HandlerFunc {
 
 func (h *CardHandler) ListTasks() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		f, err := parseTaskListQuery(r)
+		f, err := parseTaskListQuery(r, h.location)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -275,7 +276,7 @@ func (h *CardHandler) CompleteCard() http.HandlerFunc {
 	}
 }
 
-func parseTaskListQuery(r *http.Request) (repository.TaskListParams, error) {
+func parseTaskListQuery(r *http.Request, location *time.Location) (repository.TaskListParams, error) {
 	q := r.URL.Query()
 	invalid := apperr.New(apperr.CodeValidation, "invalid task list filter")
 
@@ -325,23 +326,23 @@ func parseTaskListQuery(r *http.Request) (repository.TaskListParams, error) {
 		pageSize = 100
 	}
 
-	dueFrom, dueTo, err := parseDayRange(q.Get("due_from"), q.Get("due_to"))
+	dueFrom, dueTo, err := parseDayRange(q.Get("due_from"), q.Get("due_to"), location)
 	if err != nil {
 		return repository.TaskListParams{}, err
 	}
-	trackedFrom, trackedTo, err := parseDayRange(q.Get("tracked_from"), q.Get("tracked_to"))
+	trackedFrom, trackedTo, err := parseDayRange(q.Get("tracked_from"), q.Get("tracked_to"), location)
 	if err != nil {
 		return repository.TaskListParams{}, err
 	}
-	createdFrom, createdTo, err := parseDayRange(q.Get("created_from"), q.Get("created_to"))
+	createdFrom, createdTo, err := parseDayRange(q.Get("created_from"), q.Get("created_to"), location)
 	if err != nil {
 		return repository.TaskListParams{}, err
 	}
-	completedFrom, completedTo, err := parseDayRange(q.Get("completed_from"), q.Get("completed_to"))
+	completedFrom, completedTo, err := parseDayRange(q.Get("completed_from"), q.Get("completed_to"), location)
 	if err != nil {
 		return repository.TaskListParams{}, err
 	}
-	archivedFrom, archivedTo, err := parseDayRange(q.Get("archived_from"), q.Get("archived_to"))
+	archivedFrom, archivedTo, err := parseDayRange(q.Get("archived_from"), q.Get("archived_to"), location)
 	if err != nil {
 		return repository.TaskListParams{}, err
 	}
@@ -426,20 +427,21 @@ func parseUserFilter(raw string) int64 {
 	return id
 }
 
-func parseDayRange(fromRaw, toRaw string) (from, to *time.Time, err error) {
+func parseDayRange(fromRaw, toRaw string, location *time.Location) (from, to *time.Time, err error) {
 	if fromRaw != "" {
-		t, parseErr := time.Parse("2006-01-02", fromRaw)
+		t, parseErr := time.ParseInLocation("2006-01-02", fromRaw, location)
 		if parseErr != nil {
 			return nil, nil, apperr.New(apperr.CodeValidation, "invalid task list filter")
 		}
-		from = &t
+		start := t.UTC()
+		from = &start
 	}
 	if toRaw != "" {
-		t, parseErr := time.Parse("2006-01-02", toRaw)
+		t, parseErr := time.ParseInLocation("2006-01-02", toRaw, location)
 		if parseErr != nil {
 			return nil, nil, apperr.New(apperr.CodeValidation, "invalid task list filter")
 		}
-		end := t.Add(24 * time.Hour)
+		end := t.AddDate(0, 0, 1).UTC()
 		to = &end
 	}
 	return from, to, nil

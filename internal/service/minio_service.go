@@ -10,12 +10,6 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
-type MinioServiceInterface interface {
-	UploadFile(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64, contentType string) error
-	GetObject(ctx context.Context, bucketName, objectName string) (*minio.Object, error)
-	DeleteObject(ctx context.Context, bucketName, objectName string) error
-}
-
 type MinioService struct {
 	client *minio.Client
 }
@@ -53,7 +47,7 @@ func (s *MinioService) UploadFile(ctx context.Context, bucketName, objectName st
 	return err
 }
 
-func (s *MinioService) GetObject(ctx context.Context, bucketName, objectName string) (*minio.Object, error) {
+func (s *MinioService) GetObject(ctx context.Context, bucketName, objectName string) (io.ReadCloser, error) {
 	return s.client.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
 }
 

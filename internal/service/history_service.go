@@ -124,6 +124,21 @@ func (s *HistoryService) list(ctx context.Context, projectID, cardID, cursor int
 }
 
 func (s *HistoryService) Undo(ctx context.Context, projectID int64) (string, string, bool, error) {
+	var out0 string
+	var out1 string
+	var out2 bool
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		if err := s.permSvc.lockProject(ctx, projectID); err != nil {
+			return err
+		}
+		var err error
+		out0, out1, out2, err = s.mutateUndo(ctx, projectID)
+		return err
+	})
+	return out0, out1, out2, err
+}
+
+func (s *HistoryService) mutateUndo(ctx context.Context, projectID int64) (string, string, bool, error) {
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
 		return "", "", false, err
 	}

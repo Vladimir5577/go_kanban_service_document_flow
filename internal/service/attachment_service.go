@@ -15,10 +15,16 @@ import (
 const maxAttachmentFilenameLength = 512
 
 type AttachmentServiceInterface interface {
+	AuthorizeUpload(ctx context.Context, cardID int64) error
 	GetAttachments(ctx context.Context, cardID int64, contextStr string) ([]model.Attachment, error)
 	GetAttachment(ctx context.Context, cardID, id int64, minRole Role) (*model.Attachment, error)
 	CreateAttachment(ctx context.Context, cardID int64, req dto.CreateAttachmentRequest) (*model.Attachment, error)
 	DeleteAttachment(ctx context.Context, attachment *model.Attachment) error
+}
+
+func (s *AttachmentService) AuthorizeUpload(ctx context.Context, cardID int64) error {
+	_, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleEditor)
+	return err
 }
 
 type AttachmentService struct {
@@ -70,6 +76,16 @@ func (s *AttachmentService) GetAttachment(ctx context.Context, cardID, id int64,
 }
 
 func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, req dto.CreateAttachmentRequest) (*model.Attachment, error) {
+	var out0 *model.Attachment
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		var err error
+		out0, err = s.mutateCreateAttachment(ctx, cardID, req)
+		return err
+	})
+	return out0, err
+}
+
+func (s *AttachmentService) mutateCreateAttachment(ctx context.Context, cardID int64, req dto.CreateAttachmentRequest) (*model.Attachment, error) {
 	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleEditor)
 	if err != nil {
 		return nil, err
@@ -80,7 +96,10 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 	}
 
 	attachments, err := s.repo.GetAttachmentsByCard(ctx, cardID, req.Context)
-	if err == nil && len(attachments) >= 16 {
+	if err != nil {
+		return nil, err
+	}
+	if len(attachments) >= 16 {
 		return nil, apperr.New(apperr.CodeAttachmentLimitReached, "maximum number of attachments (16) per context reached")
 	}
 
@@ -124,6 +143,13 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 }
 
 func (s *AttachmentService) DeleteAttachment(ctx context.Context, attachment *model.Attachment) error {
+	err := repository.WithMutation(ctx, s.permSvc.db, func(ctx context.Context) error {
+		return s.mutateDeleteAttachment(ctx, attachment)
+	})
+	return err
+}
+
+func (s *AttachmentService) mutateDeleteAttachment(ctx context.Context, attachment *model.Attachment) error {
 	if attachment == nil {
 		return apperr.New(apperr.CodeAttachmentNotFound, "attachment not found")
 	}
@@ -132,6 +158,10 @@ func (s *AttachmentService) DeleteAttachment(ctx context.Context, attachment *mo
 		return err
 	}
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleEditor); err != nil {
+		return err
+	}
+	attachment, err = s.GetAttachment(ctx, attachment.CardID, attachment.ID, RoleEditor)
+	if err != nil {
 		return err
 	}
 
