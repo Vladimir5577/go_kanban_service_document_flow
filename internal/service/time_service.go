@@ -40,11 +40,12 @@ type TimeService struct {
 	repo              repository.CardRepositoryInterface
 	permSvc           *PermissionService
 	realtimePublisher *KanbanRealtimePublisher
+	notificationSvc   *KanbanNotificationService
 	History           HistoryLogger
 }
 
-func NewTimeService(repo repository.CardRepositoryInterface, permSvc *PermissionService, realtime *KanbanRealtimePublisher) *TimeService {
-	return &TimeService{repo: repo, permSvc: permSvc, realtimePublisher: realtime}
+func NewTimeService(repo repository.CardRepositoryInterface, permSvc *PermissionService, realtime *KanbanRealtimePublisher, notificationSvc *KanbanNotificationService) *TimeService {
+	return &TimeService{repo: repo, permSvc: permSvc, realtimePublisher: realtime, notificationSvc: notificationSvc}
 }
 
 func (s *TimeService) SetEstimate(ctx context.Context, cardID int64, req dto.SetEstimateRequest) (*dto.EstimateResponse, error) {
@@ -129,6 +130,13 @@ func (s *TimeService) CreateEntry(ctx context.Context, cardID int64, req dto.Cre
 		After:       strconv.Itoa(entry.Minutes),
 	})
 	s.publishTime(ctx, acc.BoardID, cardID, map[string]any{"loggedMinutes": logged})
+	if s.notificationSvc != nil {
+		actorID := user.ID
+		runDetached(ctx, notifyTimeout, "failed to notify kanban time tracked", func(ctx context.Context) error {
+			s.notificationSvc.NotifyTimeTracked(ctx, acc.ProjectID, acc.BoardID, acc.BoardTitle, cardID, actorID, acc.CardTitle)
+			return nil
+		})
+	}
 	return &dto.TimeEntryResponse{
 		ID:            entry.ID,
 		Minutes:       entry.Minutes,

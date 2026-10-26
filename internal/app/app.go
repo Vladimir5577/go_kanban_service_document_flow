@@ -118,7 +118,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	commentSvc := service.NewCommentService(commentRepo, commentReadRepo, permSvc, userRepo, realtimePublisher, kanbanNotificationSvc)
 	commentHandler := handler.NewCommentHandler(commentSvc)
 
-	timeSvc := service.NewTimeService(cardRepo, permSvc, realtimePublisher)
+	timeSvc := service.NewTimeService(cardRepo, permSvc, realtimePublisher, kanbanNotificationSvc)
 	timeHandler := handler.NewTimeHandler(timeSvc)
 
 	labelSvc := service.NewLabelService(labelRepo, permSvc, boardRepo, realtimePublisher)

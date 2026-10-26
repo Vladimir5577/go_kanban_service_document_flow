@@ -400,6 +400,71 @@ func (s *KanbanNotificationService) NotifyCommentAdded(
 		"Новый комментарий в задаче", link)
 }
 
+// NotifyTimeTracked сообщает о записи времени админам проекта, автору задачи
+// и исполнителям самой задачи (assignees карточки). Исполнители подзадач не входят.
+// Кто записал время — без копии.
+func (s *KanbanNotificationService) NotifyTimeTracked(
+	ctx context.Context,
+	projectID, boardID int64,
+	boardTitle string,
+	cardID, actorID int64,
+	taskTitle string,
+) {
+	if s.publisher == nil {
+		return
+	}
+
+	admins, err := s.projectMemberRepo.GetAdminUserIDs(ctx, projectID)
+	if err != nil {
+		slog.Warn("failed to get admins", "project_id", projectID, "error", err)
+		return
+	}
+	assigneeMap, err := s.cardRepo.GetAssigneesByCardIDs(ctx, []int64{cardID})
+	if err != nil {
+		slog.Warn("failed to get assignees", "card_id", cardID, "error", err)
+		return
+	}
+	card, err := s.cardRepo.GetCardRow(ctx, cardID)
+	if err != nil {
+		slog.Warn("failed to get card author", "card_id", cardID, "error", err)
+		return
+	}
+
+	ids := append(append([]int64{}, admins...), assigneeMap[cardID]...)
+	if card != nil && card.CreatedByID != nil {
+		ids = append(ids, *card.CreatedByID)
+	}
+	recipients := filterOutActor(uniqueUserIDs(ids), int64Ptr(actorID))
+	if len(recipients) == 0 {
+		return
+	}
+
+	if boardTitle == "" {
+		boardTitle = s.getBoardTitle(ctx, boardID)
+	}
+	actorName := s.getAuthorName(ctx, actorID)
+	link := projectTaskLink(projectID, boardID, cardID)
+
+	evt := events.KanbanNotificationEvent{
+		Type:       "time_tracked",
+		ActorID:    actorID,
+		ProjectID:  projectID,
+		BoardID:    int64Ptr(boardID),
+		CardID:     &cardID,
+		Recipients: recipients,
+		Data: map[string]any{
+			"taskTitle":  taskTitle,
+			"authorName": actorName,
+			"boardTitle": boardTitle,
+			"link":       link,
+		},
+	}
+
+	s.publish(events.RoutingKanbanNotificationTimeTracked, evt,
+		fmt.Sprintf("%s записал(а) время в задаче «%s»", actorName, taskTitle),
+		"Время записано", link)
+}
+
 // NotifySubtaskAssigned is used when a subtask gets an assignee.
 func (s *KanbanNotificationService) NotifySubtaskAssigned(
 	ctx context.Context,
