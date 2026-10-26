@@ -27,9 +27,9 @@ type TaskListItem struct {
 	CompletedAt     *time.Time     `json:"completedAt"`
 	ArchivedAt      *time.Time     `json:"archivedAt"`
 	IsArchived      bool           `json:"isArchived"`
-	EstimateMinutes *int           `json:"estimateMinutes"`
-	LoggedMinutes   int            `json:"loggedMinutes"`
-	Assignee        *UserResponse  `json:"assignee"`
+	EstimateMinutes *int            `json:"estimateMinutes"`
+	LoggedMinutes   int             `json:"loggedMinutes"`
+	Assignees       []*UserResponse `json:"assignees"`
 }
 
 type TaskListResponse struct {

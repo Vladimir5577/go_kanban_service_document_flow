@@ -603,14 +603,13 @@ func (s *CardService) attachTaskAssignees(ctx context.Context, items []*dto.Task
 	userIDs := make([]int64, 0, len(byCard))
 	seen := make(map[int64]struct{}, len(byCard))
 	for _, ids := range byCard {
-		if len(ids) == 0 {
-			continue
+		for _, id := range ids {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			userIDs = append(userIDs, id)
 		}
-		if _, ok := seen[ids[0]]; ok {
-			continue
-		}
-		seen[ids[0]] = struct{}{}
-		userIDs = append(userIDs, ids[0])
 	}
 	users, err := s.userRepo.GetUsersByIDs(ctx, userIDs)
 	if err != nil {
@@ -862,24 +861,28 @@ func (s *CardService) DeleteCard(ctx context.Context, id int64) error {
 	return nil
 }
 
-// UpdateAssignees ставит или снимает исполнителя (не больше одного) и отдаёт
-// новый состав для ответа. Запросы: контекст с правами, кандидат с членством,
-// замена исполнителей, история. Доска, заголовок и владелец приезжают с
-// контекстом, исполнитель — с проверкой, поэтому ни ответу, ни realtime, ни
-// уведомлению перечитывать карточку не нужно.
+const maxCardAssignees = 8
+
+// UpdateAssignees заменяет состав исполнителей и отдаёт новый список.
+// У задачи не больше maxCardAssignees, у подзадачи по-прежнему не больше одного.
+// «На вас назначена» уходит только тем, кого в составе ещё не было.
 func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []int64) ([]*dto.CardAssigneeResponse, error) {
-	if len(userIDs) > 1 {
-		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
-	}
+	userIDs = positiveUniqueUserIDs(userIDs)
 
 	acc, err := s.permSvc.RequireCardRole(ctx, id, RoleEditor)
 	if err != nil {
 		return nil, err
 	}
+	if acc.ParentID != nil && len(userIDs) > 1 {
+		return nil, apperr.New(apperr.CodeValidation, "maximum 1 assignee allowed")
+	}
+	if len(userIDs) > maxCardAssignees {
+		return nil, apperr.New(apperr.CodeAssigneeLimitReached, "assignee limit reached")
+	}
 
-	var assignee *model.User
-	if len(userIDs) == 1 {
-		u, isMember, err := s.userRepo.GetProjectAssignee(ctx, acc.ProjectID, userIDs[0])
+	users := make([]model.User, 0, len(userIDs))
+	for _, uid := range userIDs {
+		u, isMember, err := s.userRepo.GetProjectAssignee(ctx, acc.ProjectID, uid)
 		if errors.Is(err, apperr.ErrNotFound) {
 			return nil, apperr.New(apperr.CodeUserNotFound, "user not found")
 		}
@@ -889,7 +892,7 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 		if !isMember && u.ID != acc.OwnerID {
 			return nil, apperr.New(apperr.CodeUserNotProjectMember, "user is not project member")
 		}
-		assignee = u
+		users = append(users, *u)
 	}
 
 	oldIDs, err := s.repo.ReplaceCardAssignees(ctx, id, userIDs)
@@ -897,6 +900,7 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 		return nil, err
 	}
 
+	added, removed := assigneeDelta(oldIDs, userIDs)
 	// Подзадача пишется в историю и уведомляет от имени родителя.
 	ownerCardID := id
 	if acc.ParentID != nil {
@@ -907,28 +911,34 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 		action = "card.assignee_removed"
 	} else if len(oldIDs) == 0 && len(userIDs) > 0 {
 		action = "card.assignee_added"
+	} else if len(added) > 0 && len(removed) == 0 {
+		action = "card.assignee_added"
+	} else if len(removed) > 0 && len(added) == 0 {
+		action = "card.assignee_removed"
 	}
-	appendHistory(s.History, ctx, model.HistoryWrite{
-		ProjectID:   acc.ProjectID,
-		Action:      action,
-		EntityType:  "card",
-		EntityID:    id,
-		CardID:      ownerCardID,
-		EntityTitle: acc.CardTitle,
-		EntityLink:  historyTaskPath(acc.ProjectID, acc.BoardID, ownerCardID),
-		Before:      historyIDsJSON(oldIDs),
-		After:       historyIDsJSON(userIDs),
-	})
+	if len(added) > 0 || len(removed) > 0 {
+		appendHistory(s.History, ctx, model.HistoryWrite{
+			ProjectID:   acc.ProjectID,
+			Action:      action,
+			EntityType:  "card",
+			EntityID:    id,
+			CardID:      ownerCardID,
+			EntityTitle: acc.CardTitle,
+			EntityLink:  historyTaskPath(acc.ProjectID, acc.BoardID, ownerCardID),
+			Before:      historyIDsJSON(oldIDs),
+			After:       historyIDsJSON(userIDs),
+		})
+	}
 
-	var assignees []*dto.CardAssigneeResponse
-	realtimeAssignees := []map[string]any{}
-	if assignee != nil {
-		assignees = []*dto.CardAssigneeResponse{{
-			ID:        assignee.ID,
-			Name:      dto.UserDisplayName(*assignee),
-			AvatarUrl: dto.UserAvatarURL(s.cfg, assignee.AvatarName, dto.AvatarSizeThumbnail),
-		}}
-		realtimeAssignees = append(realtimeAssignees, formatRealtimeAssignee(s.cfg, *assignee))
+	assignees := make([]*dto.CardAssigneeResponse, 0, len(users))
+	realtimeAssignees := make([]map[string]any, 0, len(users))
+	for _, user := range users {
+		assignees = append(assignees, &dto.CardAssigneeResponse{
+			ID:        user.ID,
+			Name:      dto.UserDisplayName(user),
+			AvatarUrl: dto.UserAvatarURL(s.cfg, user.AvatarName, dto.AvatarSizeThumbnail),
+		})
+		realtimeAssignees = append(realtimeAssignees, formatRealtimeAssignee(s.cfg, user))
 	}
 
 	if s.realtimePublisher != nil && acc.ParentID == nil {
@@ -940,12 +950,15 @@ func (s *CardService) UpdateAssignees(ctx context.Context, id int64, userIDs []i
 		})
 	}
 
-	if s.notificationSvc != nil && assignee != nil {
+	if s.notificationSvc != nil {
 		actorID := derefInt64(currentUserID(ctx))
-		runDetached(ctx, notifyTimeout, "failed to notify kanban task assigned", func(ctx context.Context) error {
-			s.notificationSvc.NotifyTaskAssigned(ctx, acc.ProjectID, acc.BoardID, acc.BoardTitle, ownerCardID, actorID, assignee.ID, acc.CardTitle, acc.ParentID != nil)
-			return nil
-		})
+		for _, uid := range added {
+			assigneeID := uid
+			runDetached(ctx, notifyTimeout, "failed to notify kanban task assigned", func(ctx context.Context) error {
+				s.notificationSvc.NotifyTaskAssigned(ctx, acc.ProjectID, acc.BoardID, acc.BoardTitle, ownerCardID, actorID, assigneeID, acc.CardTitle, acc.ParentID != nil)
+				return nil
+			})
+		}
 	}
 	return assignees, nil
 }
@@ -1370,6 +1383,39 @@ func derefInt64(p *int64) int64 {
 		return 0
 	}
 	return *p
+}
+
+func positiveUniqueUserIDs(ids []int64) []int64 {
+	clean := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			clean = append(clean, id)
+		}
+	}
+	return uniqueUserIDs(clean)
+}
+
+// assigneeDelta — кого добавили и кого сняли. Порядок added совпадает с новым составом.
+func assigneeDelta(oldIDs, nextIDs []int64) (added, removed []int64) {
+	oldSet := make(map[int64]struct{}, len(oldIDs))
+	for _, id := range oldIDs {
+		oldSet[id] = struct{}{}
+	}
+	nextSet := make(map[int64]struct{}, len(nextIDs))
+	for _, id := range nextIDs {
+		nextSet[id] = struct{}{}
+	}
+	for _, id := range nextIDs {
+		if _, ok := oldSet[id]; !ok {
+			added = append(added, id)
+		}
+	}
+	for _, id := range oldIDs {
+		if _, ok := nextSet[id]; !ok {
+			removed = append(removed, id)
+		}
+	}
+	return added, removed
 }
 
 func uniqueUserIDs(ids []int64) []int64 {

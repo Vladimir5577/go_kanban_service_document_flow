@@ -43,8 +43,11 @@ func attachAssigneesToTaskItems(items []*dto.TaskListItem, byCard map[int64][]in
 		if len(ids) == 0 {
 			continue
 		}
-		if user, ok := userByID[ids[0]]; ok {
-			item.Assignee = dto.MapUserResponse(&user)
+		item.Assignees = make([]*dto.UserResponse, 0, len(ids))
+		for _, id := range ids {
+			if user, ok := userByID[id]; ok {
+				item.Assignees = append(item.Assignees, dto.MapUserResponse(&user))
+			}
 		}
 	}
 }

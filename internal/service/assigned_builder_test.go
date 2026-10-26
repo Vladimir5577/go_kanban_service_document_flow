@@ -86,17 +86,20 @@ func TestMapTaskListItemsFlatAndParent(t *testing.T) {
 func TestAttachAssigneesToTaskItems(t *testing.T) {
 	items := []*dto.TaskListItem{{ID: 1}, {ID: 2}, {ID: 3}}
 	attachAssigneesToTaskItems(items, map[int64][]int64{
-		1: {10},
+		1: {10, 11},
 		2: {99},
-	}, []model.User{{ID: 10, Login: "ivan", Lastname: "Иванов", Firstname: "Иван"}})
+	}, []model.User{
+		{ID: 10, Login: "ivan", Lastname: "Иванов", Firstname: "Иван"},
+		{ID: 11, Login: "petr", Lastname: "Петров", Firstname: "Пётр"},
+	})
 
-	if items[0].Assignee == nil || items[0].Assignee.ID != 10 || items[0].Assignee.Lastname != "Иванов" {
-		t.Fatalf("item 1 = %#v", items[0].Assignee)
+	if len(items[0].Assignees) != 2 || items[0].Assignees[0].ID != 10 || items[0].Assignees[1].ID != 11 || items[0].Assignees[0].Lastname != "Иванов" {
+		t.Fatalf("item 1 = %#v", items[0].Assignees)
 	}
-	if items[1].Assignee != nil {
-		t.Fatalf("missing user should stay nil, got %#v", items[1].Assignee)
+	if len(items[1].Assignees) != 0 {
+		t.Fatalf("missing user should stay empty, got %#v", items[1].Assignees)
 	}
-	if items[2].Assignee != nil {
-		t.Fatalf("no assignee should stay nil, got %#v", items[2].Assignee)
+	if items[2].Assignees != nil {
+		t.Fatalf("no assignee should stay nil, got %#v", items[2].Assignees)
 	}
 }

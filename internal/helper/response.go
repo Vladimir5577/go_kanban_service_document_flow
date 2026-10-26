@@ -107,6 +107,7 @@ func statusForErrorCode(code apperr.ErrorCode) int {
 		apperr.CodeUndoImpossible:
 		return http.StatusConflict
 	case apperr.CodeValidation,
+		apperr.CodeAssigneeLimitReached,
 		apperr.CodeAttachmentLimitReached,
 		apperr.CodeBoardHasNoProject,
 		apperr.CodeBoardTitleRequired,

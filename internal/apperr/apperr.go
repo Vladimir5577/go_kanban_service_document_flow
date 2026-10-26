@@ -15,6 +15,7 @@ const (
 	CodeValidation   ErrorCode = "validation_failed"
 
 	CodeAccessDenied                ErrorCode = "access_denied"
+	CodeAssigneeLimitReached        ErrorCode = "assignee_limit_reached"
 	CodeAttachmentLimitReached      ErrorCode = "attachment_limit_reached"
 	CodeAttachmentNotFound          ErrorCode = "attachment_not_found"
 	CodeAttachmentNotPreviewable    ErrorCode = "attachment_not_previewable"
@@ -137,7 +138,8 @@ func categoryCode(code ErrorCode) ErrorCode {
 		CodeUndoEmpty,
 		CodeUndoImpossible:
 		return CodeConflict
-	case CodeAttachmentLimitReached,
+	case CodeAssigneeLimitReached,
+		CodeAttachmentLimitReached,
 		CodeBoardHasNoProject,
 		CodeBoardTitleRequired,
 		CodeBoardTitleTooLong,
