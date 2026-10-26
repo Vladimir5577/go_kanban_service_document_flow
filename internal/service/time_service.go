@@ -22,9 +22,9 @@ func validTimeMinutes(n int) error {
 	return nil
 }
 
-// canSetEstimate — план меняет автор задачи или админ проекта. Владелец уже приходит как админ.
+// canSetEstimate — план меняет автор задачи, редактор или админ. Владелец уже приходит как админ.
 func canSetEstimate(userID int64, createdBy *int64, role Role) bool {
-	if role == RoleAdmin {
+	if hasRole(role, RoleEditor) {
 		return true
 	}
 	return createdBy != nil && *createdBy == userID
