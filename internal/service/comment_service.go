@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"go_kanban_service/internal/apperr"
+	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/middleware"
 	"go_kanban_service/internal/model"
@@ -33,28 +34,49 @@ type CommentServiceInterface interface {
 type CommentService struct {
 	repo              repository.CommentRepositoryInterface
 	readRepo          repository.CommentReadRepositoryInterface
+	attachmentRepo    repository.CommentAttachmentRepositoryInterface
 	permSvc           *PermissionService
 	userRepo          repository.UserRepositoryInterface
 	realtimePublisher *KanbanRealtimePublisher
 	notificationSvc   *KanbanNotificationService
+	cfg               *config.Config
 	History           HistoryLogger
 }
 
 func NewCommentService(
 	repo repository.CommentRepositoryInterface,
 	readRepo repository.CommentReadRepositoryInterface,
+	attachmentRepo repository.CommentAttachmentRepositoryInterface,
 	permSvc *PermissionService,
 	userRepo repository.UserRepositoryInterface,
 	realtimePublisher *KanbanRealtimePublisher,
 	notificationSvc *KanbanNotificationService,
+	cfg *config.Config,
 ) *CommentService {
 	return &CommentService{
 		repo:              repo,
 		readRepo:          readRepo,
+		attachmentRepo:    attachmentRepo,
 		permSvc:           permSvc,
 		userRepo:          userRepo,
 		realtimePublisher: realtimePublisher,
 		notificationSvc:   notificationSvc,
+		cfg:               cfg,
+	}
+}
+
+// AttachFilesToComments раскладывает файлы по комментариям карточки.
+// Комментарий без файлов получает пустой срез, чтобы в JSON ушёл [] вместо null.
+func AttachFilesToComments(comments []model.Comment, attachments []model.CommentAttachment) {
+	byID := make(map[int64]int, len(comments))
+	for i := range comments {
+		comments[i].Attachments = []model.CommentAttachment{}
+		byID[comments[i].ID] = i
+	}
+	for _, a := range attachments {
+		if i, ok := byID[a.CommentID]; ok {
+			comments[i].Attachments = append(comments[i].Attachments, a)
+		}
 	}
 }
 
@@ -66,6 +88,11 @@ func (s *CommentService) GetComments(ctx context.Context, cardID int64) ([]model
 	if err != nil {
 		return nil, err
 	}
+	attachments, err := s.attachmentRepo.GetByCard(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	AttachFilesToComments(comments, attachments)
 	s.populateAuthorNames(ctx, comments)
 	return comments, nil
 }
@@ -82,8 +109,76 @@ func (s *CommentService) GetComment(ctx context.Context, commentID int64) (*mode
 	if err := s.permSvc.RequireRole(ctx, projectID, RoleViewer); err != nil {
 		return nil, err
 	}
+	if err := s.loadFiles(ctx, c); err != nil {
+		return nil, err
+	}
 	s.populateAuthorName(ctx, c)
 	return c, nil
+}
+
+func (s *CommentService) loadFiles(ctx context.Context, c *model.Comment) error {
+	files, err := s.attachmentRepo.GetByComment(ctx, c.ID)
+	if err != nil {
+		return err
+	}
+	c.Attachments = files
+	return nil
+}
+
+// RequireCardComment — живой комментарий этой карточки, доступный текущему
+// пользователю как viewer проекта.
+func (s *CommentService) RequireCardComment(ctx context.Context, cardID, commentID int64) (*model.Comment, CardAccess, error) {
+	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
+	if err != nil {
+		return nil, CardAccess{}, err
+	}
+
+	c, err := s.repo.GetComment(ctx, commentID)
+	if err != nil {
+		return nil, CardAccess{}, withNotFoundCode(err, apperr.CodeCommentNotFound)
+	}
+	if c.CardID != cardID {
+		return nil, CardAccess{}, apperr.New(apperr.CodeCommentNotFound, "comment not found")
+	}
+	return c, acc, nil
+}
+
+// RequireOwnComment — комментарий карточки, написанный текущим пользователем.
+// Права те же, что на сам комментарий: viewer проекта и авторство.
+func (s *CommentService) RequireOwnComment(ctx context.Context, cardID, commentID int64) (*model.Comment, CardAccess, error) {
+	c, acc, err := s.RequireCardComment(ctx, cardID, commentID)
+	if err != nil {
+		return nil, CardAccess{}, err
+	}
+
+	user, ok := middleware.GetUser(ctx)
+	if !ok {
+		return nil, CardAccess{}, apperr.ErrUnauthorized
+	}
+	if c.AuthorID != user.ID {
+		return nil, CardAccess{}, apperr.New(apperr.CodeCommentAuthorOnly, "comment author only")
+	}
+	return c, acc, nil
+}
+
+// PublishCommentChanged шлёт в комнату задачи комментарий целиком — после
+// того, как у него добавили или сняли файл.
+func (s *CommentService) PublishCommentChanged(ctx context.Context, cardID, commentID int64) {
+	if s.realtimePublisher == nil {
+		return
+	}
+	c, err := s.repo.GetComment(ctx, commentID)
+	if err != nil {
+		return
+	}
+	if err := s.loadFiles(ctx, c); err != nil {
+		return
+	}
+	s.populateAuthorName(ctx, c)
+	s.publishComment(ctx, cardID, map[string]any{
+		"type":    "comment_updated",
+		"comment": dto.MapCommentResponse(s.cfg, c),
+	})
 }
 
 func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dto.CreateCommentRequest) (*model.Comment, error) {
@@ -113,9 +208,10 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 	}
 
 	c := &model.Comment{
-		Body:     body,
-		CardID:   cardID,
-		AuthorID: user.ID,
+		Body:        body,
+		CardID:      cardID,
+		AuthorID:    user.ID,
+		Attachments: []model.CommentAttachment{},
 	}
 	created, err := s.repo.CreateComment(ctx, cardID, c)
 	if err != nil {
@@ -140,7 +236,7 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 	s.publishCommentsCount(ctx, acc.BoardID, cardID)
 	s.publishComment(ctx, cardID, map[string]any{
 		"type":    "comment_created",
-		"comment": dto.MapCommentResponse(created),
+		"comment": dto.MapCommentResponse(s.cfg, created),
 	})
 
 	// Comment notification (unified)
@@ -157,25 +253,9 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 }
 
 func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commentID int64, req dto.UpdateCommentRequest) (*model.Comment, error) {
-	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
+	c, acc, err := s.RequireOwnComment(ctx, cardID, commentID)
 	if err != nil {
 		return nil, err
-	}
-
-	c, err := s.repo.GetComment(ctx, commentID)
-	if err != nil {
-		return nil, withNotFoundCode(err, apperr.CodeCommentNotFound)
-	}
-	if c.CardID != cardID {
-		return nil, apperr.New(apperr.CodeCommentNotFound, "comment not found")
-	}
-
-	user, ok := middleware.GetUser(ctx)
-	if !ok {
-		return nil, apperr.ErrUnauthorized
-	}
-	if c.AuthorID != user.ID {
-		return nil, apperr.New(apperr.CodeCommentAuthorOnly, "comment author only")
 	}
 
 	if req.Body == nil {
@@ -185,6 +265,13 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 	body, err := normalizeCommentBody(*req.Body)
 	if err != nil {
 		return nil, err
+	}
+	if err := s.loadFiles(ctx, c); err != nil {
+		return nil, err
+	}
+	// Без текста комментарий живёт только на файлах.
+	if body == "" && len(c.Attachments) == 0 {
+		return nil, apperr.New(apperr.CodeCommentBodyRequired, "comment body required")
 	}
 	c.Body = body
 
@@ -205,31 +292,15 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 	})
 	s.publishComment(ctx, cardID, map[string]any{
 		"type":    "comment_updated",
-		"comment": dto.MapCommentResponse(updated),
+		"comment": dto.MapCommentResponse(s.cfg, updated),
 	})
 	return updated, nil
 }
 
 func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commentID int64) error {
-	acc, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer)
+	_, acc, err := s.RequireOwnComment(ctx, cardID, commentID)
 	if err != nil {
 		return err
-	}
-
-	c, err := s.repo.GetComment(ctx, commentID)
-	if err != nil {
-		return withNotFoundCode(err, apperr.CodeCommentNotFound)
-	}
-	if c.CardID != cardID {
-		return apperr.New(apperr.CodeCommentNotFound, "comment not found")
-	}
-
-	user, ok := middleware.GetUser(ctx)
-	if !ok {
-		return apperr.ErrUnauthorized
-	}
-	if c.AuthorID != user.ID {
-		return apperr.New(apperr.CodeCommentAuthorOnly, "comment author only")
 	}
 
 	if err := s.repo.DeleteComment(ctx, commentID); err != nil {
@@ -360,11 +431,10 @@ func buildCommentReaders(users []model.User, readAt map[int64]time.Time, updated
 	return readers
 }
 
+// normalizeCommentBody режет пробелы и длину; пустоту решает вызывающий —
+// комментарий может держаться на одних файлах.
 func normalizeCommentBody(body string) (string, error) {
 	body = strings.TrimSpace(body)
-	if body == "" {
-		return "", apperr.New(apperr.CodeCommentBodyRequired, "comment body required")
-	}
 	if utf8.RuneCountInString(body) > maxCommentBodyLength {
 		return "", apperr.New(apperr.CodeCommentBodyTooLong, "comment body too long")
 	}

@@ -162,15 +162,28 @@ func applyHistoryUndo(ctx context.Context, q *dbgen.Queries, e model.HistoryUndo
 		}
 		return q.AddCardLabel(ctx, dbgen.AddCardLabelParams{KanbanCardID: e.CardID, KanbanLabelID: e.EntityID})
 	case "comment.created":
-		return q.DeleteComment(ctx, e.EntityID)
+		if err := q.DeleteComment(ctx, e.EntityID); err != nil {
+			return err
+		}
+		return q.DeleteCommentAttachments(ctx, e.EntityID)
 	case "comment.deleted":
+		// Файлы первыми: они ищутся по ещё не снятому deleted_at комментария.
+		if err := q.RestoreCommentAttachments(ctx, e.EntityID); err != nil {
+			return err
+		}
 		return q.RestoreComment(ctx, e.EntityID)
 	case "comment.updated":
 		_, err := q.UpdateComment(ctx, dbgen.UpdateCommentParams{Body: e.Before, ID: e.EntityID})
 		return err
 	case "attachment.created":
+		if e.EntityType == "comment_attachment" {
+			return q.DeleteCommentAttachment(ctx, e.EntityID)
+		}
 		return q.DeleteAttachment(ctx, e.EntityID)
 	case "attachment.deleted":
+		if e.EntityType == "comment_attachment" {
+			return q.RestoreCommentAttachment(ctx, e.EntityID)
+		}
 		return q.RestoreAttachment(ctx, e.EntityID)
 	case "card.updated.estimate":
 		minutes, ok := parseUndoEstimate(e.Before)

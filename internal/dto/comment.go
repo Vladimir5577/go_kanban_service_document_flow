@@ -3,11 +3,15 @@ package dto
 import (
 	"time"
 
+	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/model"
 )
 
+// Body может быть пустым: файлы комментария приезжают следом отдельными
+// запросами, а комментарий без текста и без файлов запрещён на снятии
+// последнего файла.
 type CreateCommentRequest struct {
-	Body string `json:"body" validate:"required"`
+	Body string `json:"body"`
 }
 
 type UpdateCommentRequest struct {
@@ -38,34 +42,36 @@ func MapCommentReadersResponse(readers []model.CommentReader) []*CommentReaderRe
 }
 
 type CommentResponse struct {
-	ID         int64      `json:"id"`
-	Body       string     `json:"body"`
-	CardID     int64      `json:"cardId"`
-	AuthorID   int64      `json:"authorId"`
-	AuthorName string     `json:"authorName"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	UpdatedAt  *time.Time `json:"updatedAt,omitempty"`
+	ID          int64                        `json:"id"`
+	Body        string                       `json:"body"`
+	CardID      int64                        `json:"cardId"`
+	AuthorID    int64                        `json:"authorId"`
+	AuthorName  string                       `json:"authorName"`
+	CreatedAt   time.Time                    `json:"createdAt"`
+	UpdatedAt   *time.Time                   `json:"updatedAt,omitempty"`
+	Attachments []*CommentAttachmentResponse `json:"attachments"`
 }
 
-func MapCommentResponse(c *model.Comment) *CommentResponse {
+func MapCommentResponse(cfg *config.Config, c *model.Comment) *CommentResponse {
 	if c == nil {
 		return nil
 	}
 	return &CommentResponse{
-		ID:         c.ID,
-		Body:       c.Body,
-		CardID:     c.CardID,
-		AuthorID:   c.AuthorID,
-		AuthorName: c.AuthorName,
-		CreatedAt:  c.CreatedAt,
-		UpdatedAt:  c.UpdatedAt,
+		ID:          c.ID,
+		Body:        c.Body,
+		CardID:      c.CardID,
+		AuthorID:    c.AuthorID,
+		AuthorName:  c.AuthorName,
+		CreatedAt:   c.CreatedAt,
+		UpdatedAt:   c.UpdatedAt,
+		Attachments: MapCommentAttachmentsResponse(cfg, c.CardID, c.Attachments),
 	}
 }
 
-func MapCommentsResponse(comments []model.Comment) []*CommentResponse {
+func MapCommentsResponse(cfg *config.Config, comments []model.Comment) []*CommentResponse {
 	resp := make([]*CommentResponse, 0, len(comments))
 	for i := range comments {
-		resp = append(resp, MapCommentResponse(&comments[i]))
+		resp = append(resp, MapCommentResponse(cfg, &comments[i]))
 	}
 	return resp
 }

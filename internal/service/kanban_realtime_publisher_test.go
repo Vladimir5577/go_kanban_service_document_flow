@@ -15,7 +15,7 @@ func TestKanbanRealtimePublisherPublishesMercureUpdate(t *testing.T) {
 	const secret = "test-secret"
 	called := false
 
-	publisher := NewKanbanRealtimePublisher("http://mercure/.well-known/mercure", secret, nil, nil, nil, nil, nil, nil, nil)
+	publisher := NewKanbanRealtimePublisher("http://mercure/.well-known/mercure", secret, nil, nil, nil, nil, nil, nil)
 	publisher.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		called = true
 
@@ -93,7 +93,7 @@ func TestKanbanRealtimePublisherPublishesMercureUpdate(t *testing.T) {
 
 func TestPublishCardCommentUsesCardTopic(t *testing.T) {
 	const secret = "test-secret"
-	publisher := NewKanbanRealtimePublisher("http://mercure/.well-known/mercure", secret, nil, nil, nil, nil, nil, nil, nil)
+	publisher := NewKanbanRealtimePublisher("http://mercure/.well-known/mercure", secret, nil, nil, nil, nil, nil, nil)
 	publisher.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatalf("parse form: %v", err)

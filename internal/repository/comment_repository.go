@@ -133,7 +133,12 @@ func (r *CommentRepository) UpdateComment(ctx context.Context, c *model.Comment)
 	return c, nil
 }
 
+// DeleteComment прячет комментарий вместе с его файлами (одним штампом).
 func (r *CommentRepository) DeleteComment(ctx context.Context, id int64) error {
-	queries := dbgen.New(r.Db)
-	return queries.DeleteComment(ctx, id)
+	return ExecTx(ctx, r.Db, func(q *dbgen.Queries) error {
+		if err := q.DeleteComment(ctx, id); err != nil {
+			return err
+		}
+		return q.DeleteCommentAttachments(ctx, id)
+	})
 }

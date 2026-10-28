@@ -28,13 +28,12 @@ type KanbanRealtimePublisher struct {
 	jwtSecret string
 	client    *http.Client
 
-	cardRepo       repository.CardRepositoryInterface
-	columnRepo     repository.ColumnRepositoryInterface
-	commentRepo    repository.CommentRepositoryInterface
-	attachmentRepo repository.AttachmentRepositoryInterface
-	labelRepo      repository.LabelRepositoryInterface
-	userRepo       repository.UserRepositoryInterface
-	cfg            *config.Config
+	cardRepo    repository.CardRepositoryInterface
+	columnRepo  repository.ColumnRepositoryInterface
+	commentRepo repository.CommentRepositoryInterface
+	labelRepo   repository.LabelRepositoryInterface
+	userRepo    repository.UserRepositoryInterface
+	cfg         *config.Config
 }
 
 func NewKanbanRealtimePublisher(
@@ -43,7 +42,6 @@ func NewKanbanRealtimePublisher(
 	cardRepo repository.CardRepositoryInterface,
 	columnRepo repository.ColumnRepositoryInterface,
 	commentRepo repository.CommentRepositoryInterface,
-	attachmentRepo repository.AttachmentRepositoryInterface,
 	labelRepo repository.LabelRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
 	cfg *config.Config,
@@ -54,13 +52,12 @@ func NewKanbanRealtimePublisher(
 		client: &http.Client{
 			Timeout: mercurePublishTimeout,
 		},
-		cardRepo:       cardRepo,
-		columnRepo:     columnRepo,
-		commentRepo:    commentRepo,
-		attachmentRepo: attachmentRepo,
-		labelRepo:      labelRepo,
-		userRepo:       userRepo,
-		cfg:            cfg,
+		cardRepo:    cardRepo,
+		columnRepo:  columnRepo,
+		commentRepo: commentRepo,
+		labelRepo:   labelRepo,
+		userRepo:    userRepo,
+		cfg:         cfg,
 	}
 }
 
@@ -202,14 +199,8 @@ func (p *KanbanRealtimePublisher) BuildCommentsCount(ctx context.Context, cardID
 	if err != nil {
 		return nil, err
 	}
-	chat, err := p.attachmentRepo.GetChatCountsByCardIDs(ctx, []int64{cardID})
-	if err != nil {
-		return nil, err
-	}
 
-	return map[string]any{
-		"commentsCount": comments[cardID] + chat[cardID],
-	}, nil
+	return map[string]any{"commentsCount": comments[cardID]}, nil
 }
 
 func (p *KanbanRealtimePublisher) buildLoggedMinutes(ctx context.Context, cardID int64) (map[string]any, error) {

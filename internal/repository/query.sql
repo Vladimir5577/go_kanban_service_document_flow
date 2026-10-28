@@ -404,8 +404,60 @@ UPDATE kanban_card_comment
 SET deleted_at = CURRENT_TIMESTAMP
 WHERE id = $1 AND deleted_at IS NULL;
 
+-- Файлы комментария прячутся вместе с ним и тем же штампом: по нему
+-- RestoreCommentAttachments отличает их от файлов, снятых автором раньше.
+-- Вызывать после DeleteComment в той же транзакции.
+-- name: DeleteCommentAttachments :exec
+UPDATE kanban_card_comment_attachment a
+SET deleted_at = c.deleted_at
+FROM kanban_card_comment c
+WHERE c.id = $1 AND a.comment_id = c.id AND a.deleted_at IS NULL;
+
 -- name: RestoreComment :exec
 UPDATE kanban_card_comment
+SET deleted_at = NULL
+WHERE id = $1;
+
+-- Вызывать до RestoreComment: сравнение идёт с ещё не снятым deleted_at.
+-- name: RestoreCommentAttachments :exec
+UPDATE kanban_card_comment_attachment a
+SET deleted_at = NULL
+FROM kanban_card_comment c
+WHERE c.id = $1 AND a.comment_id = c.id AND a.deleted_at = c.deleted_at;
+
+
+-- ==============================
+-- COMMENT ATTACHMENTS
+-- ==============================
+
+-- name: GetCommentAttachment :one
+SELECT * FROM kanban_card_comment_attachment
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
+
+-- name: GetCommentAttachmentsByComment :many
+SELECT * FROM kanban_card_comment_attachment
+WHERE comment_id = $1 AND deleted_at IS NULL
+ORDER BY created_at ASC, id ASC;
+
+-- Файлы всех живых комментариев карточки — одним запросом для деталей карточки.
+-- name: GetCommentAttachmentsByCard :many
+SELECT a.* FROM kanban_card_comment_attachment a
+JOIN kanban_card_comment c ON c.id = a.comment_id
+WHERE c.card_id = $1 AND a.deleted_at IS NULL AND c.deleted_at IS NULL
+ORDER BY a.created_at ASC, a.id ASC;
+
+-- name: CreateCommentAttachment :one
+INSERT INTO kanban_card_comment_attachment (filename, storage_key, content_type, size_bytes, comment_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING *;
+
+-- name: DeleteCommentAttachment :exec
+UPDATE kanban_card_comment_attachment
+SET deleted_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL;
+
+-- name: RestoreCommentAttachment :exec
+UPDATE kanban_card_comment_attachment
 SET deleted_at = NULL
 WHERE id = $1;
 
@@ -458,18 +510,12 @@ WHERE id = $1 AND deleted_at IS NULL LIMIT 1;
 
 -- name: GetAttachmentsByCard :many
 SELECT * FROM kanban_attachment
-WHERE card_id = $1 AND context = $2 AND deleted_at IS NULL
+WHERE card_id = $1 AND deleted_at IS NULL
 ORDER BY created_at ASC;
 
--- name: GetChatAttachmentCountsByCardIDs :many
-SELECT card_id, COUNT(*) AS count
-FROM kanban_attachment
-WHERE card_id = ANY($1::bigint[]) AND context = 'chat' AND deleted_at IS NULL
-GROUP BY card_id;
-
 -- name: CreateAttachment :one
-INSERT INTO kanban_attachment (filename, storage_key, content_type, size_bytes, context, card_id, author_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO kanban_attachment (filename, storage_key, content_type, size_bytes, card_id, author_id)
+VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: DeleteAttachment :exec

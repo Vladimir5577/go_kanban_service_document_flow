@@ -32,18 +32,19 @@ type App struct {
 }
 
 type Handlers struct {
-	User          *handler.UserHandler
-	Project       *handler.ProjectHandler
-	Attachment    *handler.AttachmentHandler
-	Board         *handler.BoardHandler
-	Card          *handler.CardHandler
-	Column        *handler.ColumnHandler
-	Comment       *handler.CommentHandler
-	Label         *handler.LabelHandler
-	ProjectFolder *handler.ProjectFolderHandler
-	ProjectMember *handler.ProjectMemberHandler
-	History       *handler.HistoryHandler
-	Time          *handler.TimeHandler
+	User              *handler.UserHandler
+	Project           *handler.ProjectHandler
+	Attachment        *handler.AttachmentHandler
+	CommentAttachment *handler.CommentAttachmentHandler
+	Board             *handler.BoardHandler
+	Card              *handler.CardHandler
+	Column            *handler.ColumnHandler
+	Comment           *handler.CommentHandler
+	Label             *handler.LabelHandler
+	ProjectFolder     *handler.ProjectFolderHandler
+	ProjectMember     *handler.ProjectMemberHandler
+	History           *handler.HistoryHandler
+	Time              *handler.TimeHandler
 }
 
 func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
@@ -75,6 +76,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	userHandler := handler.NewUserHandler(userSvc)
 
 	attachmentRepo := repository.NewAttachmentRepository(db)
+	commentAttachmentRepo := repository.NewCommentAttachmentRepository(db)
 	commentRepo := repository.NewCommentRepository(db)
 	commentReadRepo := repository.NewCommentReadRepository(db)
 	labelRepo := repository.NewLabelRepository(db)
@@ -89,7 +91,6 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		cardRepo,
 		columnRepo,
 		commentRepo,
-		attachmentRepo,
 		labelRepo,
 		userRepo,
 		cfg,
@@ -106,17 +107,20 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 		columnRepo,
 	)
 
-	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, realtimePublisher, userRepo)
+	commentSvc := service.NewCommentService(commentRepo, commentReadRepo, commentAttachmentRepo, permSvc, userRepo, realtimePublisher, kanbanNotificationSvc, cfg)
+	commentHandler := handler.NewCommentHandler(commentSvc, cfg)
+
+	attachmentSvc := service.NewAttachmentService(attachmentRepo, permSvc, userRepo)
 	attachmentHandler := handler.NewAttachmentHandler(attachmentSvc, minioSvc, cfg)
 
-	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, commentRepo, commentReadRepo, attachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
+	commentAttachmentSvc := service.NewCommentAttachmentService(commentAttachmentRepo, commentSvc)
+	commentAttachmentHandler := handler.NewCommentAttachmentHandler(commentAttachmentSvc, minioSvc, cfg)
+
+	cardSvc := service.NewCardService(cardRepo, permSvc, minioSvc, commentRepo, commentReadRepo, attachmentRepo, commentAttachmentRepo, labelRepo, userRepo, columnRepo, boardRepo, projectMemberRepo, realtimePublisher, kanbanNotificationSvc, cfg)
 	cardHandler := handler.NewCardHandler(cardSvc)
 
 	columnSvc := service.NewColumnService(columnRepo, permSvc, boardRepo)
 	columnHandler := handler.NewColumnHandler(columnSvc)
-
-	commentSvc := service.NewCommentService(commentRepo, commentReadRepo, permSvc, userRepo, realtimePublisher, kanbanNotificationSvc)
-	commentHandler := handler.NewCommentHandler(commentSvc)
 
 	timeSvc := service.NewTimeService(cardRepo, permSvc, realtimePublisher, kanbanNotificationSvc)
 	timeHandler := handler.NewTimeHandler(timeSvc)
@@ -128,6 +132,7 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	historySvc := service.NewHistoryService(historyRepo, projectMemberRepo, permSvc, realtimePublisher, cardRepo, columnRepo)
 	historyHandler := handler.NewHistoryHandler(historySvc)
 	attachmentSvc.History = historySvc
+	commentAttachmentSvc.History = historySvc
 	cardSvc.History = historySvc
 	columnSvc.History = historySvc
 	commentSvc.History = historySvc
@@ -144,25 +149,26 @@ func NewApp(cfg *config.Config, db *pgxpool.Pool) (*App, error) {
 	projectMemberSvc := service.NewProjectMemberService(projectMemberRepo, userRepo, permSvc, kanbanNotificationSvc)
 	projectMemberHandler := handler.NewProjectMemberHandler(projectMemberSvc, projectSvc)
 
-	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, commentRepo, attachmentRepo, permSvc, cfg)
+	boardSvc := service.NewBoardService(boardRepo, columnRepo, cardRepo, labelRepo, userRepo, commentRepo, permSvc, cfg)
 	boardHandler := handler.NewBoardHandler(boardSvc)
 	projectSvc.History = historySvc
 	projectMemberSvc.History = historySvc
 	boardSvc.History = historySvc
 
 	h := Handlers{
-		User:          userHandler,
-		Project:       projectHandler,
-		Attachment:    attachmentHandler,
-		Board:         boardHandler,
-		Card:          cardHandler,
-		Column:        columnHandler,
-		Comment:       commentHandler,
-		Label:         labelHandler,
-		ProjectFolder: projectFolderHandler,
-		ProjectMember: projectMemberHandler,
-		History:       historyHandler,
-		Time:          timeHandler,
+		User:              userHandler,
+		Project:           projectHandler,
+		Attachment:        attachmentHandler,
+		CommentAttachment: commentAttachmentHandler,
+		Board:             boardHandler,
+		Card:              cardHandler,
+		Column:            columnHandler,
+		Comment:           commentHandler,
+		Label:             labelHandler,
+		ProjectFolder:     projectFolderHandler,
+		ProjectMember:     projectMemberHandler,
+		History:           historyHandler,
+		Time:              timeHandler,
 	}
 
 	r := setupRouter(h, authMw)

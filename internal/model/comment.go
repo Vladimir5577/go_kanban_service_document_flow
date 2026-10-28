@@ -12,6 +12,8 @@ type Comment struct {
 	AuthorName string     `json:"authorName"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  *time.Time `json:"updated_at,omitempty"`
+	// Файлы комментария; подтягиваются из kanban_card_comment_attachment.
+	Attachments []CommentAttachment `json:"attachments"`
 }
 
 // CommentRead — отметка прочтения из kanban_card_read: заход пользователя,

@@ -118,6 +118,7 @@ func statusForErrorCode(code apperr.ErrorCode) int {
 		apperr.CodeColumnIDAndTitleRequired,
 		apperr.CodeColumnNameTooLong,
 		apperr.CodeColumnTitleRequired,
+		apperr.CodeCommentAttachmentLimit,
 		apperr.CodeCommentBodyRequired,
 		apperr.CodeCommentBodyTooLong,
 		apperr.CodeDescriptionInvalidType,

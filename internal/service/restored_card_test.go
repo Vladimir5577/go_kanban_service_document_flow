@@ -55,17 +55,9 @@ func (restoredCommentRepo) GetCountsByCardIDs(_ context.Context, ids []int64) (m
 	return map[int64]int{ids[0]: 2}, nil
 }
 
-type restoredAttachmentRepo struct {
-	repository.AttachmentRepositoryInterface
-}
-
-func (restoredAttachmentRepo) GetChatCountsByCardIDs(_ context.Context, ids []int64) (map[int64]int, error) {
-	return map[int64]int{ids[0]: 1}, nil
-}
-
 func TestBuildRestoredCardReadsCardOnce(t *testing.T) {
 	cards := &restoredCardRepo{}
-	p := NewKanbanRealtimePublisher("", "", cards, nil, restoredCommentRepo{}, restoredAttachmentRepo{}, restoredLabelRepo{}, restoredUserRepo{}, nil)
+	p := NewKanbanRealtimePublisher("", "", cards, nil, restoredCommentRepo{}, restoredLabelRepo{}, restoredUserRepo{}, nil)
 
 	got, err := p.BuildRestoredCard(context.Background(), 7, 42)
 	if err != nil {
@@ -83,7 +75,7 @@ func TestBuildRestoredCardReadsCardOnce(t *testing.T) {
 	if assignees := got["assignees"].([]map[string]any); len(assignees) != 1 || assignees[0]["id"] != int64(9) {
 		t.Fatalf("assignees = %v, want user 9", assignees)
 	}
-	if got["checklistTotal"] != 3 || got["checklistDone"] != 1 || got["commentsCount"] != 3 || got["loggedMinutes"] != 4 {
-		t.Fatalf("counters = %v/%v/%v/%v, want 3/1/3/4", got["checklistTotal"], got["checklistDone"], got["commentsCount"], got["loggedMinutes"])
+	if got["checklistTotal"] != 3 || got["checklistDone"] != 1 || got["commentsCount"] != 2 || got["loggedMinutes"] != 4 {
+		t.Fatalf("counters = %v/%v/%v/%v, want 3/1/2/4", got["checklistTotal"], got["checklistDone"], got["commentsCount"], got["loggedMinutes"])
 	}
 }

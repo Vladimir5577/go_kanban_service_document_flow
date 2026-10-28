@@ -1,21 +1,15 @@
 package handler
 
 import (
-	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
-	"path/filepath"
 
-	"github.com/google/uuid"
-
-	"go_kanban_service/internal/apperr"
 	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/service"
 )
 
+// AttachmentHandler — файлы карточки. Файлы комментариев — CommentAttachmentHandler.
 type AttachmentHandler struct {
 	service  service.AttachmentServiceInterface
 	minioSvc service.MinioServiceInterface
@@ -38,54 +32,19 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 			return
 		}
 
-		err = r.ParseMultipartForm(50 << 20) // 50 MB
-		if err != nil {
-			helper.WriteError(w, apperr.New(apperr.CodeFileNotProvided, "file not provided"))
+		file := receiveAttachmentFile(w, r, h.minioSvc, h.cfg, cardID)
+		if file == nil {
 			return
 		}
 
-		file, header, err := r.FormFile("file")
+		res, err := h.service.CreateAttachment(r.Context(), cardID, dto.CreateAttachmentRequest{
+			Filename:    file.Filename,
+			StorageKey:  file.StorageKey,
+			ContentType: file.ContentType,
+			SizeBytes:   file.SizeBytes,
+		})
 		if err != nil {
-			helper.WriteError(w, apperr.New(apperr.CodeFileNotProvided, "file not provided"))
-			return
-		}
-		defer file.Close()
-
-		ctxVal := normalizeAttachmentContext(r.FormValue("context"))
-		// Ключ объекта НЕ должен содержать исходное имя файла: MinIO хранит объекты
-		// как файлы, а сегмент пути в ФС ограничен 255 байтами. Имя >218 символов
-		// раньше падало с "Object name contains unsupported characters" → 500.
-		// Уникальность даёт uuid, расширение сохраняем для content-type/preview.
-		// Читаемое имя живёт в БД (att.Filename) и отдаётся в Content-Disposition.
-		ext := filepath.Ext(header.Filename)
-		if len(ext) > 16 { // защита от патологического "расширения"
-			ext = ""
-		}
-		objectName := fmt.Sprintf("%d/%s%s", cardID, uuid.New().String(), ext)
-
-		err = h.minioSvc.UploadFile(r.Context(), h.cfg.MinioBucket, objectName, file, header.Size, header.Header.Get("Content-Type"))
-		if err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-
-		contentType := header.Header.Get("Content-Type")
-		if contentType == "" {
-			contentType = "application/octet-stream"
-		}
-
-		req := dto.CreateAttachmentRequest{
-			Filename:    header.Filename,
-			StorageKey:  objectName,
-			ContentType: contentType,
-			SizeBytes:   header.Size,
-			Context:     ctxVal,
-		}
-		res, err := h.service.CreateAttachment(r.Context(), cardID, req)
-		if err != nil {
-			if cleanupErr := h.minioSvc.DeleteObject(r.Context(), h.cfg.MinioBucket, objectName); cleanupErr != nil {
-				slog.WarnContext(r.Context(), "failed to cleanup uploaded attachment after database error", "storage_key", objectName, "error", cleanupErr)
-			}
+			discardUploadedFile(r, h.minioSvc, h.cfg, file.StorageKey)
 			helper.WriteError(w, err)
 			return
 		}
@@ -95,38 +54,14 @@ func (h *AttachmentHandler) UploadAttachment() http.HandlerFunc {
 }
 
 func (h *AttachmentHandler) DownloadAttachment() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		cardID, err := helper.IDParam(r, "cardId")
-		if err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-		id, err := helper.IDParam(r, "id")
-		if err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-
-		att, err := h.service.GetAttachment(r.Context(), cardID, id, service.RoleViewer)
-		if err != nil {
-			helper.WriteError(w, err)
-			return
-		}
-
-		obj, err := h.minioSvc.GetObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
-		if err != nil {
-			helper.WriteError(w, apperr.New(apperr.CodeFileNotFoundOnDisk, "file not found on disk"))
-			return
-		}
-		defer obj.Close()
-
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", att.Filename))
-		w.Header().Set("Content-Type", att.ContentType)
-		io.Copy(w, obj)
-	}
+	return h.serve(false)
 }
 
 func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
+	return h.serve(true)
+}
+
+func (h *AttachmentHandler) serve(inline bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		cardID, err := helper.IDParam(r, "cardId")
 		if err != nil {
@@ -145,16 +80,7 @@ func (h *AttachmentHandler) PreviewAttachment() http.HandlerFunc {
 			return
 		}
 
-		obj, err := h.minioSvc.GetObject(r.Context(), h.cfg.MinioBucket, att.StorageKey)
-		if err != nil {
-			helper.WriteError(w, apperr.New(apperr.CodeFileNotFoundOnDisk, "file not found on disk"))
-			return
-		}
-		defer obj.Close()
-
-		w.Header().Set("Content-Disposition", "inline")
-		w.Header().Set("Content-Type", att.ContentType)
-		io.Copy(w, obj)
+		serveAttachmentFile(w, r, h.minioSvc, h.cfg, att.StorageKey, att.Filename, att.ContentType, inline)
 	}
 }
 
@@ -183,14 +109,5 @@ func (h *AttachmentHandler) DeleteAttachment() http.HandlerFunc {
 		}
 
 		helper.WriteJSON(w, http.StatusNoContent, nil)
-	}
-}
-
-func normalizeAttachmentContext(value string) string {
-	switch value {
-	case "chat", "info", "description":
-		return value
-	default:
-		return "info"
 	}
 }

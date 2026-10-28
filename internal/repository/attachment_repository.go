@@ -11,8 +11,7 @@ import (
 )
 
 type AttachmentRepositoryInterface interface {
-	GetAttachmentsByCard(ctx context.Context, cardID int64, contextStr string) ([]model.Attachment, error)
-	GetChatCountsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64]int, error)
+	GetAttachmentsByCard(ctx context.Context, cardID int64) ([]model.Attachment, error)
 	GetAttachment(ctx context.Context, id int64) (*model.Attachment, error)
 	CreateAttachment(ctx context.Context, cardID int64, a *model.Attachment) (*model.Attachment, error)
 	DeleteAttachment(ctx context.Context, id int64) error
@@ -28,96 +27,13 @@ func NewAttachmentRepository(db *pgxpool.Pool) *AttachmentRepository {
 	}
 }
 
-func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID int64, contextStr string) ([]model.Attachment, error) {
-	var attachments []model.Attachment
-
-	if contextStr == "" {
-		rows, err := r.Db.Query(ctx, "SELECT id, filename, storage_key, content_type, size_bytes, context, card_id, author_id, created_at FROM kanban_attachment WHERE card_id = $1 AND deleted_at IS NULL ORDER BY created_at ASC", cardID)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var a model.Attachment
-			var authorID *int64
-			err := rows.Scan(&a.ID, &a.Filename, &a.StorageKey, &a.ContentType, &a.SizeBytes, &a.Context, &a.CardID, &authorID, &a.CreatedAt)
-			if err != nil {
-				return nil, err
-			}
-			if authorID != nil {
-				a.AuthorID = authorID
-			}
-			attachments = append(attachments, a)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return attachments, nil
-	}
-
-	queries := dbgen.New(r.Db)
-	dbAtt, err := queries.GetAttachmentsByCard(ctx, dbgen.GetAttachmentsByCardParams{
-		CardID:  cardID,
-		Context: contextStr,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	for _, a := range dbAtt {
-		att := model.Attachment{
-			ID:          a.ID,
-			Filename:    a.Filename,
-			StorageKey:  a.StorageKey,
-			ContentType: a.ContentType,
-			SizeBytes:   a.SizeBytes,
-			Context:     a.Context,
-			CardID:      a.CardID,
-			CreatedAt:   a.CreatedAt.Time,
-		}
-		if a.AuthorID.Valid {
-			v := a.AuthorID.Int64
-			att.AuthorID = &v
-		}
-		attachments = append(attachments, att)
-	}
-	return attachments, nil
-}
-
-func (r *AttachmentRepository) GetChatCountsByCardIDs(ctx context.Context, cardIDs []int64) (map[int64]int, error) {
-	if len(cardIDs) == 0 {
-		return make(map[int64]int), nil
-	}
-
-	queries := dbgen.New(r.Db)
-	rows, err := queries.GetChatAttachmentCountsByCardIDs(ctx, cardIDs)
-	if err != nil {
-		return nil, err
-	}
-
-	result := make(map[int64]int)
-	for _, row := range rows {
-		result[row.CardID] = int(row.Count)
-	}
-
-	return result, nil
-}
-
-func (r *AttachmentRepository) GetAttachment(ctx context.Context, id int64) (*model.Attachment, error) {
-	queries := dbgen.New(r.Db)
-	a, err := queries.GetAttachment(ctx, id)
-	if err != nil {
-		return nil, NormalizeError(err)
-	}
-
-	att := &model.Attachment{
+func mapAttachment(a dbgen.KanbanAttachment) model.Attachment {
+	att := model.Attachment{
 		ID:          a.ID,
 		Filename:    a.Filename,
 		StorageKey:  a.StorageKey,
 		ContentType: a.ContentType,
 		SizeBytes:   a.SizeBytes,
-		Context:     a.Context,
 		CardID:      a.CardID,
 		CreatedAt:   a.CreatedAt.Time,
 	}
@@ -125,25 +41,43 @@ func (r *AttachmentRepository) GetAttachment(ctx context.Context, id int64) (*mo
 		v := a.AuthorID.Int64
 		att.AuthorID = &v
 	}
-	return att, nil
+	return att
+}
+
+func (r *AttachmentRepository) GetAttachmentsByCard(ctx context.Context, cardID int64) ([]model.Attachment, error) {
+	rows, err := dbgen.New(r.Db).GetAttachmentsByCard(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	attachments := make([]model.Attachment, 0, len(rows))
+	for _, a := range rows {
+		attachments = append(attachments, mapAttachment(a))
+	}
+	return attachments, nil
+}
+
+func (r *AttachmentRepository) GetAttachment(ctx context.Context, id int64) (*model.Attachment, error) {
+	a, err := dbgen.New(r.Db).GetAttachment(ctx, id)
+	if err != nil {
+		return nil, NormalizeError(err)
+	}
+	att := mapAttachment(a)
+	return &att, nil
 }
 
 func (r *AttachmentRepository) CreateAttachment(ctx context.Context, cardID int64, a *model.Attachment) (*model.Attachment, error) {
-	queries := dbgen.New(r.Db)
-
 	params := dbgen.CreateAttachmentParams{
 		Filename:    a.Filename,
 		StorageKey:  a.StorageKey,
 		ContentType: a.ContentType,
 		SizeBytes:   a.SizeBytes,
-		Context:     a.Context,
 		CardID:      cardID,
 	}
 	if a.AuthorID != nil {
 		params.AuthorID = pgtype.Int8{Int64: *a.AuthorID, Valid: true}
 	}
 
-	res, err := queries.CreateAttachment(ctx, params)
+	res, err := dbgen.New(r.Db).CreateAttachment(ctx, params)
 	if err != nil {
 		return nil, NormalizeError(err)
 	}
@@ -154,6 +88,5 @@ func (r *AttachmentRepository) CreateAttachment(ctx context.Context, cardID int6
 }
 
 func (r *AttachmentRepository) DeleteAttachment(ctx context.Context, id int64) error {
-	queries := dbgen.New(r.Db)
-	return queries.DeleteAttachment(ctx, id)
+	return dbgen.New(r.Db).DeleteAttachment(ctx, id)
 }
