@@ -138,6 +138,10 @@ func (s *CommentService) CreateComment(ctx context.Context, cardID int64, req dt
 		EntityLink: historyTaskPath(acc.ProjectID, acc.BoardID, cardID),
 	})
 	s.publishCommentsCount(ctx, acc.BoardID, cardID)
+	s.publishComment(ctx, cardID, map[string]any{
+		"type":    "comment_created",
+		"comment": dto.MapCommentResponse(created),
+	})
 
 	// Comment notification (unified)
 	if s.notificationSvc != nil {
@@ -199,6 +203,10 @@ func (s *CommentService) UpdateComment(ctx context.Context, cardID int64, commen
 		Before:     oldBody,
 		After:      body,
 	})
+	s.publishComment(ctx, cardID, map[string]any{
+		"type":    "comment_updated",
+		"comment": dto.MapCommentResponse(updated),
+	})
 	return updated, nil
 }
 
@@ -236,7 +244,24 @@ func (s *CommentService) DeleteComment(ctx context.Context, cardID int64, commen
 		EntityLink: historyTaskPath(acc.ProjectID, acc.BoardID, cardID),
 	})
 	s.publishCommentsCount(ctx, acc.BoardID, cardID)
+	s.publishComment(ctx, cardID, map[string]any{
+		"type":      "comment_deleted",
+		"commentId": commentID,
+	})
 	return nil
+}
+
+// publishComment шлёт текст комментария в комнату задачи. Счётчик на доске
+// по-прежнему уходит отдельно, его слушают и те, у кого задача не открыта.
+func (s *CommentService) publishComment(ctx context.Context, cardID int64, event map[string]any) {
+	if s.realtimePublisher == nil {
+		return
+	}
+	event["cardId"] = cardID
+	event["senderId"] = realtimeSenderID(ctx)
+	s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+		return s.realtimePublisher.PublishCardComment(ctx, cardID, event)
+	})
 }
 
 // publishCommentsCount шлёт доске новый счётчик комментариев. Доску знает

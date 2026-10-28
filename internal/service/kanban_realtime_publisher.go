@@ -273,6 +273,16 @@ func (p *KanbanRealtimePublisher) buildCardAssignees(ctx context.Context, card *
 }
 
 func (p *KanbanRealtimePublisher) publish(ctx context.Context, boardID int64, event map[string]any) error {
+	return p.publishTopic(ctx, "/kanban/board/"+strconv.FormatInt(boardID, 10), event)
+}
+
+// PublishCardComment шлёт событие в комнату открытой задачи `/kanban/card/{id}`.
+// Подписчик есть только пока панель задачи открыта.
+func (p *KanbanRealtimePublisher) PublishCardComment(ctx context.Context, cardID int64, event map[string]any) error {
+	return p.publishTopic(ctx, "/kanban/card/"+strconv.FormatInt(cardID, 10), event)
+}
+
+func (p *KanbanRealtimePublisher) publishTopic(ctx context.Context, topic string, event map[string]any) error {
 	if p == nil {
 		return nil
 	}
@@ -289,7 +299,7 @@ func (p *KanbanRealtimePublisher) publish(ctx context.Context, boardID int64, ev
 	}
 
 	form := url.Values{}
-	form.Set("topic", "/kanban/board/"+strconv.FormatInt(boardID, 10))
+	form.Set("topic", topic)
 	form.Set("data", string(data))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.hubURL, strings.NewReader(form.Encode()))
