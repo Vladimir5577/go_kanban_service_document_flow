@@ -34,6 +34,7 @@ const (
 	CodeColumnNameTooLong           ErrorCode = "column_name_too_long"
 	CodeColumnNotFound              ErrorCode = "column_not_found"
 	CodeColumnTitleRequired         ErrorCode = "column_title_required"
+	CodeCommentAttachmentLimit      ErrorCode = "comment_attachment_limit_reached"
 	CodeCommentAuthorOnly           ErrorCode = "comment_author_only"
 	CodeCommentBodyRequired         ErrorCode = "comment_body_required"
 	CodeCommentBodyTooLong          ErrorCode = "comment_body_too_long"
@@ -149,6 +150,7 @@ func categoryCode(code ErrorCode) ErrorCode {
 		CodeColumnIDAndTitleRequired,
 		CodeColumnNameTooLong,
 		CodeColumnTitleRequired,
+		CodeCommentAttachmentLimit,
 		CodeCommentBodyRequired,
 		CodeCommentBodyTooLong,
 		CodeDescriptionInvalidType,

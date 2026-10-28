@@ -11,43 +11,36 @@ import (
 	"go_kanban_service/internal/repository"
 )
 
-// maxAttachmentFilenameLength matches the filename column width (VARCHAR(512)).
-const maxAttachmentFilenameLength = 512
+const (
+	// maxAttachmentFilenameLength matches the filename column width (VARCHAR(512)).
+	maxAttachmentFilenameLength = 512
+	maxCardAttachments          = 16
+)
 
 type AttachmentServiceInterface interface {
-	GetAttachments(ctx context.Context, cardID int64, contextStr string) ([]model.Attachment, error)
 	GetAttachment(ctx context.Context, cardID, id int64, minRole Role) (*model.Attachment, error)
 	CreateAttachment(ctx context.Context, cardID int64, req dto.CreateAttachmentRequest) (*model.Attachment, error)
 	DeleteAttachment(ctx context.Context, attachment *model.Attachment) error
 }
 
+// AttachmentService — файлы карточки. Файлы комментариев — CommentAttachmentService.
 type AttachmentService struct {
-	repo              repository.AttachmentRepositoryInterface
-	permSvc           *PermissionService
-	realtimePublisher *KanbanRealtimePublisher
-	userRepo          repository.UserRepositoryInterface
-	History           HistoryLogger
+	repo     repository.AttachmentRepositoryInterface
+	permSvc  *PermissionService
+	userRepo repository.UserRepositoryInterface
+	History  HistoryLogger
 }
 
 func NewAttachmentService(
 	repo repository.AttachmentRepositoryInterface,
 	permSvc *PermissionService,
-	realtimePublisher *KanbanRealtimePublisher,
 	userRepo repository.UserRepositoryInterface,
 ) *AttachmentService {
 	return &AttachmentService{
-		repo:              repo,
-		permSvc:           permSvc,
-		realtimePublisher: realtimePublisher,
-		userRepo:          userRepo,
+		repo:     repo,
+		permSvc:  permSvc,
+		userRepo: userRepo,
 	}
-}
-
-func (s *AttachmentService) GetAttachments(ctx context.Context, cardID int64, contextStr string) ([]model.Attachment, error) {
-	if _, err := s.permSvc.RequireRootCardRole(ctx, cardID, RoleViewer); err != nil {
-		return nil, err
-	}
-	return s.repo.GetAttachmentsByCard(ctx, cardID, contextStr)
 }
 
 func (s *AttachmentService) GetAttachment(ctx context.Context, cardID, id int64, minRole Role) (*model.Attachment, error) {
@@ -79,14 +72,16 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 		return nil, apperr.New(apperr.CodeFilenameTooLong, "filename too long")
 	}
 
-	attachments, err := s.repo.GetAttachmentsByCard(ctx, cardID, req.Context)
-	if err == nil && len(attachments) >= 16 {
-		return nil, apperr.New(apperr.CodeAttachmentLimitReached, "maximum number of attachments (16) per context reached")
+	existing, err := s.repo.GetAttachmentsByCard(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) >= maxCardAttachments {
+		return nil, apperr.New(apperr.CodeAttachmentLimitReached, "maximum number of attachments reached")
 	}
 
 	var authorID *int64
-	user, ok := middleware.GetUser(ctx)
-	if ok {
+	if user, ok := middleware.GetUser(ctx); ok {
 		authorID = &user.ID
 	}
 
@@ -95,38 +90,30 @@ func (s *AttachmentService) CreateAttachment(ctx context.Context, cardID int64, 
 		StorageKey:  req.StorageKey,
 		ContentType: req.ContentType,
 		SizeBytes:   req.SizeBytes,
-		Context:     req.Context,
 		AuthorID:    authorID,
 		CardID:      cardID,
 	}
 	created, err := s.repo.CreateAttachment(ctx, cardID, a)
-	if err == nil && created != nil {
-		s.populateAuthorName(ctx, created)
-		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:   acc.ProjectID,
-			Action:      "attachment.created",
-			EntityType:  "attachment",
-			EntityID:    created.ID,
-			CardID:      cardID,
-			EntityTitle: created.Filename,
-		})
+	if err != nil {
+		return nil, err
 	}
-	if err == nil && created != nil && created.Context == "chat" && s.realtimePublisher != nil {
-		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, cardID)
-			if err != nil {
-				return err
-			}
-			return s.realtimePublisher.PublishCardPatchByID(ctx, cardID, patch, realtimeSenderID(ctx))
-		})
-	}
-	return created, err
+	s.populateAuthorName(ctx, created)
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   acc.ProjectID,
+		Action:      "attachment.created",
+		EntityType:  "attachment",
+		EntityID:    created.ID,
+		CardID:      cardID,
+		EntityTitle: created.Filename,
+	})
+	return created, nil
 }
 
 func (s *AttachmentService) DeleteAttachment(ctx context.Context, attachment *model.Attachment) error {
 	if attachment == nil {
 		return apperr.New(apperr.CodeAttachmentNotFound, "attachment not found")
 	}
+
 	projectID, err := s.permSvc.GetProjectIDByCard(ctx, attachment.CardID)
 	if err != nil {
 		return err
@@ -135,27 +122,18 @@ func (s *AttachmentService) DeleteAttachment(ctx context.Context, attachment *mo
 		return err
 	}
 
-	err = s.repo.DeleteAttachment(ctx, attachment.ID)
-	if err == nil {
-		appendHistory(s.History, ctx, model.HistoryWrite{
-			ProjectID:   projectID,
-			Action:      "attachment.deleted",
-			EntityType:  "attachment",
-			EntityID:    attachment.ID,
-			CardID:      attachment.CardID,
-			EntityTitle: attachment.Filename,
-		})
+	if err := s.repo.DeleteAttachment(ctx, attachment.ID); err != nil {
+		return err
 	}
-	if err == nil && attachment.Context == "chat" && s.realtimePublisher != nil {
-		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
-			patch, err := s.realtimePublisher.BuildCommentsCount(ctx, attachment.CardID)
-			if err != nil {
-				return err
-			}
-			return s.realtimePublisher.PublishCardPatchByID(ctx, attachment.CardID, patch, realtimeSenderID(ctx))
-		})
-	}
-	return err
+	appendHistory(s.History, ctx, model.HistoryWrite{
+		ProjectID:   projectID,
+		Action:      "attachment.deleted",
+		EntityType:  "attachment",
+		EntityID:    attachment.ID,
+		CardID:      attachment.CardID,
+		EntityTitle: attachment.Filename,
+	})
+	return nil
 }
 
 func (s *AttachmentService) populateAuthorName(ctx context.Context, a *model.Attachment) {

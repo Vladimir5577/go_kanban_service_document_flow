@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"go_kanban_service/internal/apperr"
+	"go_kanban_service/internal/config"
 	"go_kanban_service/internal/dto"
 	"go_kanban_service/internal/helper"
 	"go_kanban_service/internal/service"
@@ -13,10 +14,11 @@ import (
 
 type CommentHandler struct {
 	service service.CommentServiceInterface
+	cfg     *config.Config
 }
 
-func NewCommentHandler(s service.CommentServiceInterface) *CommentHandler {
-	return &CommentHandler{service: s}
+func NewCommentHandler(s service.CommentServiceInterface, cfg *config.Config) *CommentHandler {
+	return &CommentHandler{service: s, cfg: cfg}
 }
 
 func (h *CommentHandler) GetComments() http.HandlerFunc {
@@ -32,7 +34,7 @@ func (h *CommentHandler) GetComments() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.MapCommentsResponse(res))
+		helper.WriteJSON(w, http.StatusOK, dto.MapCommentsResponse(h.cfg, res))
 	}
 }
 
@@ -49,19 +51,13 @@ func (h *CommentHandler) CreateComment() http.HandlerFunc {
 			helper.WriteError(w, invalidJSONError())
 			return
 		}
-		if err := validator.Validate.Struct(req); err != nil {
-			helper.WriteError(w, validationError(err, map[validationCodeKey]apperr.ErrorCode{
-				{Field: "Body", Tag: "required"}: apperr.CodeCommentBodyRequired,
-			}))
-			return
-		}
 
 		res, err := h.service.CreateComment(r.Context(), cardID, req)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusCreated, dto.MapCommentResponse(res))
+		helper.WriteJSON(w, http.StatusCreated, dto.MapCommentResponse(h.cfg, res))
 	}
 }
 
@@ -96,7 +92,7 @@ func (h *CommentHandler) UpdateComment() http.HandlerFunc {
 			helper.WriteError(w, err)
 			return
 		}
-		helper.WriteJSON(w, http.StatusOK, dto.MapCommentResponse(res))
+		helper.WriteJSON(w, http.StatusOK, dto.MapCommentResponse(h.cfg, res))
 	}
 }
 

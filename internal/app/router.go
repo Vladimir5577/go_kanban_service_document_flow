@@ -108,6 +108,14 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 				r.Put("/{commentId}", h.Comment.UpdateComment())
 				r.Delete("/{commentId}", h.Comment.DeleteComment())
 				r.Get("/{commentId}/readers", h.Comment.GetCommentReaders())
+
+				// COMMENT ATTACHMENTS
+				r.Route("/{commentId}/attachments", func(r chi.Router) {
+					r.Post("/", h.CommentAttachment.UploadAttachment())
+					r.Get("/{id}/download", h.CommentAttachment.DownloadAttachment())
+					r.Get("/{id}/preview", h.CommentAttachment.PreviewAttachment())
+					r.Delete("/{id}", h.CommentAttachment.DeleteAttachment())
+				})
 			})
 
 			// ATTACHMENTS

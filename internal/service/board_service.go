@@ -41,16 +41,15 @@ type BoardServiceInterface interface {
 }
 
 type BoardService struct {
-	repo           repository.BoardRepositoryInterface
-	columnRepo     repository.ColumnRepositoryInterface
-	cardRepo       repository.CardRepositoryInterface
-	labelRepo      repository.LabelRepositoryInterface
-	userRepo       repository.UserRepositoryInterface
-	commentRepo    repository.CommentRepositoryInterface
-	attachmentRepo repository.AttachmentRepositoryInterface
-	permSvc        *PermissionService
-	cfg            *config.Config
-	History        HistoryLogger
+	repo        repository.BoardRepositoryInterface
+	columnRepo  repository.ColumnRepositoryInterface
+	cardRepo    repository.CardRepositoryInterface
+	labelRepo   repository.LabelRepositoryInterface
+	userRepo    repository.UserRepositoryInterface
+	commentRepo repository.CommentRepositoryInterface
+	permSvc     *PermissionService
+	cfg         *config.Config
+	History     HistoryLogger
 }
 
 func NewBoardService(
@@ -60,20 +59,18 @@ func NewBoardService(
 	labelRepo repository.LabelRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
 	commentRepo repository.CommentRepositoryInterface,
-	attachmentRepo repository.AttachmentRepositoryInterface,
 	permSvc *PermissionService,
 	cfg *config.Config,
 ) *BoardService {
 	return &BoardService{
-		repo:           repo,
-		columnRepo:     columnRepo,
-		cardRepo:       cardRepo,
-		labelRepo:      labelRepo,
-		userRepo:       userRepo,
-		commentRepo:    commentRepo,
-		attachmentRepo: attachmentRepo,
-		permSvc:        permSvc,
-		cfg:            cfg,
+		repo:        repo,
+		columnRepo:  columnRepo,
+		cardRepo:    cardRepo,
+		labelRepo:   labelRepo,
+		userRepo:    userRepo,
+		commentRepo: commentRepo,
+		permSvc:     permSvc,
+		cfg:         cfg,
 	}
 }
 
@@ -198,10 +195,6 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 	if err != nil {
 		return nil, err
 	}
-	chatCountsByCard, err := s.attachmentRepo.GetChatCountsByCardIDs(ctx, cardIDs)
-	if err != nil {
-		return nil, err
-	}
 	loggedByCard, err := s.cardRepo.SumLoggedMinutes(ctx, cardIDs)
 	if err != nil {
 		return nil, err
@@ -240,8 +233,7 @@ func (s *BoardService) GetBoard(ctx context.Context, projectID int64, boardID in
 			cardResp.ChecklistDone = checklist.Done
 		}
 
-		// Проставить comments count (comments + chat attachments)
-		cardResp.CommentsCount = commentCountsByCard[card.ID] + chatCountsByCard[card.ID]
+		cardResp.CommentsCount = commentCountsByCard[card.ID]
 		cardResp.LoggedMinutes = loggedByCard[card.ID]
 
 		// Собрать user IDs для bulk-загрузки (assignees + creators)

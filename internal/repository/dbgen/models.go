@@ -15,7 +15,6 @@ type KanbanAttachment struct {
 	ContentType string             `json:"content_type"`
 	SizeBytes   int64              `json:"size_bytes"`
 	CardID      int64              `json:"card_id"`
-	Context     string             `json:"context"`
 	AuthorID    pgtype.Int8        `json:"author_id"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	DeletedAt   pgtype.Timestamptz `json:"deleted_at"`
@@ -68,6 +67,17 @@ type KanbanCardComment struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 	DeletedAt pgtype.Timestamptz `json:"deleted_at"`
+}
+
+type KanbanCardCommentAttachment struct {
+	ID          int64              `json:"id"`
+	Filename    string             `json:"filename"`
+	StorageKey  string             `json:"storage_key"`
+	ContentType string             `json:"content_type"`
+	SizeBytes   int64              `json:"size_bytes"`
+	CommentID   int64              `json:"comment_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	DeletedAt   pgtype.Timestamptz `json:"deleted_at"`
 }
 
 type KanbanCardLabel struct {

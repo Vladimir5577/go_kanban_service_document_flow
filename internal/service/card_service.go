@@ -41,6 +41,7 @@ type CardService struct {
 	commentRepo       repository.CommentRepositoryInterface
 	commentReadRepo   repository.CommentReadRepositoryInterface
 	attachmentRepo    repository.AttachmentRepositoryInterface
+	commentAttRepo    repository.CommentAttachmentRepositoryInterface
 	labelRepo         repository.LabelRepositoryInterface
 	userRepo          repository.UserRepositoryInterface
 	columnRepo        repository.ColumnRepositoryInterface
@@ -79,6 +80,7 @@ func NewCardService(
 	commentRepo repository.CommentRepositoryInterface,
 	commentReadRepo repository.CommentReadRepositoryInterface,
 	attachmentRepo repository.AttachmentRepositoryInterface,
+	commentAttRepo repository.CommentAttachmentRepositoryInterface,
 	labelRepo repository.LabelRepositoryInterface,
 	userRepo repository.UserRepositoryInterface,
 	columnRepo repository.ColumnRepositoryInterface,
@@ -95,6 +97,7 @@ func NewCardService(
 		commentRepo:       commentRepo,
 		commentReadRepo:   commentReadRepo,
 		attachmentRepo:    attachmentRepo,
+		commentAttRepo:    commentAttRepo,
 		labelRepo:         labelRepo,
 		userRepo:          userRepo,
 		columnRepo:        columnRepo,
@@ -314,29 +317,21 @@ func (s *CardService) cardDetail(ctx context.Context, id int64, acc CardAccess) 
 		userIDs = append(userIDs, *card.CompletedByID)
 	}
 
-	var allAttachments []model.Attachment
-	attsCard, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "card")
+	cardAttachments, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id)
 	if err != nil {
 		return nil, nil, err
 	}
-	allAttachments = append(allAttachments, attsCard...)
-
-	attsDesc, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "description")
+	// Файлы комментариев уезжают внутри comments[].
+	commentAttachments, err := s.commentAttRepo.GetByCard(ctx, id)
 	if err != nil {
 		return nil, nil, err
 	}
-	allAttachments = append(allAttachments, attsDesc...)
+	AttachFilesToComments(comments, commentAttachments)
 
-	chatAttachments, err := s.attachmentRepo.GetAttachmentsByCard(ctx, id, "chat")
-	if err != nil {
-		return nil, nil, err
-	}
-	allAttachments = append(allAttachments, chatAttachments...)
-
-	resp.CommentsCount = len(comments) + len(chatAttachments)
-	for i := range allAttachments {
-		if allAttachments[i].AuthorID != nil {
-			userIDs = append(userIDs, *allAttachments[i].AuthorID)
+	resp.CommentsCount = len(comments)
+	for i := range cardAttachments {
+		if cardAttachments[i].AuthorID != nil {
+			userIDs = append(userIDs, *cardAttachments[i].AuthorID)
 		}
 	}
 
@@ -354,7 +349,7 @@ func (s *CardService) cardDetail(ctx context.Context, id int64, acc CardAccess) 
 			comments[i].AuthorName = dto.UserDisplayName(*u)
 		}
 	}
-	resp.Comments = dto.MapCommentsResponse(comments)
+	resp.Comments = dto.MapCommentsResponse(s.cfg, comments)
 
 	// Точка старта ленты: фронт прокручивает к первому непрочитанному по этому
 	// числу, и только потом шлёт новую отметку. Ноль — карточку ещё не открывали.
@@ -366,7 +361,7 @@ func (s *CardService) cardDetail(ctx context.Context, id int64, acc CardAccess) 
 		resp.LastReadCommentID = mark
 	}
 
-	resp.Attachments = dto.MapAttachmentsResponse(s.cfg, allAttachments)
+	resp.Attachments = dto.MapAttachmentsResponse(s.cfg, cardAttachments)
 	for i, att := range resp.Attachments {
 		if att.AuthorID != nil {
 			if u, ok := userMap[*att.AuthorID]; ok {

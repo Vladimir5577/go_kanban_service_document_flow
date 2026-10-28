@@ -149,9 +149,9 @@ func (q *Queries) ColumnPositionTaken(ctx context.Context, arg ColumnPositionTak
 }
 
 const createAttachment = `-- name: CreateAttachment :one
-INSERT INTO kanban_attachment (filename, storage_key, content_type, size_bytes, context, card_id, author_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at, deleted_at
+INSERT INTO kanban_attachment (filename, storage_key, content_type, size_bytes, card_id, author_id)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, filename, storage_key, content_type, size_bytes, card_id, author_id, created_at, deleted_at
 `
 
 type CreateAttachmentParams struct {
@@ -159,7 +159,6 @@ type CreateAttachmentParams struct {
 	StorageKey  string      `json:"storage_key"`
 	ContentType string      `json:"content_type"`
 	SizeBytes   int64       `json:"size_bytes"`
-	Context     string      `json:"context"`
 	CardID      int64       `json:"card_id"`
 	AuthorID    pgtype.Int8 `json:"author_id"`
 }
@@ -170,7 +169,6 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 		arg.StorageKey,
 		arg.ContentType,
 		arg.SizeBytes,
-		arg.Context,
 		arg.CardID,
 		arg.AuthorID,
 	)
@@ -182,7 +180,6 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 		&i.ContentType,
 		&i.SizeBytes,
 		&i.CardID,
-		&i.Context,
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.DeletedAt,
@@ -334,6 +331,42 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (K
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const createCommentAttachment = `-- name: CreateCommentAttachment :one
+INSERT INTO kanban_card_comment_attachment (filename, storage_key, content_type, size_bytes, comment_id)
+VALUES ($1, $2, $3, $4, $5)
+RETURNING id, filename, storage_key, content_type, size_bytes, comment_id, created_at, deleted_at
+`
+
+type CreateCommentAttachmentParams struct {
+	Filename    string `json:"filename"`
+	StorageKey  string `json:"storage_key"`
+	ContentType string `json:"content_type"`
+	SizeBytes   int64  `json:"size_bytes"`
+	CommentID   int64  `json:"comment_id"`
+}
+
+func (q *Queries) CreateCommentAttachment(ctx context.Context, arg CreateCommentAttachmentParams) (KanbanCardCommentAttachment, error) {
+	row := q.db.QueryRow(ctx, createCommentAttachment,
+		arg.Filename,
+		arg.StorageKey,
+		arg.ContentType,
+		arg.SizeBytes,
+		arg.CommentID,
+	)
+	var i KanbanCardCommentAttachment
+	err := row.Scan(
+		&i.ID,
+		&i.Filename,
+		&i.StorageKey,
+		&i.ContentType,
+		&i.SizeBytes,
+		&i.CommentID,
+		&i.CreatedAt,
 		&i.DeletedAt,
 	)
 	return i, err
@@ -570,6 +603,32 @@ func (q *Queries) DeleteComment(ctx context.Context, id int64) error {
 	return err
 }
 
+const deleteCommentAttachment = `-- name: DeleteCommentAttachment :exec
+UPDATE kanban_card_comment_attachment
+SET deleted_at = CURRENT_TIMESTAMP
+WHERE id = $1 AND deleted_at IS NULL
+`
+
+func (q *Queries) DeleteCommentAttachment(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deleteCommentAttachment, id)
+	return err
+}
+
+const deleteCommentAttachments = `-- name: DeleteCommentAttachments :exec
+UPDATE kanban_card_comment_attachment a
+SET deleted_at = c.deleted_at
+FROM kanban_card_comment c
+WHERE c.id = $1 AND a.comment_id = c.id AND a.deleted_at IS NULL
+`
+
+// Файлы комментария прячутся вместе с ним и тем же штампом: по нему
+// RestoreCommentAttachments отличает их от файлов, снятых автором раньше.
+// Вызывать после DeleteComment в той же транзакции.
+func (q *Queries) DeleteCommentAttachments(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deleteCommentAttachments, id)
+	return err
+}
+
 const deleteLabel = `-- name: DeleteLabel :exec
 UPDATE kanban_label
 SET deleted_at = CURRENT_TIMESTAMP
@@ -792,7 +851,7 @@ func (q *Queries) GetAllProjects(ctx context.Context) ([]KanbanProject, error) {
 
 const getAttachment = `-- name: GetAttachment :one
 
-SELECT id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at, deleted_at FROM kanban_attachment
+SELECT id, filename, storage_key, content_type, size_bytes, card_id, author_id, created_at, deleted_at FROM kanban_attachment
 WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
@@ -809,7 +868,6 @@ func (q *Queries) GetAttachment(ctx context.Context, id int64) (KanbanAttachment
 		&i.ContentType,
 		&i.SizeBytes,
 		&i.CardID,
-		&i.Context,
 		&i.AuthorID,
 		&i.CreatedAt,
 		&i.DeletedAt,
@@ -818,18 +876,13 @@ func (q *Queries) GetAttachment(ctx context.Context, id int64) (KanbanAttachment
 }
 
 const getAttachmentsByCard = `-- name: GetAttachmentsByCard :many
-SELECT id, filename, storage_key, content_type, size_bytes, card_id, context, author_id, created_at, deleted_at FROM kanban_attachment
-WHERE card_id = $1 AND context = $2 AND deleted_at IS NULL
+SELECT id, filename, storage_key, content_type, size_bytes, card_id, author_id, created_at, deleted_at FROM kanban_attachment
+WHERE card_id = $1 AND deleted_at IS NULL
 ORDER BY created_at ASC
 `
 
-type GetAttachmentsByCardParams struct {
-	CardID  int64  `json:"card_id"`
-	Context string `json:"context"`
-}
-
-func (q *Queries) GetAttachmentsByCard(ctx context.Context, arg GetAttachmentsByCardParams) ([]KanbanAttachment, error) {
-	rows, err := q.db.Query(ctx, getAttachmentsByCard, arg.CardID, arg.Context)
+func (q *Queries) GetAttachmentsByCard(ctx context.Context, cardID int64) ([]KanbanAttachment, error) {
+	rows, err := q.db.Query(ctx, getAttachmentsByCard, cardID)
 	if err != nil {
 		return nil, err
 	}
@@ -844,7 +897,6 @@ func (q *Queries) GetAttachmentsByCard(ctx context.Context, arg GetAttachmentsBy
 			&i.ContentType,
 			&i.SizeBytes,
 			&i.CardID,
-			&i.Context,
 			&i.AuthorID,
 			&i.CreatedAt,
 			&i.DeletedAt,
@@ -1238,38 +1290,6 @@ func (q *Queries) GetCardsByBoard(ctx context.Context, boardID int64) ([]KanbanC
 	return items, nil
 }
 
-const getChatAttachmentCountsByCardIDs = `-- name: GetChatAttachmentCountsByCardIDs :many
-SELECT card_id, COUNT(*) AS count
-FROM kanban_attachment
-WHERE card_id = ANY($1::bigint[]) AND context = 'chat' AND deleted_at IS NULL
-GROUP BY card_id
-`
-
-type GetChatAttachmentCountsByCardIDsRow struct {
-	CardID int64 `json:"card_id"`
-	Count  int64 `json:"count"`
-}
-
-func (q *Queries) GetChatAttachmentCountsByCardIDs(ctx context.Context, dollar_1 []int64) ([]GetChatAttachmentCountsByCardIDsRow, error) {
-	rows, err := q.db.Query(ctx, getChatAttachmentCountsByCardIDs, dollar_1)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetChatAttachmentCountsByCardIDsRow{}
-	for rows.Next() {
-		var i GetChatAttachmentCountsByCardIDsRow
-		if err := rows.Scan(&i.CardID, &i.Count); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getChildCards = `-- name: GetChildCards :many
 SELECT id, title, description, position, due_date, priority, is_archived, archived_at, archived_by_id, completed_at, completed_by_id, column_id, created_by_id, border_color, created_at, updated_at, deleted_at, parent_id, estimate_minutes FROM kanban_card
 WHERE parent_id = $1 AND deleted_at IS NULL
@@ -1545,6 +1565,103 @@ func (q *Queries) GetComment(ctx context.Context, id int64) (KanbanCardComment, 
 		&i.DeletedAt,
 	)
 	return i, err
+}
+
+const getCommentAttachment = `-- name: GetCommentAttachment :one
+
+SELECT id, filename, storage_key, content_type, size_bytes, comment_id, created_at, deleted_at FROM kanban_card_comment_attachment
+WHERE id = $1 AND deleted_at IS NULL LIMIT 1
+`
+
+// ==============================
+// COMMENT ATTACHMENTS
+// ==============================
+func (q *Queries) GetCommentAttachment(ctx context.Context, id int64) (KanbanCardCommentAttachment, error) {
+	row := q.db.QueryRow(ctx, getCommentAttachment, id)
+	var i KanbanCardCommentAttachment
+	err := row.Scan(
+		&i.ID,
+		&i.Filename,
+		&i.StorageKey,
+		&i.ContentType,
+		&i.SizeBytes,
+		&i.CommentID,
+		&i.CreatedAt,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
+const getCommentAttachmentsByCard = `-- name: GetCommentAttachmentsByCard :many
+SELECT a.id, a.filename, a.storage_key, a.content_type, a.size_bytes, a.comment_id, a.created_at, a.deleted_at FROM kanban_card_comment_attachment a
+JOIN kanban_card_comment c ON c.id = a.comment_id
+WHERE c.card_id = $1 AND a.deleted_at IS NULL AND c.deleted_at IS NULL
+ORDER BY a.created_at ASC, a.id ASC
+`
+
+// Файлы всех живых комментариев карточки — одним запросом для деталей карточки.
+func (q *Queries) GetCommentAttachmentsByCard(ctx context.Context, cardID int64) ([]KanbanCardCommentAttachment, error) {
+	rows, err := q.db.Query(ctx, getCommentAttachmentsByCard, cardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []KanbanCardCommentAttachment{}
+	for rows.Next() {
+		var i KanbanCardCommentAttachment
+		if err := rows.Scan(
+			&i.ID,
+			&i.Filename,
+			&i.StorageKey,
+			&i.ContentType,
+			&i.SizeBytes,
+			&i.CommentID,
+			&i.CreatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getCommentAttachmentsByComment = `-- name: GetCommentAttachmentsByComment :many
+SELECT id, filename, storage_key, content_type, size_bytes, comment_id, created_at, deleted_at FROM kanban_card_comment_attachment
+WHERE comment_id = $1 AND deleted_at IS NULL
+ORDER BY created_at ASC, id ASC
+`
+
+func (q *Queries) GetCommentAttachmentsByComment(ctx context.Context, commentID int64) ([]KanbanCardCommentAttachment, error) {
+	rows, err := q.db.Query(ctx, getCommentAttachmentsByComment, commentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []KanbanCardCommentAttachment{}
+	for rows.Next() {
+		var i KanbanCardCommentAttachment
+		if err := rows.Scan(
+			&i.ID,
+			&i.Filename,
+			&i.StorageKey,
+			&i.ContentType,
+			&i.SizeBytes,
+			&i.CommentID,
+			&i.CreatedAt,
+			&i.DeletedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getCommentCountsByCardIDs = `-- name: GetCommentCountsByCardIDs :many
@@ -2466,6 +2583,30 @@ WHERE id = $1
 
 func (q *Queries) RestoreComment(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, restoreComment, id)
+	return err
+}
+
+const restoreCommentAttachment = `-- name: RestoreCommentAttachment :exec
+UPDATE kanban_card_comment_attachment
+SET deleted_at = NULL
+WHERE id = $1
+`
+
+func (q *Queries) RestoreCommentAttachment(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreCommentAttachment, id)
+	return err
+}
+
+const restoreCommentAttachments = `-- name: RestoreCommentAttachments :exec
+UPDATE kanban_card_comment_attachment a
+SET deleted_at = NULL
+FROM kanban_card_comment c
+WHERE c.id = $1 AND a.comment_id = c.id AND a.deleted_at = c.deleted_at
+`
+
+// Вызывать до RestoreComment: сравнение идёт с ещё не снятым deleted_at.
+func (q *Queries) RestoreCommentAttachments(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, restoreCommentAttachments, id)
 	return err
 }
 
