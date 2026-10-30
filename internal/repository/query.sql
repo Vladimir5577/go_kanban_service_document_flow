@@ -404,8 +404,7 @@ UPDATE kanban_card_comment
 SET deleted_at = CURRENT_TIMESTAMP
 WHERE id = $1 AND deleted_at IS NULL;
 
--- Файлы комментария прячутся вместе с ним и тем же штампом: по нему
--- RestoreCommentAttachments отличает их от файлов, снятых автором раньше.
+-- Файлы комментария прячутся вместе с ним и тем же штампом.
 -- Вызывать после DeleteComment в той же транзакции.
 -- name: DeleteCommentAttachments :exec
 UPDATE kanban_card_comment_attachment a
@@ -419,11 +418,19 @@ SET deleted_at = NULL
 WHERE id = $1;
 
 -- Вызывать до RestoreComment: сравнение идёт с ещё не снятым deleted_at.
+-- Файл со своей ещё не отменённой attachment.deleted снят отдельно: тот же
+-- секундный штамп не поднимает его вместе с комментарием.
 -- name: RestoreCommentAttachments :exec
 UPDATE kanban_card_comment_attachment a
 SET deleted_at = NULL
 FROM kanban_card_comment c
-WHERE c.id = $1 AND a.comment_id = c.id AND a.deleted_at = c.deleted_at;
+WHERE c.id = $1 AND a.comment_id = c.id AND a.deleted_at = c.deleted_at
+  AND NOT EXISTS (
+    SELECT 1 FROM kanban_project_history h
+    WHERE h.action = 'attachment.deleted'
+      AND h.entity_type = 'comment_attachment'
+      AND h.entity_id = a.id
+  );
 
 
 -- ==============================
