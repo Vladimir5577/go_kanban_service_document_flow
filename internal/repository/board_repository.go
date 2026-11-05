@@ -22,6 +22,7 @@ type BoardRepositoryInterface interface {
 	GetBoard(ctx context.Context, boardID int64) (*model.Board, error)
 	UpdateBoard(ctx context.Context, b *model.Board) (*model.Board, error)
 	SetDoneColumnID(ctx context.Context, boardID int64, columnID *int64) error
+	SetBoardArchivedAt(ctx context.Context, boardID int64, at *time.Time) error
 	DeleteBoard(ctx context.Context, boardID int64) error
 	GetBoardArchive(ctx context.Context, boardID int64, filters model.BoardArchiveFilters) (*model.BoardArchivePage, error)
 	HasColumnsByBoard(ctx context.Context, boardID int64) (bool, error)
@@ -60,6 +61,10 @@ func (r *BoardRepository) GetBoardsByProject(ctx context.Context, projectID int6
 		if b.DoneColumnID.Valid {
 			id := b.DoneColumnID.Int64
 			board.DoneColumnID = &id
+		}
+		if b.ArchivedAt.Valid {
+			at := b.ArchivedAt.Time
+			board.ArchivedAt = &at
 		}
 		boards = append(boards, board)
 	}
@@ -149,6 +154,10 @@ func (r *BoardRepository) GetBoard(ctx context.Context, id int64) (*model.Board,
 		id := b.DoneColumnID.Int64
 		board.DoneColumnID = &id
 	}
+	if b.ArchivedAt.Valid {
+		at := b.ArchivedAt.Time
+		board.ArchivedAt = &at
+	}
 	return board, nil
 }
 
@@ -172,6 +181,17 @@ func (r *BoardRepository) SetDoneColumnID(ctx context.Context, boardID int64, co
 		`UPDATE kanban_board SET done_column_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND deleted_at IS NULL`,
 		columnID, boardID)
 	return err
+}
+
+func (r *BoardRepository) SetBoardArchivedAt(ctx context.Context, boardID int64, at *time.Time) error {
+	arg := pgtype.Timestamptz{}
+	if at != nil {
+		arg = pgtype.Timestamptz{Time: *at, Valid: true}
+	}
+	return dbgen.New(r.Db).SetBoardArchivedAt(ctx, dbgen.SetBoardArchivedAtParams{
+		ArchivedAt: arg,
+		ID:         boardID,
+	})
 }
 
 func (r *BoardRepository) DeleteBoard(ctx context.Context, id int64) error {
@@ -344,10 +364,10 @@ func (r *BoardRepository) GetBoardArchive(ctx context.Context, boardID int64, fi
 
 func archiveOrderBy(filters model.BoardArchiveFilters) []string {
 	orderBySQL, ok := map[string]string{
-		"title":       "c.title",
-		"column":      "col.title",
-		"archived_at": "c.archived_at",
-		"created_at":  "c.created_at",
+		"title":        "c.title",
+		"column":       "col.title",
+		"archived_at":  "c.archived_at",
+		"created_at":   "c.created_at",
 		"completed_at": "c.completed_at",
 	}[filters.OrderBy]
 	if !ok {
@@ -465,5 +485,11 @@ func mapDBBoard(b *dbgen.KanbanBoard, target *model.Board) {
 		target.DeletedAt = &t
 	} else {
 		target.DeletedAt = nil
+	}
+	if b.ArchivedAt.Valid {
+		t := b.ArchivedAt.Time
+		target.ArchivedAt = &t
+	} else {
+		target.ArchivedAt = nil
 	}
 }

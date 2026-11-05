@@ -190,7 +190,7 @@ func (q *Queries) CreateAttachment(ctx context.Context, arg CreateAttachmentPara
 const createBoard = `-- name: CreateBoard :one
 INSERT INTO kanban_board (title, position, kanban_project_id, created_by_id)
 VALUES ($1, $2, $3, $4)
-RETURNING id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id
+RETURNING id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id, archived_at
 `
 
 type CreateBoardParams struct {
@@ -218,6 +218,7 @@ func (q *Queries) CreateBoard(ctx context.Context, arg CreateBoardParams) (Kanba
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.DoneColumnID,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
@@ -912,7 +913,7 @@ func (q *Queries) GetAttachmentsByCard(ctx context.Context, cardID int64) ([]Kan
 
 const getBoard = `-- name: GetBoard :one
 
-SELECT id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id FROM kanban_board
+SELECT id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id, archived_at FROM kanban_board
 WHERE id = $1 AND deleted_at IS NULL LIMIT 1
 `
 
@@ -932,12 +933,13 @@ func (q *Queries) GetBoard(ctx context.Context, id int64) (KanbanBoard, error) {
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.DoneColumnID,
+		&i.ArchivedAt,
 	)
 	return i, err
 }
 
 const getBoardsByProject = `-- name: GetBoardsByProject :many
-SELECT id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id FROM kanban_board
+SELECT id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id, archived_at FROM kanban_board
 WHERE kanban_project_id = $1 AND deleted_at IS NULL
 ORDER BY position ASC
 `
@@ -961,6 +963,7 @@ func (q *Queries) GetBoardsByProject(ctx context.Context, kanbanProjectID int64)
 			&i.UpdatedAt,
 			&i.DeletedAt,
 			&i.DoneColumnID,
+			&i.ArchivedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2650,6 +2653,22 @@ func (q *Queries) RestoreTimeEntry(ctx context.Context, id int64) error {
 	return err
 }
 
+const setBoardArchivedAt = `-- name: SetBoardArchivedAt :exec
+UPDATE kanban_board
+SET archived_at = $1, updated_at = CURRENT_TIMESTAMP
+WHERE id = $2 AND deleted_at IS NULL
+`
+
+type SetBoardArchivedAtParams struct {
+	ArchivedAt pgtype.Timestamptz `json:"archived_at"`
+	ID         int64              `json:"id"`
+}
+
+func (q *Queries) SetBoardArchivedAt(ctx context.Context, arg SetBoardArchivedAtParams) error {
+	_, err := q.db.Exec(ctx, setBoardArchivedAt, arg.ArchivedAt, arg.ID)
+	return err
+}
+
 const setCardArchived = `-- name: SetCardArchived :one
 UPDATE kanban_card
 SET is_archived = $2, archived_at = $3, archived_by_id = $4, updated_at = CURRENT_TIMESTAMP
@@ -2806,7 +2825,7 @@ const updateBoard = `-- name: UpdateBoard :one
 UPDATE kanban_board
 SET title = $1, position = $2, updated_at = CURRENT_TIMESTAMP
 WHERE id = $3 AND deleted_at IS NULL
-RETURNING id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id
+RETURNING id, title, position, kanban_project_id, created_by_id, created_at, updated_at, deleted_at, done_column_id, archived_at
 `
 
 type UpdateBoardParams struct {
@@ -2828,6 +2847,7 @@ func (q *Queries) UpdateBoard(ctx context.Context, arg UpdateBoardParams) (Kanba
 		&i.UpdatedAt,
 		&i.DeletedAt,
 		&i.DoneColumnID,
+		&i.ArchivedAt,
 	)
 	return i, err
 }

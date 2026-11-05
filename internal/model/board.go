@@ -13,4 +13,5 @@ type Board struct {
 	UpdatedAt       time.Time  `json:"updated_at"`
 	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
 	DoneColumnID    *int64     `json:"done_column_id,omitempty"`
+	ArchivedAt      *time.Time `json:"archived_at,omitempty"`
 }

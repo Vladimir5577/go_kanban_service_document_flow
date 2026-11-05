@@ -74,6 +74,7 @@ type UpdateBoardRequest struct {
 	Title        *string  `json:"title,omitempty" validate:"omitempty"`
 	Position     *float64 `json:"position,omitempty"`
 	DoneColumnID *int64   `json:"doneColumnId"`
+	Archived     *bool    `json:"archived"`
 }
 
 type BoardResponse struct {
@@ -85,6 +86,7 @@ type BoardResponse struct {
 	CreatedAt       time.Time         `json:"createdAt"`
 	UpdatedAt       time.Time         `json:"updatedAt"`
 	DoneColumnID    *int64            `json:"doneColumnId"`
+	ArchivedAt      *time.Time        `json:"archivedAt"`
 	Columns         []*ColumnResponse `json:"columns"`
 }
 
@@ -101,6 +103,7 @@ func MapBoardResponse(b *model.Board) *BoardResponse {
 		CreatedAt:       b.CreatedAt,
 		UpdatedAt:       b.UpdatedAt,
 		DoneColumnID:    b.DoneColumnID,
+		ArchivedAt:      b.ArchivedAt,
 		Columns:         make([]*ColumnResponse, 0),
 	}
 }
