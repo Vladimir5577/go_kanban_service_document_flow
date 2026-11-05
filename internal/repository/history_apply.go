@@ -136,6 +136,16 @@ func applyHistoryUndo(ctx context.Context, q *dbgen.Queries, e model.HistoryUndo
 			done = &id
 		}
 		return patchBoard(ctx, q, e.EntityID, "", nil, true, done)
+	case "board.updated.archived":
+		arg := pgtype.Timestamptz{}
+		if e.Before != "" {
+			t, err := time.Parse(time.RFC3339, e.Before)
+			if err != nil {
+				return undoImpossible()
+			}
+			arg = pgtype.Timestamptz{Time: t, Valid: true}
+		}
+		return q.SetBoardArchivedAt(ctx, dbgen.SetBoardArchivedAtParams{ArchivedAt: arg, ID: e.EntityID})
 	case "project.created":
 		return q.DeleteProject(ctx, e.EntityID)
 	case "project.deleted":

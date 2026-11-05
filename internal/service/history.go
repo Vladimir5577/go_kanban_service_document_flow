@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 
 	"go_kanban_service/internal/model"
 )
@@ -78,6 +79,13 @@ func historyOptID(id *int64) string {
 		return ""
 	}
 	return strconv.FormatInt(*id, 10)
+}
+
+func historyTime(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
 
 func historyIDsJSON(ids []int64) string {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -329,6 +330,7 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 		return nil, err
 	}
 	oldTitle, oldPos, oldDone := b.Title, b.Position, b.DoneColumnID
+	oldArchivedAt := b.ArchivedAt
 
 	changed := false
 	if req.Title != nil {
@@ -362,7 +364,21 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 		}
 		b.DoneColumnID = next
 	}
-	if !changed && req.DoneColumnID == nil {
+	archiveChanged := false
+	if req.Archived != nil && *req.Archived != (oldArchivedAt != nil) {
+		var next *time.Time
+		if *req.Archived {
+			now := time.Now().UTC().Truncate(time.Second)
+			next = &now
+		}
+		if err := s.repo.SetBoardArchivedAt(ctx, b.ID, next); err != nil {
+			return nil, err
+		}
+		b.ArchivedAt = next
+		b.UpdatedAt = time.Now()
+		archiveChanged = true
+	}
+	if !changed && req.DoneColumnID == nil && !archiveChanged {
 		return b, nil
 	}
 	updated := b
@@ -376,19 +392,22 @@ func (s *BoardService) UpdateBoard(ctx context.Context, projectID int64, boardID
 	titleChanged := updated.Title != oldTitle
 	posChanged := req.Position != nil && updated.Position != oldPos
 	doneChanged := !sameOptionalID(oldDone, updated.DoneColumnID)
-	if titleChanged || posChanged || doneChanged {
+	if titleChanged || posChanged || doneChanged || archiveChanged {
 		action := "board.updated"
 		before, after := "", ""
 		switch {
-		case titleChanged && !posChanged && !doneChanged:
+		case titleChanged && !posChanged && !doneChanged && !archiveChanged:
 			action = "board.updated.renamed"
 			before, after = oldTitle, updated.Title
-		case posChanged && !titleChanged && !doneChanged:
+		case posChanged && !titleChanged && !doneChanged && !archiveChanged:
 			action = "board.updated.moved"
 			before, after = historyPos(oldPos), historyPos(updated.Position)
-		case doneChanged && !titleChanged && !posChanged:
+		case doneChanged && !titleChanged && !posChanged && !archiveChanged:
 			action = "board.updated.done_column"
 			before, after = historyOptID(oldDone), historyOptID(updated.DoneColumnID)
+		case archiveChanged && !titleChanged && !posChanged && !doneChanged:
+			action = "board.updated.archived"
+			before, after = historyTime(oldArchivedAt), historyTime(updated.ArchivedAt)
 		}
 		appendHistory(s.History, ctx, model.HistoryWrite{
 			ProjectID:   projectID,

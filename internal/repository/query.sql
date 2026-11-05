@@ -53,6 +53,11 @@ UPDATE kanban_board
 SET done_column_id = $1, updated_at = CURRENT_TIMESTAMP
 WHERE id = $2 AND deleted_at IS NULL;
 
+-- name: SetBoardArchivedAt :exec
+UPDATE kanban_board
+SET archived_at = $1, updated_at = CURRENT_TIMESTAMP
+WHERE id = $2 AND deleted_at IS NULL;
+
 -- name: DeleteBoard :exec
 UPDATE kanban_board
 SET deleted_at = CURRENT_TIMESTAMP

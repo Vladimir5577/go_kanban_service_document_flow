@@ -121,7 +121,7 @@ func (h *ProjectHandler) GetProject() http.HandlerFunc {
 			return
 		}
 
-		project, err := h.service.GetProject(r.Context(), id)
+		project, err := h.service.GetProject(r.Context(), id, r.URL.Query().Get("includeArchived") == "1")
 		if err != nil {
 			helper.WriteError(w, err)
 			return

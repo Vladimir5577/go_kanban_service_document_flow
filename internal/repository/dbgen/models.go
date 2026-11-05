@@ -30,6 +30,7 @@ type KanbanBoard struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	DeletedAt       pgtype.Timestamptz `json:"deleted_at"`
 	DoneColumnID    pgtype.Int8        `json:"done_column_id"`
+	ArchivedAt      pgtype.Timestamptz `json:"archived_at"`
 }
 
 type KanbanCard struct {

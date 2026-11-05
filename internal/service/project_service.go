@@ -20,7 +20,7 @@ const defaultProjectBoardTitle = "Главная доска"
 type ProjectServiceInterface interface {
 	ListProjects(ctx context.Context, f model.ProjectListFilters) (*dto.ProjectListResponse, error)
 	CreateProject(ctx context.Context, req dto.CreateProjectRequest) (*model.Project, error)
-	GetProject(ctx context.Context, id int64) (*dto.ProjectResponse, error)
+	GetProject(ctx context.Context, id int64, includeArchived bool) (*dto.ProjectResponse, error)
 	UpdateProject(ctx context.Context, id int64, req dto.UpdateProjectRequest) (*model.Project, error)
 	MoveProject(ctx context.Context, id int64, req dto.MoveProjectRequest) (*dto.MoveProjectResponse, error)
 	DeleteProject(ctx context.Context, id int64) error
@@ -142,7 +142,7 @@ func (s *ProjectService) createDefaultBoard(ctx context.Context, projectID int64
 	}, modelColumns)
 }
 
-func (s *ProjectService) GetProject(ctx context.Context, id int64) (*dto.ProjectResponse, error) {
+func (s *ProjectService) GetProject(ctx context.Context, id int64, includeArchived bool) (*dto.ProjectResponse, error) {
 	if err := s.permSvc.RequireRole(ctx, id, RoleViewer); err != nil {
 		return nil, err
 	}
@@ -155,6 +155,16 @@ func (s *ProjectService) GetProject(ctx context.Context, id int64) (*dto.Project
 	boards, err := s.boardRepo.GetBoardsByProject(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if !includeArchived {
+		n := 0
+		for _, b := range boards {
+			if b.ArchivedAt == nil {
+				boards[n] = b
+				n++
+			}
+		}
+		boards = boards[:n]
 	}
 
 	members, err := s.memberRepo.GetMembers(ctx, id)

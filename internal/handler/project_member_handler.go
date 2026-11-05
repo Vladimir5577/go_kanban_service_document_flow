@@ -43,7 +43,7 @@ func (h *ProjectMemberHandler) ReplaceMembers() http.HandlerFunc {
 			return
 		}
 
-		project, err := h.projectSvc.GetProject(r.Context(), projectID)
+		project, err := h.projectSvc.GetProject(r.Context(), projectID, false)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
@@ -92,7 +92,7 @@ func (h *ProjectMemberHandler) UpdateMemberRole() http.HandlerFunc {
 			return
 		}
 
-		project, err := h.projectSvc.GetProject(r.Context(), projectID)
+		project, err := h.projectSvc.GetProject(r.Context(), projectID, false)
 		if err != nil {
 			helper.WriteError(w, err)
 			return
