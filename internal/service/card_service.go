@@ -30,6 +30,8 @@ type CardServiceInterface interface {
 	DeleteCard(ctx context.Context, id int64) error
 	UpdateAssignees(ctx context.Context, id int64, userIDs []int64) ([]*dto.CardAssigneeResponse, error)
 	MoveCard(ctx context.Context, id int64, columnID *int64, position float64) (*model.CardMove, error)
+	// TransferCard переносит карточку на колонку другой доски того же проекта.
+	TransferCard(ctx context.Context, id int64, columnID int64) (*model.CardMove, error)
 	ArchiveCard(ctx context.Context, id int64) (bool, error)
 	CompleteCard(ctx context.Context, id int64) (*dto.CardCompletionResponse, error)
 }
@@ -997,6 +999,8 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID *int64, p
 		return nil, withNotFoundCode(mapNoRowsToNotFound(err), apperr.CodeColumnNotFound)
 	}
 	if targetColumn.BoardID != acc.BoardID {
+		// Чужую доску сюда не пускаем: перенос между досками — TransferCard,
+		// он же снимает метки. Этот путь их оставляет.
 		return nil, apperr.New(apperr.CodeColumnNotFound, "column not found")
 	}
 
@@ -1047,6 +1051,115 @@ func (s *CardService) MoveCard(ctx context.Context, id int64, columnID *int64, p
 		runDetached(ctx, notifyTimeout, "failed to notify kanban task moved", func(ctx context.Context) error {
 			// source and target are guaranteed to be on the same board
 			s.notificationSvc.NotifyTaskMoved(ctx, acc.ProjectID, acc.BoardID, acc.BoardTitle, id, actorID, move.Title, acc.ColumnTitle, targetColumn.Title)
+			return nil
+		})
+	}
+
+	return move, nil
+}
+
+// TransferCard переносит карточку на колонку другой доски, в том числе другого
+// проекта, где у пользователя есть права редактора. Та же строка: описание,
+// срок, приоритет, цвет, оценка, выполнение, подзадачи, комментарии, вложения
+// и учёт времени остаются. Метки принадлежат доске — связи с чужими снимаются.
+// В другом проекте снимаются исполнители, которых там нет.
+// Повтор на ту же колонку только дочищает метки: так повтор после сбоя
+// снятия меток не двигает карточку второй раз.
+func (s *CardService) TransferCard(ctx context.Context, id int64, columnID int64) (*model.CardMove, error) {
+	acc, err := s.permSvc.RequireRootCardRole(ctx, id, RoleEditor)
+	if err != nil {
+		return nil, err
+	}
+	if acc.IsArchived {
+		return nil, apperr.New(apperr.CodeValidation, "archived card cannot be transferred")
+	}
+	target, err := s.repo.ColumnPrependTarget(ctx, columnID)
+	if err != nil {
+		return nil, withNotFoundCode(err, apperr.CodeColumnNotFound)
+	}
+	crossProject := target.ProjectID != acc.ProjectID
+	if crossProject {
+		if err := s.permSvc.RequireRole(ctx, target.ProjectID, RoleEditor); err != nil {
+			return nil, err
+		}
+	}
+	if !crossProject && target.BoardID == acc.BoardID {
+		if columnID != acc.ColumnID {
+			return nil, apperr.New(apperr.CodeValidation, "card is already on this board")
+		}
+		if err := s.repo.ClearForeignCardLabels(ctx, id, target.BoardID); err != nil {
+			return nil, err
+		}
+		return &model.CardMove{
+			ID:           id,
+			Title:        acc.CardTitle,
+			FromColumnID: acc.ColumnID,
+			ToColumnID:   acc.ColumnID,
+			Position:     acc.Position,
+			UpdatedAt:    s.cfg.Clock.Now(),
+		}, nil
+	}
+
+	activeCardsCount, err := s.repo.CountActiveCardsByBoard(ctx, target.BoardID)
+	if err != nil {
+		return nil, err
+	}
+	if activeCardsCount >= maxActiveCardsPerBoard {
+		return nil, apperr.New(apperr.CodeBoardCardLimitReached, "maximum number of cards (300) on board reached")
+	}
+
+	move, err := s.repo.MoveCard(ctx, id, columnID, target.Position)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.ClearForeignCardLabels(ctx, id, target.BoardID); err != nil {
+		return nil, err
+	}
+	if crossProject {
+		if err := s.repo.ClearOutsideProjectAssignees(ctx, id, target.ProjectID); err != nil {
+			return nil, err
+		}
+	}
+
+	link := historyTaskPath(target.ProjectID, target.BoardID, id)
+	moved := model.HistoryWrite{
+		Action:      "card.moved",
+		EntityType:  "card",
+		EntityID:    id,
+		CardID:      id,
+		EntityTitle: move.Title,
+		EntityLink:  link,
+		Before:      historyPlacement(move.FromColumnID, move.FromPosition),
+		After:       historyPlacement(columnID, move.Position),
+	}
+	if crossProject {
+		moved.ProjectID = acc.ProjectID
+		appendHistory(s.History, ctx, moved)
+	}
+	moved.ProjectID = target.ProjectID
+	appendHistory(s.History, ctx, moved)
+
+	if s.realtimePublisher != nil {
+		s.realtimePublisher.TryPublish(ctx, func(ctx context.Context) error {
+			senderID := realtimeSenderID(ctx)
+			if err := s.realtimePublisher.PublishCardDeleted(ctx, acc.BoardID, id, senderID); err != nil {
+				return err
+			}
+			created, err := s.realtimePublisher.BuildRestoredCard(ctx, id, target.BoardID)
+			if err != nil {
+				return err
+			}
+			if err := s.realtimePublisher.PublishCardCreated(ctx, target.BoardID, created, senderID); err != nil {
+				return err
+			}
+			return s.publishRebalanced(ctx, target.BoardID, move.ID, move.Rebalanced, senderID)
+		})
+	}
+
+	if s.notificationSvc != nil {
+		actorID := derefInt64(currentUserID(ctx))
+		runDetached(ctx, notifyTimeout, "failed to notify kanban task moved", func(ctx context.Context) error {
+			s.notificationSvc.NotifyTaskMoved(ctx, target.ProjectID, target.BoardID, "", id, actorID, move.Title, acc.ColumnTitle, target.Title)
 			return nil
 		})
 	}

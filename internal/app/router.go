@@ -91,6 +91,7 @@ func setupRouter(h Handlers, authMw *middleware.AuthMiddleware) *chi.Mux {
 
 			r.Put("/{id}/assignees", h.Card.UpdateAssignees())
 			r.Post("/{id}/move", h.Card.MoveCard())
+			r.Post("/{id}/transfer", h.Card.TransferCard())
 			r.Patch("/{id}/archive", h.Card.ArchiveCard())
 			r.Patch("/{id}/complete", h.Card.CompleteCard())
 			r.Patch("/{id}/estimate", h.Time.SetEstimate())

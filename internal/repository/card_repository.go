@@ -53,6 +53,12 @@ type CardRepositoryInterface interface {
 	// Если оно вызвало ребалансировку, в CardMove.Rebalanced лягут новые позиции
 	// всей колонки, иначе там nil.
 	MoveCard(ctx context.Context, id int64, columnID int64, position float64) (*model.CardMove, error)
+	// ClearForeignCardLabels снимает с карточки и её подзадач метки, которые
+	// принадлежат не этой доске. Метки целевой доски не трогает.
+	ClearForeignCardLabels(ctx context.Context, cardID, boardID int64) error
+	// ClearOutsideProjectAssignees снимает исполнителей карточки и подзадач,
+	// которых нет в проекте. Участник или владелец проекта остаётся.
+	ClearOutsideProjectAssignees(ctx context.Context, cardID, projectID int64) error
 
 	// GetInvolvedUserIDsForNotifications returns distinct user IDs that are assignees on the card,
 	// assignees on any of its subtasks, or the card's author. Used to decide notification recipients.
@@ -954,6 +960,39 @@ func (r *CardRepository) MoveCard(ctx context.Context, id int64, columnID int64,
 		}
 	}
 	return move, nil
+}
+
+// ClearForeignCardLabels снимает метки чужих досок с карточки и её подзадач.
+// Метка живёт на доске: после переноса карточки связь с ней бессмысленна.
+func (r *CardRepository) ClearForeignCardLabels(ctx context.Context, cardID, boardID int64) error {
+	_, err := r.Db.Exec(ctx, `
+		DELETE FROM kanban_card_label cl
+		USING kanban_label l, kanban_card c
+		WHERE cl.kanban_label_id = l.id
+		  AND cl.kanban_card_id = c.id
+		  AND (c.id = $1 OR c.parent_id = $1)
+		  AND l.board_id <> $2`, cardID, boardID)
+	return err
+}
+
+// ClearOutsideProjectAssignees снимает исполнителей, которые не входят в проект.
+func (r *CardRepository) ClearOutsideProjectAssignees(ctx context.Context, cardID, projectID int64) error {
+	_, err := r.Db.Exec(ctx, `
+		DELETE FROM kanban_card_assignee ca
+		USING kanban_card c
+		WHERE ca.card_id = c.id
+		  AND (c.id = $1 OR c.parent_id = $1)
+		  AND NOT (
+		    EXISTS (
+		      SELECT 1 FROM kanban_project_user pu
+		      WHERE pu.kanban_project_id = $2 AND pu.user_id = ca.user_id
+		    )
+		    OR EXISTS (
+		      SELECT 1 FROM kanban_project p
+		      WHERE p.id = $2 AND p.owner_id = ca.user_id
+		    )
+		  )`, cardID, projectID)
+	return err
 }
 
 // GetInvolvedUserIDsForNotifications returns distinct assignees + subtask users + card author.

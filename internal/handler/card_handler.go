@@ -238,6 +238,31 @@ func (h *CardHandler) MoveCard() http.HandlerFunc {
 	}
 }
 
+func (h *CardHandler) TransferCard() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := helper.IDParam(r, "id")
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+
+		var payload struct {
+			ColumnID int64 `json:"column_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			helper.WriteError(w, invalidJSONError())
+			return
+		}
+
+		move, err := h.service.TransferCard(r.Context(), id, payload.ColumnID)
+		if err != nil {
+			helper.WriteError(w, err)
+			return
+		}
+		helper.WriteJSON(w, http.StatusOK, dto.MapMoveCardResponse(move))
+	}
+}
+
 func (h *CardHandler) ArchiveCard() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, err := helper.IDParam(r, "id")
